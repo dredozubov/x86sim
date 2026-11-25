@@ -115,14 +115,10 @@ fn env_of(dir: &Path) -> HashMap<String, String> {
         .collect()
 }
 
-fn uid() -> u32 {
-    unsafe { libc::getuid() }
-}
-
-/// The ring path this instance should publish frames to (unique per phone)
+/// The ring path a phone started from here publishes frames to (unique per phone, in rundir::run_dir()); a booted
+/// phone's actual ring is its Instance::ring (sim.env)
 pub fn ring_for(id: &str) -> PathBuf {
-    let tag = id.strip_prefix("device-").unwrap_or(id);
-    PathBuf::from(format!("/run/user/{}/x86sim-{tag}-simfb.ring", uid()))
+    crate::rundir::run_dir().join(crate::rundir::ring_name(id))
 }
 
 /// A name for a phone made without one: "" -> "Main device", "-probe" -> "Probe", "b" -> "Device B"
@@ -166,9 +162,10 @@ pub fn load(dir: &Path) -> Instance {
     let w = env.get("SIMULATOR_MAINSCREEN_WIDTH").and_then(|v| v.parse().ok()).unwrap_or(1206);
     let h = env.get("SIMULATOR_MAINSCREEN_HEIGHT").and_then(|v| v.parse().ok()).unwrap_or(2622);
     let scale = env.get("SIMULATOR_MAINSCREEN_SCALE").and_then(|v| v.parse().ok()).unwrap_or(3.0);
-    // always the per-phone ring (sim.env may hold a ring copied from another phone; passing it on at start
-    // kept that phone drawing into the other one's ring)
-    let ring = ring_for(&id);
+    // the ring the last boot wrote (sim.env), wherever the CLI, the MCP server or this launcher put it (rundir.rs), but
+    // only this phone's own: sim.env may hold a ring copied from another phone (passing it on at start kept that phone
+    // drawing into the other one's ring)
+    let ring = crate::rundir::ring_from_env(&id, &env, ring_for(&id));
     let inner = inner_display(&model_id, &ring);
     let prefix_sfx = if is_default { String::new() } else if sfx.starts_with('-') { sfx.to_string() } else { format!("-{sfx}") };
     Instance {
@@ -847,11 +844,12 @@ pub fn delete_plan(inst: &Instance) -> Vec<PathBuf> {
     if inst.state_dir == own_state && inst.state_dir.exists() {
         v.push(inst.state_dir.clone());
     }
-    let ring = ring_for(&inst.id);
-    if ring.exists() {
-        v.push(ring.clone());
+    for ring in [inst.ring.clone(), ring_for(&inst.id)] {
+        if ring.exists() && !v.contains(&ring) {
+            v.push(ring);
+        }
     }
-    let link = PathBuf::from("/dev/shm").join(ring.file_name().unwrap_or_default());
+    let link = PathBuf::from("/dev/shm").join(crate::rundir::ring_name(&inst.id));
     if link.symlink_metadata().is_ok() {
         v.push(link);
     }

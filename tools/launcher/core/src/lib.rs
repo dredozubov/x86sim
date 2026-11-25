@@ -8,6 +8,7 @@ pub mod axaudit;
 pub mod axinspect;
 pub mod appcache;
 pub mod apps;
+pub mod desktop;
 pub mod dev;
 pub mod devapp;
 pub mod discover;
@@ -26,6 +27,7 @@ pub mod ring;
 /// Web Inspector: Safari and WKWebView pages over webinspectord (RWI)
 pub mod rwi;
 pub mod rtdelete;
+pub mod rundir;
 pub mod setup;
 /// Share: phones in a browser (x86sim serve)
 pub mod share;

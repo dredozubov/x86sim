@@ -8,7 +8,9 @@
 #     darling-prefix -> /opt/x86sim/darling             (installed by the setup wizard's privileged step)
 #     runtimes/  var/  x86sim.env                        (user data, kept across versions)
 #   $XDG_CACHE_HOME/x86sim (default ~/.cache/x86sim): X86SIM_SCRATCH (AOT images, logs, per-boot Darling prefixes)
-# Usage: x86sim.AppImage [launcher|aot|mcp|dev|serve|x86sim|shell|setup-helper|version] [args]
+#   $XDG_DATA_HOME/applications/x86sim.desktop: the app menu entry, on request (install-desktop / uninstall-desktop, or
+#     the setup page); it runs $DATA/x86sim.AppImage, a link to this AppImage re-pointed at every start
+# Usage: x86sim.AppImage [launcher|aot|mcp|dev|serve|x86sim|shell|setup-helper|install-desktop|uninstall-desktop|version] [args]
 set -e
 HERE=$(dirname "$(readlink -f "$0")")
 S=$HERE/usr/share/x86sim
@@ -86,6 +88,13 @@ fi
 # relative (as every link here): Darling sees these paths under /Volumes/SystemRoot, where an absolute target would
 # resolve against the container's own root
 if [ -L "$DATA/darling-prefix" ] || [ ! -e "$DATA/darling-prefix" ]; then ln -sfn "$target" "$DATA/darling-prefix"; fi
+# the app menu entry (tools/launcher/core/src/desktop.rs) runs $DATA/x86sim.AppImage: follow this AppImage wherever it
+# is now (moved, renamed, a newer version started from elsewhere), when the entry is x86Sim's
+if [ -n "${APPIMAGE:-}" ] && [ -f "$APPIMAGE" ] && [ -L "$DATA/x86sim.AppImage" ] &&
+	grep -qx 'X-X86Sim-Managed=true' "${XDG_DATA_HOME:-$HOME/.local/share}/applications/x86sim.desktop" 2>/dev/null &&
+	[ "$(readlink "$DATA/x86sim.AppImage")" != "$APPIMAGE" ]; then
+	ln -sfn "$APPIMAGE" "$DATA/x86sim.AppImage.new" && mv -Tf "$DATA/x86sim.AppImage.new" "$DATA/x86sim.AppImage"
+fi
 export X86SIM_DARLING_MODE=$mode
 export X86SIM_ROOT="$DATA" X86SIM_SCRATCH="$CACHE" X86SIM_APP="$APP" X86SIM_VERSION="$VER"
 export X86SIM_DARLING_ID="$(cat "$APP/DARLING_ID")" X86SIM_DARLING_STAGE="$S/darling" X86SIM_PYLIB="$APP/pylib"
@@ -102,6 +111,7 @@ mcp) shift; exec "$B/x86sim-mcp" "$@" ;;
 dev) shift; exec "$B/x86sim-dev" "$@" ;;
 serve) shift; exec "$B/x86sim-serve" "$@" ;;
 x86sim) shift; exec "$APP/cli/x86sim" "$@" ;;
+install-desktop | uninstall-desktop) exec "$B/x86sim-launcher" "$cmd" ;;
 shell) shift; cd "$DATA"; exec "${SHELL:-/bin/sh}" "$@" ;;
 version) echo "x86Sim $VER (Darling $X86SIM_DARLING_ID, $mode mode)"; echo "data $DATA"; echo "cache $CACHE" ;;
 *) exec "$B/x86sim-launcher" "$@" ;;
