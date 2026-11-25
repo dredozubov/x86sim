@@ -126,11 +126,16 @@ colours, images, rendering, or when the snapshot shows too little (games, Metal 
 
 ```sh
 x86sim --phone qa screenshot out.png 3        # newest frame; the number divides the size (3 on a 3x phone = points)
+x86sim --phone qa screenshot out.png --marks  # in points, every element outlined with its @ref beside it
+x86sim --phone qa screenshot out.png --marks actionable   # only what tap acts on (controls, links, fields, [ocr])
+x86sim --phone qa screenshot el.png --target @e7          # one element, cropped with a margin
 x86sim --phone qa io recordVideo --secs 10 out.mp4
 ```
 
 Without a divisor the PNG is full device pixels, while snapshot coordinates are points. The MCP `screenshot` tool
-returns points by default.
+returns points by default; `marks=true` / `marks=actionable` (and `ocr=true` for the whole screen's text) answer the
+marked image with the snapshot's text, `target=@e7` the crop. When working from an image, ask for marks: each tag is
+the ref to `tap`. The browser page's Capture group has "With marks" too.
 
 ## 5. Clean, repeatable screenshots
 
@@ -265,7 +270,8 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 - The **first snapshot** of a running process turns on accessibility automation (as XCUITest does) and loads UIKit's
   accessibility bundles: it is 0.1-0.2 s slower, and the setting stays on in that phone.
 - An empty or thin snapshot means the screen has no accessibility elements (a game, a Metal view, a custom-drawn
-  control): try `snapshot --ocr` (text read from pixels, tappable by text or ref), then a screenshot and `tap X Y`.
+  control): try `snapshot --ocr` (text read from pixels, tappable by text or ref), then a screenshot with `--marks`,
+  and only then `tap X Y`.
 - **Per platform** (snapshot and actions checked on iPhone, iPad, Apple TV, Apple Watch and Vision Pro):
   - *iPad*: windowed apps are placed where they show; `front` lists the top window's app first, SpringBoard's window
     chrome (window controls, resize grabbers, a card per window behind) is the "app windows" group, and an element

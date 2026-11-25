@@ -623,6 +623,17 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
                         None => respond(&mut s, 204, "image/jpeg", &[], b""),
                     }
                 }
+                // ?marks=all|actionable: every element outlined with its @ref (marks.rs), in points
+                "screenshot.png" if req.query.get("marks").and_then(|m| crate::marks::Marks::parse(m)).is_some() => {
+                    let m = req.query.get("marks").and_then(|m| crate::marks::Marks::parse(m)).unwrap_or(crate::marks::Marks::All);
+                    match crate::marks::marked(&inst, m, inst.scale.round().max(1.0) as u32, false) {
+                        Ok((png, ..)) => {
+                            let name = format!("{}-{}-marks.png", inst.name.replace(|c: char| !c.is_ascii_alphanumeric(), "-"), now_s());
+                            respond(&mut s, 200, "image/png", &[("Content-Disposition", format!("attachment; filename=\"{name}\""))], &png)
+                        }
+                        Err(e) => json_resp(&mut s, 409, &json!({"error": format!("{e:#}")})),
+                    }
+                }
                 "screenshot.png" => match video::snapshot_png(&inst) {
                     Some(png) => {
                         let name = format!("{}-{}.png", inst.name.replace(|c: char| !c.is_ascii_alphanumeric(), "-"), now_s());

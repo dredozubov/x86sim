@@ -32,7 +32,12 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
                                        Apple's I/O > Keyboard: Toggle Software Keyboard (Cmd-K), Connect Hardware
                                        Keyboard (Shift-Cmd-K; kept across boots)
   open URL | launch BUNDLEID [ARGS] | terminate BUNDLEID
-  screenshot [OUT.png] [--scale N]     N: divisor (default: the device scale, a picture in points)
+  screenshot [OUT.png] [--scale N] [--marks [actionable]] [--target TARGET] [--ocr]
+                                       N: divisor (default: the device scale, a picture in points); --marks: every
+                                       element outlined with its @ref beside it (actionable: only controls, links,
+                                       fields and [ocr] text), the refs listed on stdout; --target: only that element
+                                       (@e3, id:..., text), cropped with a margin; --ocr: marks also on the whole
+                                       screen's text read from pixels
   inspect [TARGET | X Y] [--json]      Accessibility Inspector: every property of an element (label, value, hint,
                                        traits, actions, custom actions, rotors, language, class, view, controller,
                                        hierarchy, font / color); no target: the screen + views VoiceOver cannot reach
@@ -115,6 +120,20 @@ fn run() -> Result<()> {
     let scale = opt("--scale");
     let rules = opt("--rules");
     let aname = opt("--name");
+    let target_opt = opt("--target");
+    // --marks [actionable]: the value is optional
+    let marks = match args.iter().position(|a| a == "--marks") {
+        Some(i) => {
+            args.remove(i);
+            if args.get(i).map(String::as_str) == Some("actionable") {
+                args.remove(i);
+                Some(x86sim_core::marks::Marks::Actionable)
+            } else {
+                Some(x86sim_core::marks::Marks::All)
+            }
+        }
+        None => None,
+    };
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
         println!("{}", USAGE.replace("{NET}", ax_net::USAGE));
         return Ok(());
@@ -264,10 +283,24 @@ fn run() -> Result<()> {
         }
         "screenshot" | "shot" => {
             let div = scale.and_then(|s| s.parse().ok()).unwrap_or(inst.scale.round().max(1.0) as u32);
-            let (png, w, h) = ax::screenshot(&inst, div)?;
+            let mut listing = String::new();
+            let (png, w, h) = match (&target_opt, marks) {
+                (Some(t), _) => {
+                    let (p, w, h, e) = x86sim_core::marks::element_shot(&inst, t, div)?;
+                    listing = format!("{}\n", e.line((w as f64, h as f64)));
+                    (p, w, h)
+                }
+                (None, Some(m)) => {
+                    let (p, w, h, n, snap) = x86sim_core::marks::marked(&inst, m, div, ocr)?;
+                    listing = format!("{n} marks\n{}", snap.text());
+                    (p, w, h)
+                }
+                (None, None) => ax::screenshot(&inst, div)?,
+            };
             let out = args.first().cloned().unwrap_or_else(|| format!("x86sim-{}.png", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)));
             std::fs::write(&out, png)?;
             println!("{out} ({w}x{h})");
+            print!("{listing}");
         }
         o => bail!("unknown command {o}\n{USAGE}"),
     }

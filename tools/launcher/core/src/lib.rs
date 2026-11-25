@@ -26,6 +26,8 @@ pub mod logs;
 pub mod pool;
 pub mod profile;
 pub mod macho;
+/// Screenshots that point at elements: marks (outlines with refs), one element cropped
+pub mod marks;
 /// Network capture of native apps (host/simnet): records, capture on / off, mocks
 pub mod net;
 /// Text in pixels: OCR of frames (snapshot ocr=true, views with no elements)

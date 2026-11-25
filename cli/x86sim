@@ -92,6 +92,9 @@ Display and input
   view [--bg]          GTK viewer window with mouse/keyboard input (simview.py; DISPLAY defaults to :0)
   screenshot [out.png] [divisor]
                        newest frame as PNG (fb2png.py; default ./x86sim-<time>.png, full size)
+  screenshot [out.png] --marks [actionable] | --target TARGET [--scale N]
+                       in points: every element outlined with its @ref (actionable: controls and [ocr] text only), or
+                       one element cropped with a margin
   tap X Y | swipe X1 Y1 X2 Y2 [ms] | pinch CX CY R1 R2 [ms] | pan2 X1 Y1 X2 Y2 [ms]
   type TEXT | key USAGE | home | lock | openurl URL | app BUNDLEID | dismiss [rounds] | raw LINE...
   crown DELTA [steps]  Apple Watch / Vision Pro: turn the Digital Crown
@@ -268,7 +271,8 @@ case $c in
 		exec python3 "$L/arm64/runtime-fetch.py" "$@" ;;
 	logs) cmd_logs "$@" ;;
 	view) cmd_view "$@" ;;
-	screenshot|shot) cmd_screenshot "$@" ;;
+	# marks / one element: the agent screenshot (x86sim-ax, points)
+	screenshot|shot) case " $* " in *" --marks"*|*" --target "*) ax screenshot "$@" ;; *) cmd_screenshot "$@" ;; esac ;;
 	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)
