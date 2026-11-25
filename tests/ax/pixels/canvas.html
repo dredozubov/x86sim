@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- x86Sim: a canvas game menu for the OCR check (tests/ax/pixels_e2e.py): text only in pixels, a click on a drawn
+     button redraws "Clicked <name>". The heading above the canvas is a DOM element (not read again by OCR). -->
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas Menu</title>
+<style>body { margin: 0; background: #fff; font-family: -apple-system, sans-serif } h1 { font-size: 18px; margin: 8px 12px }
+canvas { display: block; width: 100vw; height: 80vh }</style></head>
+<body><h1>Canvas page</h1><canvas id="c"></canvas>
+<script>
+const c = document.getElementById('c'), g = c.getContext('2d'), names = ['Play Now', 'Settings', 'Quit'];
+let clicked = null, W = 0, H = 0;
+const rects = () => names.map((n, i) => [n, W / 2 - 100, H * 0.38 + i * 70, 200, 50]);
+function draw() {
+  const d = devicePixelRatio || 1; W = c.clientWidth; H = c.clientHeight; c.width = W * d; c.height = H * d;
+  g.setTransform(d, 0, 0, d, 0, 0); g.fillStyle = '#1d2b3a'; g.fillRect(0, 0, W, H);
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#ffd34d'; g.font = 'bold 34px -apple-system, sans-serif';
+  g.fillText('CANVAS GAME', W / 2, H * 0.14); g.fillStyle = '#ffffff'; g.font = '20px -apple-system, sans-serif';
+  g.fillText('Level 3', W / 2, H * 0.24);
+  for (const [n, x, y, w, h] of rects()) { g.fillStyle = '#3a7bd5'; g.fillRect(x, y, w, h); g.fillStyle = '#fff'; g.font = '22px -apple-system, sans-serif'; g.fillText(n, x + w / 2, y + h / 2); }
+  g.font = '18px -apple-system, sans-serif'; g.fillText(clicked ? 'Clicked ' + clicked : 'Pick one', W / 2, H * 0.88);
+}
+c.addEventListener('click', e => { const r = c.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  for (const [n, rx, ry, w, h] of rects()) if (x >= rx && x < rx + w && y >= ry && y < ry + h) { clicked = n; draw(); } });
+addEventListener('resize', draw); draw();
+</script></body></html>
