@@ -1151,7 +1151,7 @@ impl Snapshot {
 
 /// The touch / key channel to the phone for points in a space: the panel in use (an unfolded phone's inner screen)
 /// and the turn from the interface's picture to the panel
-fn hid_for(inst: &Instance, sp: Space) -> Hid {
+pub(crate) fn hid_for(inst: &Instance, sp: Space) -> Hid {
     let mut h = Hid::new(&inst.sock);
     match panel(inst).0 {
         Some((id, native)) => h.display = Some((id, (native + sp.rot) % 360)),

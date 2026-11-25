@@ -20,6 +20,10 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
                                        a form in one call: each field (its label, placeholder, the label beside it,
                                        @ref, id:) tapped, focused, emptied (not with --append) and typed; then Return
                                        (--submit) or a tap (--submit-tap)
+  drag FROM TO [--hold MS] [--ms MS]   press FROM (a target or \"X,Y\"), hold (default 600 ms: lift), move to TO, drop
+  set-value TARGET VALUE               a slider (number, 50%), switch (on|off), stepper, segmented control (title),
+                                       wheel picker (\"Apple\" | \"10, 30\"), date picker (2026-05-01T14:30 | 14:30), any
+                                       adjustable; no VALUE: what the control is and the values it takes
   key COMBO                            return | tab | escape | delete | up ... | cmd+a | shift+tab
   scroll up|down|left|right [AMOUNT] [--at TARGET]
                                        precise scroll (no fling), AMOUNT in screens (default 0.5)
@@ -108,6 +112,7 @@ fn run() -> Result<()> {
     let aname = opt("--name");
     let into = opt("--into");
     let submit_tap = opt("--submit-tap");
+    let hold = opt("--hold");
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
         println!("{USAGE}");
         return Ok(());
@@ -222,6 +227,19 @@ fn run() -> Result<()> {
                 _ => x86sim_core::axact::Submit::None,
             };
             print(x86sim_core::axact::fill(&inst, &fields, &sub, after)?)
+        }
+        "drag" => {
+            anyhow::ensure!(args.len() == 2, "drag FROM TO (each a target or \"X,Y\"; quote labels with spaces)");
+            print(x86sim_core::axact::drag(&inst, &args[0], &args[1], hold.and_then(|h| h.parse().ok()).unwrap_or(600), ms.and_then(|m| m.parse().ok()).unwrap_or(600), after)?)
+        }
+        "set-value" | "setvalue" => {
+            let t = args.first().cloned().ok_or_else(|| anyhow!("set-value TARGET VALUE"))?;
+            if args.len() < 2 {
+                let (e, s) = ax::resolve(&inst, &t)?;
+                println!("{}\n{}", e.line(s.screen), serde_json::to_string_pretty(&x86sim_core::axact::control_info(&inst, &e)?)?);
+            } else {
+                print(x86sim_core::axact::set_value(&inst, &t, &serde_json::Value::String(args[1..].join(" ")), after)?)
+            }
         }
         "key" => {
             need("a key")?;

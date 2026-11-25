@@ -4,6 +4,7 @@
 //   focus                  the first responder: oid, class, kind (textfield / securefield / searchfield / textview / web /
 //                          keyinput / other), its frame on the screen, value, placeholder, and the oids of the views it
 //                          is inside (the host matches a tapped element against them)
+//   control, setvalue      controls: simax_controls.m
 #include <TargetConditionals.h>
 #if TARGET_OS_WATCH
 #include <AvailabilityInternal.h>
@@ -82,7 +83,9 @@ static NSDictionary* focus_info(void) {
 	return d;
 }
 
+BOOL simax_controls_handle(NSString* op, NSDictionary* req, void (^reply)(NSDictionary*));
+
 BOOL simax_actions_handle(NSString* op, NSDictionary* req, void (^reply)(NSDictionary*)) {
 	if ([op isEqualToString:@"focus"]) { reply(focus_info()); return YES; }
-	return NO;
+	return simax_controls_handle(op, req, reply);   // control, setvalue (simax_controls.m)
 }

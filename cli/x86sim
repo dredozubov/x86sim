@@ -71,6 +71,11 @@ Agents (read the screen as text, act on elements; same core as the MCP server's 
   fill TARGET=TEXT... [--submit | --submit-tap TARGET] [--append]
                        a form in one call: each field (by its label, placeholder, the label beside it, @ref or id:) is
                        scrolled into view, tapped, given the focus, emptied (not with --append) and typed into
+  drag FROM TO [--hold MS] [--ms MS]
+                       press FROM (a target or "X,Y" points), hold to lift (default 600 ms), move to TO, drop
+  set-value TARGET [VALUE]
+                       set a slider / switch / stepper / segmented control / picker wheel / date picker / adjustable
+                       to VALUE as a touch would (the app hears it); no VALUE: the control and the values it takes
   key NAME|COMBO       return tab escape delete up down ... or cmd+a, shift+tab (a number: a HID usage)
   scroll up|down|left|right [SCREENS] [--at TARGET] | scroll-to TARGET [--dir D] | swipe up|down|left|right|home|back
   wait-for TARGET [--gone] [--timeout S]
@@ -267,7 +272,7 @@ case $c in
 	logs) cmd_logs "$@" ;;
 	view) cmd_view "$@" ;;
 	screenshot|shot) cmd_screenshot "$@" ;;
-	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill) ax "$c" "$@" ;;
+	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill|drag|set-value) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)
 		if [ $# -ge 1 ] && case $1 in -*) false ;; *) true ;; esac && [ "$c" = ax-audit ]; then

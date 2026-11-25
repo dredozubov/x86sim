@@ -77,7 +77,7 @@ struct ControlsScreen: View {
                 Text("volume=\(Int(m.volume.rounded()))").accessibilityIdentifier("volume-state")
                 Toggle("Wi-Fi", isOn: $m.wifi)
                 Text("wifi=\(m.wifi ? "on" : "off")").accessibilityIdentifier("wifi-state")
-                Stepper("Count", value: $m.count, in: 0...10)
+                Stepper("Count: \(m.count)", value: $m.count, in: 0...10)
                 Text("count=\(m.count)").accessibilityIdentifier("count-state")
                 Picker("Size", selection: $m.size) {
                     ForEach(["Small", "Medium", "Large"], id: \.self) { Text($0) }

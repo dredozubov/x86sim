@@ -73,6 +73,8 @@ x86sim --phone qa find "Wi"                   # what a target would match, best 
 x86sim --phone qa type "me@example.com" --submit      # into the focused field; --clear empties it first
 x86sim --phone qa type "me@example.com" --into "Email"   # tap the field, wait until it has the focus, type
 x86sim --phone qa fill Email=me@example.com Password=s3cret --submit-tap "Sign In"   # a form in one call
+x86sim --phone qa set-value "Volume" 75%      # slider / switch on|off / stepper 7 or +2 / segment / wheel row / 2026-05-01T14:30
+x86sim --phone qa drag "Reorder Alpha" 354,292 # press, hold 600 ms to lift, move, drop (list rows, drag and drop, icons)
 x86sim --phone qa key cmd+a                   # return tab escape delete up down ... or combos
 x86sim --phone qa scroll down 1 --at @e5      # precise, in screens; scroll-to TARGET scrolls until it shows
 x86sim --phone qa swipe back                  # up/down/left/right, home, notifications, controlcenter, back
@@ -104,6 +106,13 @@ x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappe
   each field scrolled into view and clear of the keyboard, tapped, focused, emptied (`--append` / `clear=false`
   keeps its text) and typed; it stops at the first field that fails and says which were filled. A field target is
   its label or placeholder, or the label written beside it (left of it on the row, or just above it).
+- `set_value` sets any control as a touch would (the app's bindings and delegates hear it), whatever it is: sliders
+  (a SwiftUI slider takes a percentage: its UIKit range is 0..1), switches, steppers (also SwiftUI's: it steps toward
+  the number its label shows; `+N` / `-N` always works), segmented controls, wheel pickers (target the wheel; SwiftUI
+  wheels have no identifiers, take the ref), date pickers, any adjustable element. `set-value TARGET` alone (MCP
+  `info=true`) says what the control is and what it takes.
+- `drag FROM TO` (targets or `x,y`): hold (`--hold`, MCP `hold_ms`, default 600 ms) lifts a row, a draggable item or a
+  home screen icon. The first drag and drop after a boot starts the drag service (druid) and may not drop: drag again.
 
 ### Accessibility checks
 
@@ -273,7 +282,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `wait_for`, `screenshot`,
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `wait_for`, `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 

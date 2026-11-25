@@ -5,7 +5,8 @@
 //! process): text typed right away went into the field focused before, or a web field dropped it. `type_into` taps
 //! the target, then waits on frames (up to 2 s) until simax says that element, or a text field inside it, is the first
 //! responder, types, and checks the text landed there. `fill` does that for several fields; field targets also match
-//! a placeholder and the label beside a field.
+//! a placeholder and the label beside a field. `drag` presses, holds to lift, moves and drops; `set_value` sets a
+//! control (slider, switch, stepper, segmented control, picker wheels, date picker, anything adjustable) in the app.
 use crate::ax::{self, After, El, Outcome, SnapOpts, Snapshot, Target};
 use serde::Deserialize;
 use crate::instance::Instance;
@@ -386,6 +387,201 @@ pub fn fill(inst: &Instance, fields: &[FillField], submit: &Submit, after: After
     Ok(ax::outcome(inst, format!("filled {} field(s):\n{}", fields.len(), done.join("\n")), before, after))
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// drag and set_value
+
+/// A point a target stands for: "x,y" / "x y" in points, or an element's centre (scrolled into view first). Answers
+/// the point, the touch space it is in and how to name it.
+fn point_of(inst: &Instance, target: &str) -> Result<((f64, f64), ax::Space, String)> {
+    if let Target::Point(x, y) = ax::parse_target(target) {
+        return Ok(((x, y), ax::front_space(inst), format!("({x:.0},{y:.0})")));
+    }
+    let (mut e, mut snap) = ax::resolve(inst, target)?;
+    if e.offscreen {
+        ax::scroll_into_view(inst, &e)?;
+        snap = ax::snapshot(inst, SnapOpts::default())?;
+        e = snap.get(&e.r).cloned().ok_or_else(|| anyhow::anyhow!("{target:?} scrolled into view, then not found"))?;
+    }
+    anyhow::ensure!(!e.covered, "@{} is under another app's window", e.r);
+    let sp = snap.space_of(&e);
+    let c = e.center(sp.size);
+    Ok((c, sp, format!("@{} {} {}", e.r, e.role, e.label.as_deref().map(ax::quote).unwrap_or_default()).trim_end().to_string()))
+}
+
+/// Drag from one place to another (an element or a point each): press, hold `hold_ms` still (600 by default: long
+/// enough to lift a list row, a drag-and-drop item or a home screen icon), move there over `ms`, rest a moment
+/// (so the target sees the item over it), lift.
+pub fn drag(inst: &Instance, from: &str, to: &str, hold_ms: u64, ms: u64, after: After) -> Result<Outcome> {
+    anyhow::ensure!(!matches!(inst.platform.as_str(), "tvos" | "xros"), "drag needs a touchscreen (an Apple TV and a Vision Pro have none)");
+    let before = ax::last(inst);
+    let (a, sp, wa) = point_of(inst, from)?;
+    let (b, _, wb) = point_of(inst, to)?;
+    let (na, nb) = (sp.norm(a.0, a.1), sp.norm(b.0, b.1));
+    let mut h = ax::hid_for(inst, sp);
+    let still = |h: &mut crate::hid::Hid, p: (f32, f32), d: u64| {
+        // a still finger keeps reporting (a digitizer does at its scan rate)
+        let end = Instant::now() + Duration::from_millis(d);
+        while Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(30));
+            h.touch("move", p.0, p.1, None);
+        }
+    };
+    h.touch("down", na.0, na.1, None);
+    still(&mut h, na, hold_ms);
+    let n = (ms / 16).max(4);
+    for i in 1..=n {
+        std::thread::sleep(Duration::from_millis(ms / n));
+        // ease in and out: a lifted item follows a finger that starts and stops gently
+        let t = i as f32 / n as f32;
+        let f = t * t * (3.0 - 2.0 * t);
+        h.touch("move", na.0 + (nb.0 - na.0) * f, na.1 + (nb.1 - na.1) * f, None);
+    }
+    // rest over the target: a drop target sees the item hover (a drop session's proposal) before the lift
+    still(&mut h, nb, 600);
+    h.touch("up", nb.0, nb.1, None);
+    Ok(ax::outcome(inst, format!("dragged {wa} to {wb} ({hold_ms} ms hold, {ms} ms move)"), before, after))
+}
+
+/// What a control is and the values it takes (simax `control`)
+pub fn control_info(inst: &Instance, e: &El) -> Result<Value> {
+    anyhow::ensure!(!e.web, "@{} is web content: tap it or type into it", e.r);
+    let v = ax::ask_pid(inst, e.pid, &json!({"op": "control", "oid": e.oid}), Duration::from_secs(4))?;
+    if let Some(err) = v["error"].as_str() {
+        bail!("@{}: {err}", e.r);
+    }
+    Ok(v)
+}
+
+/// Sets a control to a value in the app (simax `setvalue`): a slider (a number in its range, or "50%"), a switch
+/// (on / off), a stepper (a number: one step at a time), a segmented control (a segment's title), a wheel picker (a
+/// row's title per wheel: "Apple" or ["10", "30"] / "10, 30"), a date picker (2026-05-01, 2026-05-01T14:30, 14:30), or
+/// any adjustable element (increment / decrement until its value reads so). The app hears it as from a touch: the
+/// control's value-changed actions, the picker delegate's didSelectRow.
+pub fn set_value(inst: &Instance, target: &str, value: &Value, after: After) -> Result<Outcome> {
+    let before = ax::last(inst);
+    let (e, _) = ax::resolve(inst, target)?;
+    anyhow::ensure!(!e.web, "@{} is web content: set_value works on the app's own controls (tap / type into web forms)", e.r);
+    let v = match value {
+        Value::String(_) | Value::Array(_) => value.clone(),
+        Value::Bool(b) => json!(if *b { "on" } else { "off" }),
+        Value::Number(n) => json!(n.to_string()),
+        _ => bail!("value: a string, number, bool or a list (one per picker wheel)"),
+    };
+    let r = ax::ask_pid(inst, e.pid, &json!({"op": "setvalue", "oid": e.oid, "value": v}), Duration::from_secs(6))?;
+    let what = format!("@{} {} {}", e.r, e.role, e.label.as_deref().map(ax::quote).unwrap_or_default());
+    if r["kind"] == "picker" && r["titles"] == false && r["error"].is_string() {
+        if let Some(want) = v.as_str() {
+            return untitled_wheel(inst, &e, want, &r, before, after);
+        }
+    }
+    if r["kind"] == "stepper" && r["swiftui"] == true && r["error"].is_string() {
+        if let Some(want) = v.as_str().and_then(|x| x.trim().parse::<f64>().ok()) {
+            return swiftui_stepper(inst, &e, want, before, after);
+        }
+    }
+    if let Some(err) = r["error"].as_str() {
+        bail!("set_value {}: {err}", what.trim_end());
+    }
+    let kind = r["kind"].as_str().unwrap_or("control");
+    let shown = |x: &Value| match x {
+        Value::String(s) => ax::quote(s),
+        Value::Null => "?".into(),
+        o => o.to_string(),
+    };
+    let mut did = match r["steps"].as_i64() {
+        Some(n) => format!("stepped {} ({kind}) {n:+} time(s){}", what.trim_end(), r["value"].as_f64().map(|v| format!(", now {v}")).unwrap_or_default()),
+        None => format!("set {} ({kind}) from {} to {}", what.trim_end(), shown(&r["was"]), shown(&r["value"])),
+    };
+    if let Some(n) = r["note"].as_str() {
+        did += &format!(" ({n})");
+    }
+    Ok(ax::outcome(inst, did, before, after))
+}
+
+/// A wheel whose rows have no titles (SwiftUI's): each row selected quietly (the app's delegate not told) and read
+/// back from the wheel's accessibility value until one reads `want`; then that row selected for real (the delegate
+/// hears it, as at the end of a scroll). Starts after the current row and goes round.
+fn untitled_wheel(inst: &Instance, e: &El, want: &str, info: &Value, before: Option<Snapshot>, after: After) -> Result<Outcome> {
+    let n = info["rows"].as_u64().unwrap_or(0) as usize;
+    let cur = info["row"].as_u64().unwrap_or(0) as usize;
+    anyhow::ensure!(n > 0, "set_value @{}: the wheel has no rows", e.r);
+    let w = want.trim().to_lowercase();
+    let read = || ax::snapshot(inst, SnapOpts::default()).ok().and_then(|s| s.get(&e.r).cloned()).and_then(|x| x.value.or(x.label)).unwrap_or_default();
+    let was = read();
+    let mut seen = vec![];
+    let ask = |row: usize, quiet: bool| -> Result<Value> {
+        let r = ax::ask_pid(inst, e.pid, &json!({"op": "setvalue", "oid": e.oid, "value": format!("#{row}"), "quiet": quiet}), Duration::from_secs(4))?;
+        if let Some(err) = r["error"].as_str() {
+            bail!("set_value @{}: {err}", e.r);
+        }
+        Ok(r)
+    };
+    for k in 0..n.min(400) {
+        let row = (cur + k) % n;
+        if k > 0 {
+            ask(row, true)?;
+            ax::settle(inst, Duration::from_millis(100), Duration::from_millis(800));
+        }
+        let v = if k == 0 { was.clone() } else { read() };
+        let l = v.trim().to_lowercase();
+        if !l.is_empty() && (l == w || l.starts_with(&format!("{w},")) || l.starts_with(&w)) {
+            ask(row, false)?;
+            let did = format!("set @{} (picker wheel, row {row} of {n}) from {} to {}", e.r, ax::quote(&was), ax::quote(&v));
+            return Ok(ax::outcome(inst, did, before, after));
+        }
+        seen.push(v);
+    }
+    // not there: back where it was, quietly
+    let _ = ask(cur, true);
+    bail!("set_value @{}: picker wheel: no row {want:?} (rows: {})", e.r, seen.iter().map(|x| ax::quote(x)).collect::<Vec<_>>().join(", "))
+}
+
+/// The count a SwiftUI stepper shows in its label ("Count: 4, Increment" -> 4): its first number
+fn shown_number(e: &El) -> Option<f64> {
+    let t = format!("{} {}", e.label.as_deref().unwrap_or(""), e.value.as_deref().unwrap_or(""));
+    let mut num = String::new();
+    for c in t.chars() {
+        if c.is_ascii_digit() || (c == '.' && !num.is_empty()) || (c == '-' && num.is_empty()) {
+            num.push(c);
+        } else if !num.is_empty() && num != "-" {
+            break;
+        } else {
+            num.clear();
+        }
+    }
+    num.trim_end_matches('.').parse().ok()
+}
+
+/// A SwiftUI Stepper to an absolute count: its UIStepper only says + or -, the count lives in the app. Steps toward
+/// the count its label shows (re-read after each round; the step size is learnt from the first round).
+fn swiftui_stepper(inst: &Instance, e: &El, want: f64, before: Option<Snapshot>, after: After) -> Result<Outcome> {
+    let read = || ax::snapshot(inst, SnapOpts::default()).ok().and_then(|s| s.get(&e.r).cloned()).and_then(|x| shown_number(&x));
+    let Some(start) = read().or_else(|| shown_number(e)) else {
+        bail!("set_value @{}: a SwiftUI stepper whose label shows no number: its count is the app's; step it with value \"+N\" / \"-N\"", e.r)
+    };
+    let mut cur = start;
+    let mut step = 1.0;
+    for _ in 0..6 {
+        if (cur - want).abs() < step / 2.0 {
+            let did = format!("set @{} (SwiftUI stepper) from {start} to {cur}", e.r);
+            return Ok(ax::outcome(inst, did, before, after));
+        }
+        let n = ((want - cur) / step).round() as i64;
+        let r = ax::ask_pid(inst, e.pid, &json!({"op": "setvalue", "oid": e.oid, "value": format!("{n:+}")}), Duration::from_secs(10))?;
+        if let Some(err) = r["error"].as_str() {
+            bail!("set_value @{}: {err}", e.r);
+        }
+        ax::settle(inst, Duration::from_millis(150), Duration::from_millis(1500));
+        let Some(now) = read() else { bail!("set_value @{}: its label lost its number after stepping", e.r) };
+        if now == cur {
+            bail!("set_value @{}: the stepper is at {now} and does not go further toward {want} (its range ends there?)", e.r);
+        }
+        step = ((now - cur) / n as f64).abs().max(f64::EPSILON);
+        cur = now;
+    }
+    bail!("set_value @{}: reached {cur}, not {want}", e.r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +635,16 @@ mod tests {
         assert!(matches!(Submit::of(&json!(true)), Submit::Return));
         assert!(matches!(Submit::of(&json!("Sign Up")), Submit::Tap(_)));
         assert!(matches!(Submit::of(&json!(false)), Submit::None));
+    }
+
+    #[test]
+    fn numbers_in_stepper_labels() {
+        let mut e = lab("e1", "button", "Count: 4, Increment", [0.0; 4]);
+        assert_eq!(shown_number(&e), Some(4.0));
+        e.label = Some("Temperature -3.5 degrees".into());
+        assert_eq!(shown_number(&e), Some(-3.5));
+        e.label = Some("Count, Decrement".into());
+        assert_eq!(shown_number(&e), None);
     }
 
     #[test]
