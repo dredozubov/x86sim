@@ -307,7 +307,8 @@ pub fn status() -> Status {
 
     // device installs and publishing (optional for x86Sim)
     let venv = home().join("pymobile3-venv/bin/python").exists();
-    let auth = std::fs::read_dir(home().join(".local/share/xtool")).is_ok_and(|mut d| d.next().is_some());
+    // xtool keeps its sign-in in ~/.config/xtool/data (XTLAuthToken); older builds used ~/.local/share/xtool
+    let auth = xdg("XDG_CONFIG_HOME", ".config").join("xtool/data/XTLAuthToken").exists() || std::fs::read_dir(home().join(".local/share/xtool")).is_ok_and(|mut d| d.next().is_some());
     v.push(piece(
         "device",
         "Real devices",
@@ -317,7 +318,7 @@ pub fn status() -> Status {
             (true, false) => "pymobiledevice3 ready; not signed in to an Apple ID (only for installs on a real iPhone)".to_string(),
             (false, _) => "pymobiledevice3 not installed (only for real iPhones; the toolchain step installs it)".to_string(),
         },
-        if auth { "" } else { "x86sim dev auth (interactive Apple ID sign-in, in a terminal)" },
+        if auth { "" } else { "x86sim account login --signing (or Settings > Apple Account in the launcher)" },
     ));
 
     // the Swift toolchain's lldb for `x86sim debug` (optional: /usr/bin/lldb is the fallback)

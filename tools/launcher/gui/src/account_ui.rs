@@ -30,6 +30,7 @@ struct Shared {
 pub struct AccountUi {
     apple_id: String,
     password: String,
+    signing: bool,
     code: String,
     status: Arc<Mutex<Option<Result<account::Status, String>>>>,
     checking: Arc<Mutex<bool>>,
@@ -84,7 +85,7 @@ impl AccountUi {
         });
     }
 
-    fn start_login(&mut self, ctx: &egui::Context) {
+    fn start_login(&mut self, ctx: &egui::Context, signing_only: bool) {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (ctx_tx, code_rx) = channel();
         let (ch_tx, choice_rx) = channel();
@@ -94,10 +95,11 @@ impl AccountUi {
         let id = self.apple_id.trim().to_string();
         // the password moves to the thread; the field is cleared at once
         let mut pw = std::mem::take(&mut self.password);
+        let signing = self.signing;
         let mut ask = GuiAsk { shared: shared.clone(), code_rx, choice_rx, ctx: ctx.clone() };
         let (st, ctx2) = (self.status.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let r = account::login(&id, &mut pw, &mut ask).map(Some);
+            let r = if signing_only { account::login_signing(&id, &mut pw, &mut ask).map(|_| None) } else { account::login(&id, &mut pw, signing, &mut ask).map(Some) };
             let mut g = shared.lock().unwrap();
             g.done = Some(match r {
                 Ok(s) => {
@@ -133,7 +135,7 @@ impl App {
         let st = self.account.status.lock().unwrap().clone();
         let run = self.account.run.clone();
         let mut sign_out = false;
-        let mut start = false;
+        let mut start: Option<bool> = None;
         list_card(ui, |ui| {
             // a sign-in in progress: its lines, the code or choice it waits for
             if let Some(run) = &run {
@@ -240,10 +242,11 @@ impl App {
                 }
                 Some(Ok(_)) => {}
             }
-            // the sign-in form: when signed out or the session expired
+            // the sign-in form: when signed out, when the session expired, or for xtool alone
             let expired = matches!(&st, Some(Ok(s)) if s.session_ok == Some(false));
+            let signing_off = matches!(&st, Some(Ok(s)) if !s.signing.starts_with("ok"));
             let busy_run = run.as_ref().is_some_and(|r| r.lock().unwrap().done.is_none());
-            if (!signed_in || expired) && !busy_run {
+            if (!signed_in || expired || signing_off) && !busy_run {
                 if signed_in {
                     hline(ui);
                 }
@@ -253,20 +256,26 @@ impl App {
                 form_row(ui, "Password", "Sent only as Apple's SRP proof, never stored. Apple then asks for a two-factor code.", false, |ui| {
                     let r = ui.add(egui::TextEdit::singleline(&mut self.account.password).password(true).desired_width(260.0));
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        start = true;
+                        start = Some(false);
                     }
+                });
+                form_row(ui, "Also sign in for signing", "xtool (device builds, installs, x86sim dev ship) gets the same password once, for its own sign-in with Apple; it uses a third-party anisette service for its device identity.", false, |ui| {
+                    toggle(ui, &mut self.account.signing);
                 });
                 form_row(ui, "", "", true, |ui| {
                     let ok = !self.account.apple_id.trim().is_empty() && !self.account.password.is_empty();
+                    if signed_in && !expired && ui.add_enabled(ok, Btn::secondary("Sign in xtool only")).clicked() {
+                        start = Some(true);
+                    }
                     if ui.add_enabled(ok, Btn::primary("Sign in").icon(icon::SIGN_IN)).clicked() {
-                        start = true;
+                        start = Some(false);
                     }
                 });
             }
         });
-        if start {
+        if let Some(only) = start {
             if !self.account.apple_id.trim().is_empty() && !self.account.password.is_empty() {
-                self.account.start_login(&ctx);
+                self.account.start_login(&ctx, only);
             }
         }
         // a finished sign-in: the status again

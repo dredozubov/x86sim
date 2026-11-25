@@ -13,6 +13,10 @@
 //! devcenter/download.action, then download.developer.apple.com with curl (resumable: a .part file). The .xip is
 //! checked before use: its size, the xar table of contents' checksum, Apple's signature on it (the certificate chain
 //! in the file up to Apple Root CA, pinned by fingerprint; openssl), and the archived checksum of its content.
+//!
+//! Signing (xtool) can't take these cookies: Apple's developer services want a GrandSlam token that needs anisette
+//! data. So `login` can also drive xtool's own password sign-in once, with the user's consent, from the same entry of
+//! the password (and a second code if Apple asks for one): one sign-in for the user.
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
 use num_bigint::BigUint;
@@ -469,9 +473,9 @@ fn auth_headers<'a>(key: &'a str, sess: &'a (String, String)) -> Vec<(&'a str, &
 }
 
 /// Signs in with the Apple ID and password (two-factor through `ask`), keeps the session and returns its status.
-/// `password` is wiped before this returns.
-pub fn login(apple_id: &str, password: &mut String, ask: &mut dyn Ask) -> Result<Status> {
-    let r = login_inner(apple_id.trim(), password, ask);
+/// `password` is wiped before this returns. With `xtool`, xtool's own sign-in (signing) runs with the same password.
+pub fn login(apple_id: &str, password: &mut String, xtool: bool, ask: &mut dyn Ask) -> Result<Status> {
+    let r = login_inner(apple_id.trim(), password, xtool, ask);
     // never keep the password around
     unsafe {
         for b in password.as_mut_vec().iter_mut() {
@@ -482,7 +486,7 @@ pub fn login(apple_id: &str, password: &mut String, ask: &mut dyn Ask) -> Result
     r
 }
 
-fn login_inner(apple_id: &str, password: &str, ask: &mut dyn Ask) -> Result<Status> {
+fn login_inner(apple_id: &str, password: &str, xtool: bool, ask: &mut dyn Ask) -> Result<Status> {
     anyhow::ensure!(!apple_id.is_empty(), "no Apple ID given");
     anyhow::ensure!(!password.is_empty(), "no password given");
     // the old session's cookies: Apple's "trusted browser" cookie skips two-factor while it lasts
@@ -546,7 +550,33 @@ fn login_inner(apple_id: &str, password: &str, ask: &mut dyn Ask) -> Result<Stat
     drop(http);
     let m = save(&s)?;
     ask.say(&format!("Session kept in the {}", if m.store == "keyring" { "Secret Service keyring" } else { "0600 file ~/.config/x86sim/apple-account.session (no keyring found)" }));
+    if xtool {
+        signing_login(apple_id, password, ask)?;
+    }
     status(true)
+}
+
+/// Signs xtool in with the Apple ID unless it already is (its token lasts about a year; a new sign-in replaces it)
+fn signing_login(apple_id: &str, password: &str, ask: &mut dyn Ask) -> Result<()> {
+    match xtool_status() {
+        Some((id, team, exp)) if id.eq_ignore_ascii_case(apple_id) => {
+            ask.say(&format!("xtool is already signed in as {id} (team {team}, until {exp}): kept"));
+            Ok(())
+        }
+        _ => xtool_login(apple_id, password, ask),
+    }
+}
+
+/// Only the signing sign-in (xtool), with the password asked once: for when the account is signed in but xtool isn't
+pub fn login_signing(apple_id: &str, password: &mut String, ask: &mut dyn Ask) -> Result<()> {
+    let r = xtool_login(apple_id.trim(), password, ask);
+    unsafe {
+        for b in password.as_mut_vec().iter_mut() {
+            std::ptr::write_volatile(b, 0);
+        }
+    }
+    password.clear();
+    r
 }
 
 /// The sign-in widget key of developer.apple.com's own sign-in page (the page /account redirects to carries it)
@@ -658,7 +688,7 @@ pub fn wait_code(rx: &std::sync::mpsc::Receiver<CodeAnswer>) -> Result<CodeAnswe
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// signing: xtool's own sign-in (its state)
+// signing: xtool's own sign-in, driven once with the same password
 
 /// xtool's sign-in state (`xtool auth status`): (Apple ID, team, token expiry) when signed in
 pub fn xtool_status() -> Option<(String, String, String)> {
@@ -672,6 +702,85 @@ pub fn xtool_status() -> Option<(String, String, String)> {
     }
     let get = |k: &str| t.lines().find_map(|l| l.trim().trim_start_matches("- ").strip_prefix(k).map(|v| v.trim().to_string())).unwrap_or_default();
     Some((get("Apple ID:"), get("Team ID:"), get("Token expiry:")))
+}
+
+/// Runs `xtool auth login --mode password`, typing the password and the code / team choice it asks for into its stdin
+fn xtool_login(apple_id: &str, password: &str, ask: &mut dyn Ask) -> Result<()> {
+    let xt = crate::dev::which("xtool").or_else(|| Some(home().join(".local/bin/xtool")).filter(|p| p.exists())).context("xtool is not installed (x86sim dev setup toolchain): signing not set up")?;
+    ask.say("Signing in xtool (device builds and installs) with the same Apple ID…");
+    let mut c = crate::dev::command(xt);
+    c.args(["auth", "login", "--mode", "password", "--username", apple_id]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut ch = c.spawn().context("running xtool auth login")?;
+    let mut stdin = ch.stdin.take().unwrap();
+    stdin.write_all(password.as_bytes())?;
+    stdin.write_all(b"\n")?;
+    // stdout and stderr in one stream, read by a thread; prompts end without a newline
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    for mut r in [Box::new(ch.stdout.take().unwrap()) as Box<dyn Read + Send>, Box::new(ch.stderr.take().unwrap())] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut b = [0u8; 4096];
+            while let Ok(n) = r.read(&mut b) {
+                if n == 0 || tx.send(b[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(tx);
+    let mut buf = String::new();
+    let mut teams: Vec<String> = vec![];
+    let mut code_retry = false;
+    let deadline = Instant::now() + Duration::from_secs(900);
+    loop {
+        let chunk = match rx.recv_timeout(Duration::from_millis(300)) {
+            Ok(c) => Some(c),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(_) => break,
+        };
+        if Instant::now() > deadline {
+            let _ = ch.kill();
+            bail!("xtool's sign-in took too long");
+        }
+        let Some(chunk) = chunk else { continue };
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        // whole lines: progress (the heads-up text and team list included)
+        while let Some(i) = buf.find('\n') {
+            let line: String = buf.drain(..=i).collect();
+            let l = line.trim();
+            if !l.is_empty() && !l.starts_with("Password") {
+                ask.say(&format!("xtool: {l}"));
+            }
+            // "[N] Team name (TEAMID)" lines of a team choice
+            if let Some(rest) = l.strip_prefix('[').and_then(|r| r.split_once(']')) {
+                teams.push(rest.1.trim().to_string());
+            }
+        }
+        let tail = buf.trim_end();
+        if tail.ends_with("Code:") {
+            buf.clear();
+            let p = CodePrompt { sent: "xtool".into(), sms_to: String::new(), length: 6, phones: vec![], retry: code_retry };
+            code_retry = true;
+            let code = match ask.code(&p)? {
+                CodeAnswer::Code(c) => c,
+                CodeAnswer::Sms(_) => bail!("xtool's sign-in takes the code from your trusted device only"),
+            };
+            stdin.write_all(code.trim().as_bytes())?;
+            stdin.write_all(b"\n")?;
+        } else if tail.starts_with("Choice (") && tail.ends_with(':') {
+            buf.clear();
+            let i = ask.choose("Development team for signing", &teams)?;
+            stdin.write_all(format!("{i}\n").as_bytes())?;
+            teams.clear();
+        }
+    }
+    drop(stdin);
+    let st = ch.wait()?;
+    if !st.success() {
+        bail!("xtool's sign-in failed (exit {}): device builds still need `x86sim dev auth`", st.code().unwrap_or(-1));
+    }
+    ask.say("xtool signed in: device builds and installs use this Apple ID");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -703,7 +812,7 @@ pub fn status(live: bool) -> Result<Status> {
     let xs = xtool_status();
     st.signing = match &xs {
         Some((id, team, exp)) => format!("ok: xtool signed in as {id}, team {team}, token until {exp}"),
-        None => "xtool not signed in (x86sim dev auth)".into(),
+        None => "xtool not signed in (x86sim account login --signing)".into(),
     };
     let Some(m) = load_meta() else {
         st.renew = "not signed in: x86sim account login".into();

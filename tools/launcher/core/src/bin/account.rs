@@ -10,12 +10,15 @@ const USAGE: &str = "usage: x86sim account <command> [args]
   status [--json] [--offline]
                        the Apple ID signed in, what it can do (developer downloads, signing with xtool) and when it
                        needs renewing; asks Apple whether the session still works (--offline: don't)
-  login [APPLE_ID] [--password-file FILE]
+  login [APPLE_ID] [--signing | --signing-only] [--password-file FILE]
                        sign in: Apple ID, password (asked without echo; never stored) and a two-factor code (from
                        your trusted devices, or type `sms` for a text message). The session goes into the Secret
-                       Service keyring (else a 0600 file in ~/.config/x86sim).
+                       Service keyring (else a 0600 file in ~/.config/x86sim). --signing also signs xtool in with the
+                       same password (device builds, installs: x86sim dev device / ship), once; an xtool already
+                       signed in with this Apple ID is kept. --signing-only: only xtool's sign-in.
                        Two-factor codes are read from the terminal, or from stdin when it is not one.
-  logout               forget the session
+  logout [--keep-signing]
+                       forget the session; xtool's sign-in too unless --keep-signing
   download-xcode [VERSION] [--list] [--dir DIR] [--no-setup] [--no-devicetypes] [--update-devicetypes] [--delete-xip]
                        download Xcode.xip (default: the dev toolchain's Xcode, its newest release; VERSION: 27.2,
                        27, \"27.3 beta 2\") into DIR (default: your download folder; resumes a .part), check Apple's
@@ -168,6 +171,8 @@ fn run(cmd: &str, mut args: Vec<String>) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::from(if s.signed_in && s.session_ok != Some(false) { 0 } else { 1 }))
         }
         "login" => {
+            let signing = take_flag(&mut args, "--signing");
+            let signing_only = take_flag(&mut args, "--signing-only");
             let pwfile = take_opt(&mut args, "--password-file");
             let id = match args.first().filter(|a| !a.starts_with('-')) {
                 Some(a) => a.clone(),
@@ -178,13 +183,27 @@ fn run(cmd: &str, mut args: Vec<String>) -> anyhow::Result<ExitCode> {
                 Some(f) => std::fs::read_to_string(&f)?.lines().next().unwrap_or("").to_string(),
                 None => read_line("Password: ", true)?,
             };
-            let s = account::login(&id, &mut pw, &mut Term)?;
+            if signing_only {
+                account::login_signing(&id, &mut pw, &mut Term)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            if signing {
+                println!("--signing: xtool gets the same password once, for its own sign-in with Apple (it talks to Apple's developer services as a Mac would, using a third-party anisette service for the device identity; the password goes only to Apple)");
+            }
+            let s = account::login(&id, &mut pw, signing, &mut Term)?;
             print_status(&s);
             Ok(ExitCode::SUCCESS)
         }
         "logout" => {
+            let keep = take_flag(&mut args, "--keep-signing");
             let had = account::logout()?;
             println!("{}", if had { "signed out" } else { "was not signed in" });
+            if !keep && account::xtool_status().is_some() {
+                let mut c = x86sim_core::dev::command(x86sim_core::dev::which("xtool").unwrap_or_else(|| PathBuf::from("xtool")));
+                c.args(["auth", "logout"]);
+                let ok = c.status().map(|s| s.success()).unwrap_or(false);
+                println!("{}", if ok { "xtool signed out" } else { "xtool's sign-out failed (xtool auth logout)" });
+            }
             Ok(ExitCode::SUCCESS)
         }
         "download-xcode" | "xcode" => {
