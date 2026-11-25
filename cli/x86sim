@@ -171,8 +171,9 @@ Tests (as xcodebuild test-without-building; cli/libexec/xctest.py, `x86sim test 
                        run XCTest unit / logic tests and XCUITest UI tests (UI tests: the device's xctest feature):
                        per-test results, failures with file:line, junit.xml + results.json; exit 0 passed, 1 failed.
                        XCTest's frameworks come from Xcode (sdks/<Platform>.platform or the x86sim dev SDK)
-  test fetch-platform [ios|tvos|watchos|xros]
-                       copy Xcode's XCTest frameworks for that simulator from $X86SIM_MAC into sdks/
+  test fetch-platform [ios|tvos|watchos|xros] [--platform DIR]
+                       copy Xcode's XCTest frameworks for that simulator into sdks/, from the Darwin SDK that
+                       `x86sim dev setup sdk --xip Xcode.xip` builds on Linux (or DIR)
 
 Develop apps (omarchy-apple-dev, external/omarchy-apple-dev; `x86sim dev help` for all)
   dev status | setup [all|swift|toolchain|sdk --xip X|repair|verify] [--bg] | job [--follow]

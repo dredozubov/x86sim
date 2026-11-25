@@ -329,8 +329,9 @@ x86sim test qa --spm MyPackage                          # a Swift package's test
   / `x86sim test --spm`, which builds its tests on Linux with the `x86sim dev` toolchain. Test bundles inside an Xcode
   project (an app's unit tests, UI test runners) need Xcode's build system.
 - **XCTest's frameworks** (`XCTest.framework`, `XCTestCore`, `XCUIAutomation`, `libXCTestBundleInject.dylib`) are
-  Xcode's, not the runtime's: `x86sim test` takes them from `sdks/<Platform>.platform` (`x86sim test fetch-platform`
-  copies them from `$X86SIM_MAC`), `--platform DIR`, or the SDK `x86sim dev setup sdk --xip` installed.
+  Xcode's, not the runtime's: `x86sim test` takes them from the Darwin SDK `x86sim dev setup sdk --xip Xcode.xip` builds
+  on Linux (Xcode.xip from developer.apple.com, a free Apple ID; Apple publishes no XCTest download without one),
+  `sdks/<Platform>.platform` (`x86sim test fetch-platform` copies them there) or `--platform DIR`.
 - **Every platform**: `tests/apps/XCTestDemo` builds for iOS, tvOS, watchOS and visionOS (`X86SIM_PLATFORM=tvos
   tests/apps/XCTestDemo/build.sh`; `run.sh <phone>` picks the phone's). Its unit, logic and UI tests give Apple's
   results on iPhone, iPad, Apple TV, Apple Watch and Vision Pro.
