@@ -162,8 +162,10 @@ and `WatchSimulator.sdk`, from Xcode or made by `build/sdk/sim-sdk.py --runtime 
 the iOS one. Xcode's WatchSimulator.sdk has no IOKit, IOSurface, Metal or SystemConfiguration (private on watchOS),
 which our binaries need: use the substitute for watchOS.
 
-`cargo install apple-codesign` for signing either way. Metal shader sources are the exception: `build/linux-metal.sh`
-serves recorded Mac-built libraries (`build/metal-cache`) and a changed shader still needs a Mac.
+`cargo install apple-codesign` for signing either way. Metal shaders (`xcrun metal` / `metallib`, the probe library and
+sdkcov's Core Image kernels) compile with Apple's own Metal toolchain, a public download like the runtimes
+(`build/metal-toolchain.py fetch`: about 840 MB from Apple, 380 MB kept in `sdks/metal-<build>/`), run under Darling by
+`build/linux-metal.sh`.
 
 A committed binary can be checked against its source this way too: rebuild it and compare (the only differences
 should be the LC_UUID, the code signature and clang's temp-object names in the debug map).

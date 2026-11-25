@@ -248,7 +248,7 @@ PL
 		# the Mac, the archive Xcode's scene editor writes: root + _gkScene) for func:GameplayKit.gkscene-from-sks;
 		# sdkcovChapters.mov / sdkcovStall.mov (res/sdkcovMovies.swift on the Mac) for checks/P22_Gaps.swift's watchOS-capable AVFoundation checks
 		cp sdkcov/res/*.sks sdkcov/res/*.mov \$APP/
-		# sdkcovCI.metallib: the platform's stitchable Core Image kernels (res/sdkcovCI.sh, Metal Toolchain on the Mac)
+		# sdkcovCI.metallib: the platform's stitchable Core Image kernels (res/sdkcovCI.sh: Apple's Metal toolchain under Darling)
 		# sdkcovHLS.url: a YouTube HLS master playlist URL for func:AVFoundation.hls-remote-youtube (signed, expires: not in git)
 		if [ -f sdkcov/res/sdkcovHLS.url ]; then cp sdkcov/res/sdkcovHLS.url \$APP/; fi
 		if [ -f sdkcov/res/sdkcovCI-$p.metallib ]; then cp sdkcov/res/sdkcovCI-$p.metallib \$APP/sdkcovCI.metallib; fi

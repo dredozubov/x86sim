@@ -57,7 +57,7 @@ clang|clang++|cc|c++)
 	[ -n "$nopauth" ] && set -- -Xclang -target-feature -Xclang -pauth "$@"
 	exec $cc -isysroot "$SDK" -fuse-ld=lld -Wno-unused-command-line-argument -Wno-error=incompatible-pointer-types "$@" ;;
 swiftc) need linux-swiftc.sh; exec "$X/build/linux-swiftc.sh" -sdk "$SDK" "$@" ;;
-metal|metallib) need linux-metal.sh; exec "$X/build/linux-metal.sh" "$@" ;;
+metal|metallib) need linux-metal.sh; SDKROOT=$SDK exec "$X/build/linux-metal.sh" "$tool" "$@" ;;
 lipo|otool|nm|install_name_tool|strip|size|objdump) exec "llvm-$(echo $tool | tr _ -)" "$@" ;;
 *) echo "xcrun (linux): no Linux equivalent for $tool" >&2; exit 1 ;;
 esac

@@ -19,10 +19,10 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 | `host/simshim/diag/arm64/*.dylib` (29 diagnostic shims) | Linux (lld) | yes: `build/mac-build-diag.sh` | none |
 | `tests/metal/arm64*/mtlprobe` | Linux (lld) | yes: `build/mac-build-arm64-shims.sh mtlprobe` | embeds `tests/metal/shaders/probe_metallib.h`, see Metal below |
 | `tests/arm64/*.sim`, `*.mac` (probes; `.mac` are macOS baselines run on the Mac for comparison) | Linux (lld), except `crashsig.sim` and `threadstack.sim`: Apple `ld` (Mac) | yes: `build/mac-build-arm64-tests.sh` (crashsig builds; threadstack, deadname, forkstress, fp16x, sleepprobe had no line in the script) | done: crashsig/threadstack rebuilt here (both pass in `tests/arm64/run.sh`), every committed C probe has a line in the script |
-| `build/metal-cache/*.metallib` (the probe library) | **Mac** (Xcode 27.1, recorded by `linux-metal.sh`) | no: a cache miss needed the Mac (`X86SIM_METAL_RECORD=1`) | F3: `linux-metal.sh` runs Apple's Metal toolchain (public MobileAsset) under Darling; cache removed |
-| `tests/metal/shaders/probe_metallib.h` (embedded in mtlprobe) | **Mac** (`tests/metal/shaders/build.sh` over ssh) | with F3 | F3: rebuilt with the Linux path |
-| `tests/apps/sdkcov/res/sdkcovCI-{ios,tvos,xros}.metallib` | **Mac** (`res/sdkcovCI.sh`, ssh) | with F3 (the Darling-run compiler gives the same functions and size) | F3: `sdkcovCI.sh` uses the Linux path; libraries rebuilt here |
-| `build/metal-research/{mac,work}/*` (AIR/metallib from the research into running the toolchain under Darling) | `mac/`: **Mac**; `work/`: Darling | n/a (research outputs) | F3: removed; the shim it proved is `build/metal-shim.c` |
+| `build/metal-cache/*.metallib` (the probe library) | **Mac** (Xcode 27.1, recorded by `linux-metal.sh`) | no: a cache miss needed the Mac (`X86SIM_METAL_RECORD=1`) | done (F3): `linux-metal.sh` runs Apple's Metal toolchain (`build/metal-toolchain.py`: a public MobileAsset) under Darling; cache removed |
+| `tests/metal/shaders/probe_metallib.h` (embedded in mtlprobe) | **Mac** (`tests/metal/shaders/build.sh` over ssh) | yes (F3) | done: rebuilt here (toolchain 27B47 instead of the Mac's 27.1: same functions, a few bytes per function differ); mtlprobe passes as before on a phone (48 of 49, the one failure, the 1206-wide IOSurface render, is the same with the Mac-built library) |
+| `tests/apps/sdkcov/res/sdkcovCI-{ios,tvos,xros}.metallib` | **Mac** (`res/sdkcovCI.sh`, ssh) | yes (F3): rebuilt byte-identical to the Mac's | done: `sdkcovCI.sh` runs here (the visionOS substitute SDK needed CoreImage.metallib: `build/sdk/sim-sdk.py` now copies framework Metal libraries from the runtime) |
+| `build/metal-research/{mac,work}/*` (AIR/metallib from the research into running the toolchain under Darling) | `mac/`: **Mac**; `work/`: Darling | n/a (research outputs) | done: removed; the shim it proved is `build/metal-shim.c` |
 | `tests/metal/shaders/captured/*.wire.metallib` | x86Sim on Linux (what the guest's MTLSimImplementation hands metalhostd, `docs/METAL.md`) | yes (captured from a phone) | none |
 | `tests/apps/sdkcov/res/sdkcovChapters.mov`, `sdkcovStall.mov` | **Mac** (`res/sdkcovMovies.swift` run as a macOS program) | not yet | the generator is portable AVFoundation code: run it as a guest program on a phone (see "Open" below) |
 | `tests/apps/sdkcov/res/sdkcovGK.sks` | **Mac** (`res/sdkcovGK.swift`, macOS program) | not yet | same: a guest program on a phone (see "Open") |
@@ -37,8 +37,8 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 | Script | Used the Mac for | Fix |
 |---|---|---|
 | `build/mac-env.sh` (`X86SIM_BUILD=mac`) | building every simulator-side binary over ssh when `sdks/` was missing | the Mac path is removed: without `sdks/` the build says how to make them (`make sdks`) |
-| `build/linux-metal.sh` (`X86SIM_METAL_RECORD=1`) | compiling Metal shaders on a cache miss | F3 |
-| `tests/metal/shaders/build.sh`, `tests/apps/sdkcov/res/sdkcovCI.sh` | `xcrun metal` on the Mac | F3 |
+| `build/linux-metal.sh` (`X86SIM_METAL_RECORD=1`) | compiling Metal shaders on a cache miss | done (F3) |
+| `tests/metal/shaders/build.sh`, `tests/apps/sdkcov/res/sdkcovCI.sh` | `xcrun metal` on the Mac | done (F3): run here |
 | `cli/libexec/xctest.py` (`x86sim test fetch-platform`) | copying Xcode's `<Platform>.platform` XCTest files from the Mac | F1: taken from Xcode.xip on Linux (the Darwin SDK `x86sim dev setup sdk --xip` builds) |
 | `tests/apps/XCTestDemo/build.sh` | `xcodebuild build-for-testing` of the XCTest fixture | F1 (see there) |
 | `cli/libexec/arm64/fetch-macos-host.sh` | copying `/System/Library/GeoServicesData` (Maps' seed resource manifest) | F2: from Apple's Maps resource service on Linux |
