@@ -284,6 +284,48 @@ pub fn field_el(inst: &Instance, target: &str) -> Result<El> {
     now.get(&e.r).cloned().or_else(|| find_field(&now, target).ok()).ok_or_else(|| anyhow::anyhow!("{target:?} scrolled into view, then not found"))
 }
 
+fn is_control(e: &El) -> bool {
+    !matches!(e.role.as_str(), "text" | "heading" | "image" | "element" | "webview")
+}
+
+/// A control a target means (a submit button): the best match on screen when it is one; else a control that matches
+/// as well and is scrolled out of view (a form's button far down, below a title with the same words), scrolled in
+pub fn control_el(inst: &Instance, target: &str) -> Result<El> {
+    let snap = ax::snapshot(inst, SnapOpts::default())?;
+    let here = ax::find(&snap, target).cloned();
+    if here.as_ref().is_ok_and(is_control) || !matches!(ax::parse_target(target), Target::Text(_)) {
+        return here;
+    }
+    let all = ax::snapshot(inst, SnapOpts { all: true, ..Default::default() })?;
+    let Some(e) = ax::find_all_q(&all, &ax::parse_target(target), 2).into_iter().find(|e| is_control(e) && !e.covered).cloned() else { return here };
+    if !e.offscreen {
+        return Ok(e);
+    }
+    let t = ax::parse_target(target);
+    // in view and away from the screen's edges (a touch in the bottom strip is the home indicator's)
+    let inside = |s: &Snapshot, x: &El| !x.offscreen && {
+        let cy = x.frame[1] + x.frame[3] / 2.0;
+        cy > 50.0 && cy < s.screen.1 - 50.0
+    };
+    let found = |s: &Snapshot| s.get(&e.r).filter(|x| inside(s, x)).cloned().or_else(|| ax::find_all_q(s, &t, 2).into_iter().find(|x| is_control(x) && inside(s, x)).cloned());
+    let _ = ax::scroll_into_view(inst, &e);
+    let now = ax::snapshot(inst, SnapOpts::default())?;
+    if let Some(x) = found(&now) {
+        return Ok(x);
+    }
+    // the app said it scrolled and did not (a SwiftUI button's accessibilityScrollToVisible): scroll toward it
+    let dir = if e.frame[1] > now.screen.1 / 2.0 { "down" } else { "up" };
+    for i in 0..10 {
+        ax::scroll(inst, dir, if i == 0 { 0.6 } else { 0.3 }, None, After::None)?;
+        ax::settle(inst, Duration::from_millis(200), Duration::from_millis(1500));
+        let now = ax::snapshot(inst, SnapOpts::default())?;
+        if let Some(x) = found(&now) {
+            return Ok(x);
+        }
+    }
+    bail!("{target:?} is out of view and scrolling {dir} did not bring it in")
+}
+
 /// The top of the software keyboard on screen (its keys' and suggestion bar's), when it is up
 fn keyboard_top(s: &Snapshot) -> Option<f64> {
     if !ax::software_keyboard_up(s) {
@@ -378,7 +420,7 @@ pub fn fill(inst: &Instance, fields: &[FillField], submit: &Submit, after: After
             done.push("Return pressed".into());
         }
         Submit::Tap(t) => {
-            let (e, _) = ax::resolve(inst, t)?;
+            let e = control_el(inst, t)?;
             let e = clear_of_keyboard(inst, e)?;
             let o = ax::tap(inst, &format!("@{}", e.r), 80, After::None)?;
             done.push(o.did);
