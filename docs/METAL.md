@@ -7,9 +7,11 @@ function constants, compute pipelines, compute encoders, samplers, threadgroup m
 render encoders with all bindings, fixed-function state and draws, textures over IOSurfaces shared across
 processes, imported without copies). mtlprobe: 46/46.
 
-**Metal is on by default** in the launcher (its boot setting passes `X86SIM_METAL=all` to
-`cli/libexec/arm64/boot-a64.sh`; `X86SIM_METAL=0`, boot-a64.sh's own default when run by hand, gives the software
-renderer). CoreAnimation's own Metal renderer composites the screen on the host GPU into
+**Metal is on by default**, in the launcher (its boot setting passes `X86SIM_METAL=all` to
+`cli/libexec/arm64/boot-a64.sh`) and in boot-a64.sh run by hand (`all` when `X86SIM_METAL` is unset); `X86SIM_METAL=0`
+gives the software renderer. With software rendering iconservicesagent has no Core Image context (CoreUI's
+`+[CUIShapeEffectStack sharedCIContext]` is nil without a Metal device and it traps), so icons it has not cached yet,
+such as Settings' row icons, stay gray placeholders. CoreAnimation's own Metal renderer composites the screen on the host GPU into
 SimFramebuffer's swapchain IOSurfaces, and it draws the iOS 26 glass dock platter that the software renderer leaves
 out. MercuryPosterExtension draws the default wallpaper, which matches a Mac's since the `uint4` alignment fix
 (docs/screens/36-metal-wallpaper-astc-fixed.png, 37). Apps get
@@ -79,7 +81,8 @@ running one (`A64_MTLVK_SOCKET`), and waits up to 5 s for the socket. If mtlvk d
 - `X86SIM_METAL=proc1,proc2`: `com.apple.metal.simulator.<proc>` for those processes (MTLSimDriver looks up
   `com.apple.metal.simulator.<getprogname()>` first).
 - `X86SIM_METAL=backboardd`: CoreAnimation's render server (backboardd) composites with Metal. Every other process
-  keeps the software path.
+  keeps the software path, except iconservicesagent: mksimdevice.py adds it to every process list, as it cannot render
+  icons without a device.
 - `X86SIM_METAL=all`: also the generic `com.apple.metal.simulator`, so every process gets a device (SpringBoard,
   the wallpaper poster, RenderBox, apps). **This is the launcher's default.**
 - `X86SIM_METAL=backboardd,PosterBoard,MercuryPosterExtension`: CA plus the wallpaper only (apps stay software).
