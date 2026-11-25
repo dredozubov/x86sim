@@ -2984,6 +2984,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui-phosphor",
+ "libc",
  "serde_json",
  "x86sim-core",
 ]

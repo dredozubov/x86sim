@@ -272,6 +272,21 @@ pub const USAGE: &str = "usage: x86sim inspect [PHONE] [--url PATTERN] [--list] 
   --list         only list the pages
   --no-open      print the URL instead of opening a browser";
 
+/// The Web Inspector for `inst` in a browser on this machine: its page list, or the inspector on `page` (a WebPage id),
+/// served by x86sim serve (started if needed). `x86sim inspect` and the launcher open it.
+pub fn inspector_url(inst: &Instance, page: Option<&str>) -> anyhow::Result<String> {
+    ui_dir().map_err(|e| anyhow::anyhow!("{e:#} (the web_* MCP tools work without it)"))?;
+    let st = match super::status() {
+        Some(st) => st,
+        None => super::start(&super::Options::default()).map_err(|e| anyhow::anyhow!("starting x86sim serve: {e:#}"))?,
+    };
+    let mut u = format!("{}inspect/{}?t={}", st.local_url, super::server::pct_encode(&inst.id), st.control_token);
+    if let Some(p) = page {
+        u.push_str(&format!("&page={}", super::server::pct_encode(p)));
+    }
+    Ok(u)
+}
+
 /// `x86sim inspect` (x86sim-serve inspect ...): exit status
 pub fn cli(args: &[String]) -> i32 {
     let (mut phone, mut url, mut list, mut open) = (None::<String>, None::<String>, false, true);
@@ -339,24 +354,13 @@ pub fn cli(args: &[String]) -> i32 {
         },
         None => None,
     };
-    if let Err(e) = ui_dir() {
-        eprintln!("x86sim inspect: {e:#} (the web_* MCP tools work without it)");
-        return 1;
-    }
-    let st = match super::status() {
-        Some(st) => st,
-        None => match super::start(&super::Options::default()) {
-            Ok(st) => st,
-            Err(e) => {
-                eprintln!("x86sim inspect: starting x86sim serve: {e:#}");
-                return 1;
-            }
-        },
+    let u = match inspector_url(&inst, page.as_ref().map(|p| p.id.as_str())) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("x86sim inspect: {e:#}");
+            return 1;
+        }
     };
-    let mut u = format!("{}inspect/{}?t={}", st.local_url, super::server::pct_encode(&inst.id), st.control_token);
-    if let Some(p) = &page {
-        u.push_str(&format!("&page={}", super::server::pct_encode(&p.id)));
-    }
     println!("{u}");
     if open {
         let _ = std::process::Command::new("xdg-open").arg(&u).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();

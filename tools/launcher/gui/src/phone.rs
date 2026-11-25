@@ -430,8 +430,15 @@ impl App {
                                 v.hold("lock", 2500);
                             }
                         }
+                        if platform == "ios" && tool(ui, icon::RADIO_BUTTON, "Action button") {
+                            press = Some("action");
+                        }
+                        let switcher = tool(ui, icon::CARDS, "App Switcher");
                         if let (Some(b), Some(v)) = (press, self.viewer(id)) {
                             v.press(b);
+                        }
+                        if let (true, Some(v)) = (switcher, self.viewer(id)) {
+                            v.send("appswitcher");
                         }
                         // Inputs 2: Device > Rotate Left / Right (iPhone, iPad) and Shake, as in Apple's simulator
                         ui.add_space(S2);
@@ -468,10 +475,27 @@ impl App {
                         // a gap, not a rule, between the device's buttons and the launcher's own tools
                         ui.add_space(S3);
                     }
+                    // Apple Watch: the hand gestures (watchOS's double tap and wrist flick)
+                    if platform == "watchos" {
+                        let mut g = None;
+                        if tool(ui, icon::HAND_TAP, "Double tap (pinch twice)") {
+                            g = Some("gesture doubletap");
+                        }
+                        if tool(ui, icon::HAND_WAVING, "Wrist flick") {
+                            g = Some("gesture wristflick");
+                        }
+                        if let (Some(l), Some(v)) = (g, self.viewer(id)) {
+                            v.send(l);
+                        }
+                        ui.add_space(S3);
+                    }
                     // Share: this phone in a browser tab (share.rs)
                     if let Some(inst) = self.inst(id).cloned() {
                         self.share_tool(ui, &inst);
                         crate::axinspect_ui::tool(ui, &inst, live);
+                    }
+                    if let Some(inst) = self.inst(id).cloned() {
+                        self.record_tool(ui, &inst, live);
                     }
                     if tool(ui, icon::CAMERA, "Save a screenshot to Pictures") {
                         let r = self.viewer(id).map(|v| v.screenshot(&name));
@@ -758,6 +782,14 @@ impl App {
         }
         hline(ui);
 
+        // ---- Web Inspector: the device's web pages in WebKit's inspector (no web views on a watch)
+        if inst.platform != "watchos" {
+            if self.fold_section(ui, "web", "Web Inspector", "", "") {
+                self.web_section(ui, inst, phase == Phase::Running);
+            }
+            hline(ui);
+        }
+
         // ---- Performance
         // no summary: memory and CPU are the tiles at the top
         if self.fold_section(ui, "perf", "Performance", "", "") {
@@ -779,7 +811,7 @@ impl App {
 
     fn fold_section(&mut self, ui: &mut egui::Ui, key: &'static str, title_text: &str, summary: &str, tip: &str) -> bool {
         let open = self.open.contains(key);
-        let hint = match key { "features" => "f", "logs" => "l", "perf" => "p", "share" | "ax" => "", _ => "a" };
+        let hint = match key { "features" => "f", "logs" => "l", "perf" => "p", "share" | "ax" | "web" => "", _ => "a" };
         if fold(ui, title_text, summary, tip, hint, open) != open {
             if open {
                 self.open.remove(key);
@@ -981,6 +1013,10 @@ impl App {
             ui.add_space(S3);
             return;
         };
+        if let Some(inst) = self.inst(id).cloned() {
+            self.profile_button(ui, &inst);
+            ui.add_space(S2);
+        }
         let fps = self.viewers.get(id).map(|v| v.fps()).unwrap_or(0);
         // the process count is in the overview above; here only the screen's rate, then who uses what
         kv_text(ui, 104.0, "Screen updates", if fps > 0 { format!("{fps} fps") } else { "Idle".to_string() });

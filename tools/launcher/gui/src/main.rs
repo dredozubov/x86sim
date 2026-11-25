@@ -7,6 +7,7 @@ mod axinspect_ui;
 mod develop;
 mod devctl_ui;
 mod duo3d;
+mod extras;
 mod global;
 mod home;
 mod omarchy;
@@ -134,6 +135,8 @@ pub struct App {
     pub rt_delete: rtdelete_ui::RtDeleteUi,
     /// phone page: Simulate section (devctl_ui.rs)
     pub devctl: devctl_ui::DevctlUi,
+    /// recording, CPU profile, Web Inspector, share links (extras.rs)
+    pub extras: extras::Extras,
     /// the GPU helper count (checked every few seconds, not per frame)
     pub gpu_helpers: usize,
     pub sizes: Arc<Mutex<HashMap<std::path::PathBuf, u64>>>,
@@ -232,7 +235,7 @@ impl App {
         };
         let mut open = HashSet::new();
         for k in std::env::var("X86SIM_LAUNCHER_OPEN").unwrap_or_default().split(',') {
-            for key in ["features", "logs", "perf", "adv", "share", "sim", "ax"] {
+            for key in ["features", "logs", "perf", "adv", "share", "sim", "ax", "web"] {
                 if k == key {
                     open.insert(key);
                 }
@@ -271,6 +274,7 @@ impl App {
             confirm_discard: None,
             rt_delete: Default::default(),
             devctl: Default::default(),
+            extras: Default::default(),
             gpu_helpers: 0,
             sizes: Arc::new(Mutex::new(HashMap::new())),
             measuring: false,
@@ -697,6 +701,7 @@ impl eframe::App for App {
         theme::poll(ctx);
         self.sync();
         self.devctl_poll();
+        self.extras_poll();
         self.cursor_device = None;
         self.shortcuts(ctx);
         // drag-and-drop installs (.app / .ipa / .xcarchive) and the pool section's background work (pool.rs)

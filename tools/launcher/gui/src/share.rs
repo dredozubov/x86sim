@@ -206,6 +206,8 @@ impl App {
                 ui.label(muted(format!("Links expire in {} min", e.saturating_sub(share::now_s()) / 60)));
             }
         }
+        // links of its own: who can drive, how long, a QR code, revoke (extras.rs)
+        self.links_section(ui, inst);
     }
 }
 
