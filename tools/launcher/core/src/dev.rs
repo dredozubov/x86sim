@@ -326,6 +326,9 @@ pub fn status() -> Status {
     if let Some(p) = crate::devpods::status_piece() {
         v.push(p);
     }
+    // Rust apps (optional)
+    let (state, detail, fix) = crate::devrust::status();
+    v.push(piece("rust", "Rust", state, detail, fix));
 
     // the Swift toolchain's lldb for `x86sim debug` (optional: /usr/bin/lldb is the fallback)
     if let Some(p) = swift_lldb_status() {
@@ -694,7 +697,8 @@ pub struct Project {
     pub dir: PathBuf,
     pub name: String,
     /// xtool (Package.swift + xtool.yml: builds here), flutter, expo / reactnative (package.json: CocoaPods workspace
-    /// built by the fork's xcbuild.py), swiftpm (no xtool.yml), xcodeproj (convert it first)
+    /// built by the fork's xcbuild.py), rust (a cargo package: builds here with rust/build.py), swiftpm (no xtool.yml),
+    /// xcodeproj (convert it first)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
@@ -716,12 +720,14 @@ pub fn project(dir: &Path) -> Result<Project> {
         "flutter"
     } else if let Some(k) = crate::devpods::js_kind(&dir) {
         k
+    } else if let Some(r) = crate::devrust::detect(&dir) {
+        return Ok(Project { name: r.name, kind: "rust".into(), bundle_id: r.bundle_id, app: r.app, dir });
     } else if dir.join("Package.swift").exists() {
         "swiftpm"
     } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj")) {
         "xcodeproj"
     } else {
-        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml or .xcodeproj)", dir.display());
+        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml, Cargo.toml or .xcodeproj)", dir.display());
     };
     let y = yml.unwrap_or_default();
     let name = yml_value(&y, "product").unwrap_or(base);
@@ -820,12 +826,18 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
             say(&format!("app: {}", app.display()));
             return Ok(app);
         }
+        "rust" if o.platform != "ios" => bail!("{}: Rust apps build for iOS phones here (aarch64-apple-ios-sim); this phone runs {}", p.dir.display(), o.platform),
+        "rust" => {}
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
         "xcodeproj" => bail!("{}: an Xcode project: convert it first (x86sim dev convert {}/<App>.xcodeproj)", p.dir.display(), p.dir.display()),
         _ => bail!("{}: a SwiftPM package without xtool.yml (add one: `version: 1` and `bundleID: com.you.App`)", p.dir.display()),
     }
     let st = status();
-    if !st.ready_sim {
+    if p.kind == "rust" {
+        let mut why = crate::devrust::missing();
+        why.extend(st.pieces.iter().filter(|x| x.id == "sdk" && x.state != "ok").map(|x| format!("{}: {}", x.title, x.detail)));
+        anyhow::ensure!(why.is_empty(), "the Rust iOS build is not ready ({}); see x86sim dev status", why.join("; "));
+    } else if !st.ready_sim {
         let why: Vec<String> = st.pieces.iter().filter(|x| matches!(x.id, "swift" | "xtool" | "sdk" | "fork") && x.state != "ok" && x.state != "warn").map(|x| format!("{}: {}", x.title, x.detail)).collect();
         if !why.is_empty() {
             bail!("the toolchain is not ready ({}); see x86sim dev status", why.join("; "));
@@ -836,8 +848,13 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
     let mut log = std::fs::File::create(&log_path).ok();
     let t = triple(&o.platform);
     say(&format!("== build {} for {t} ({})", p.name, if o.release { "release" } else { "debug" }));
-    let mut c = command("bash");
-    c.arg(fork_dir().join("ship.sh")).arg("--simulator").current_dir(&p.dir).env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
+    let c = if p.kind == "rust" {
+        crate::devrust::build_command(&p.dir, o.release)
+    } else {
+        let mut c = command("bash");
+        c.arg(fork_dir().join("ship.sh")).arg("--simulator").current_dir(&p.dir).env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
+        c
+    };
     let mut app_line = None;
     let rc = stream(c, &mut |l: &str| {
         if let Some(f) = log.as_mut() {
@@ -917,7 +934,7 @@ pub fn run(dir: &Path, inst: &Instance, o: &RunOpts, say: &mut dyn FnMut(&str)) 
     let t0 = Instant::now();
     let p = project(dir)?;
     let app = if o.no_build {
-        p.app.clone().context("no earlier build (xtool/<App>.app): build first")?
+        p.app.clone().context("no earlier build (xtool/<App>.app, target/ios-sim/<App>.app for Rust): build first")?
     } else {
         build(&p.dir, &BuildOpts { platform: inst.platform.clone(), release: o.release }, say)?
     };
@@ -1091,7 +1108,7 @@ pub fn mcp_tools() -> Vec<serde_json::Value> {
         json!({"name": "dev_new", "description": "Make a new SwiftUI app project (xtool new) in parent (default: ~/x86sim-apps), set up for every simulator platform. Returns its directory.",
                "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "a Swift identifier, e.g. HelloApp"}, "parent": {"type": "string"}}, "required": ["name"]}}),
         json!({"name": "dev_projects", "description": "Recently built app projects: name, kind, bundle id, directory, last build.", "inputSchema": {"type": "object", "properties": {}}}),
-        json!({"name": "dev_build", "description": "Build an xtool project for the simulator (omarchy-apple-dev ship.sh --simulator), for a device's platform (or platform: ios, tvos, watchos, xros). Returns the .app path and the build log's tail.",
+        json!({"name": "dev_build", "description": "Build an xtool project (omarchy-apple-dev ship.sh --simulator) or a Rust app (a cargo package; rust/build.py) for the simulator, for a device's platform (or platform: ios, tvos, watchos, xros). Returns the .app path and the build log's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "phone": phone, "platform": {"type": "string", "enum": ["ios", "tvos", "watchos", "xros"]}, "release": {"type": "boolean"}}, "required": ["project"]}}),
         json!({"name": "dev_run", "description": "Build an app project for a device, install it and launch it (the edit-build-run loop). start=true boots the device first when it is off (minutes). args go to the app. Returns the bundle id, the install / launch answers and the log's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "phone": phone, "start": {"type": "boolean"}, "release": {"type": "boolean"}, "no_build": {"type": "boolean"}, "args": args}, "required": ["project"]}}),
