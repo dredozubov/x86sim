@@ -28,6 +28,7 @@ pub mod keymap;
 pub mod logs;
 pub mod pool;
 pub mod profile;
+pub mod record;
 pub mod macho;
 pub mod ring;
 /// Web Inspector: Safari and WKWebView pages over webinspectord (RWI)

@@ -39,6 +39,9 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
                                        Apple's I/O > Keyboard: Toggle Software Keyboard (Cmd-K), Connect Hardware
                                        Keyboard (Shift-Cmd-K; kept across boots)
   open URL | launch BUNDLEID [ARGS] | terminate BUNDLEID
+  record start OUT.mp4 [--max S] | record stop | record status
+                                       screen recording in the background (default at most 300 s); stop finishes the
+                                       file and prints its path, length and size
   app-state [BUNDLEID]                 installed, running, pid(s), foreground / background / suspended, memory, CPU,
                                        uptime, last exit; no BUNDLEID: every running app
   screenshot [OUT.png] [--scale N]     N: divisor (default: the device scale, a picture in points)
@@ -332,6 +335,15 @@ fn run() -> Result<()> {
         "terminate" => {
             need("a bundle id")?;
             print(ax::terminate(&inst, &rest, after)?)
+        }
+        "record" => {
+            let v = match args.first().map(|s| s.as_str()) {
+                Some("start") => x86sim_core::record::start(&inst, std::path::Path::new(args.get(1).map(|s| s.as_str()).unwrap_or("")), max.and_then(|m| m.parse().ok()).unwrap_or(300.0), "h264")?,
+                Some("stop") => x86sim_core::record::stop(&inst)?,
+                Some("status") | None => x86sim_core::record::status(&inst)?,
+                Some(o) => bail!("record start OUT.mp4 [--max S] | stop | status, not {o}"),
+            };
+            println!("{}", serde_json::to_string_pretty(&v)?);
         }
         "app-state" | "appstate" => {
             let v = x86sim_core::appstate::app_state(&inst, args.first().map(|s| s.as_str()))?;

@@ -8,6 +8,8 @@
            memory), sent to the background by Home, terminated (last exit SIGKILL); without bundle_id: running apps
   abort    why an app died: dyld refusing x86dyldfail (a missing symbol) and x86forms calling abort_with_reason
            (recorded by libsimshim) reach app_launch's error and app_state's last exit
+  record   sim_record_video action=start returns at once, status says it records, stop finishes a playable MP4 and
+           answers its length and size; the fixed-length form (secs) still works
   launch   app_launch of an app that exits at once (x86forms --exit-early, exit(3)) fails saying so; a good launch
            still answers its pid
 
@@ -153,6 +155,33 @@ class Run:
         self.check("abort: and in app_state", "the reason agents should see" in text, text[:400])
         self.m.call("app_uninstall", bundle_id="com.x86sim.test.x86dyldfail")
 
+    # -- record: start / stop
+    def record(self, out):
+        import subprocess
+        path = os.path.join(out, "rec-%d.mp4" % os.getpid())
+        text, st, err, dt = self.m.call("sim_record_video", action="start", path=path)
+        self.check("record: start returns at once", not err and dt < 8 and (st or {}).get("recording"), "%.1f s: %s" % (dt, text[:200]))
+        text, _, err, _ = self.m.call("sim_record_video", action="start", path=path + ".2.mp4")
+        self.check("record: a second start is refused", err and "already" in text, text[:160])
+        self.m.call("press", button="home", after="none")
+        self.m.call("swipe", direction="left", after="none")
+        time.sleep(2)
+        text, st, err, _ = self.m.call("sim_record_video", action="status")
+        self.check("record: status: recording", not err and (st or {}).get("recording") and (st or {}).get("secs", 0) >= 2, text[:200])
+        self.m.call("swipe", direction="right", after="none")
+        text, st, err, dt = self.m.call("sim_record_video", action="stop")
+        st = st or {}
+        self.check("record: stop answers the file, its length and size", not err and st.get("bytes", 0) > 1000 and st.get("secs", 0) >= 3, "%.1f s: %s" % (dt, text[:240]))
+        dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip()
+        self.check("record: the MP4 plays (ffprobe reads its length)", dur and abs(float(dur) - st.get("secs", 0)) < 1.5, "ffprobe %s s, answer %s s" % (dur, st.get("secs")))
+        text, _, err, _ = self.m.call("sim_record_video", action="stop")
+        self.check("record: stop with nothing recording is an error", err, text[:120])
+        text, st, err, dt = self.m.call("sim_record_video", path=path + ".fixed.mp4", secs=2)
+        self.check("record: the fixed form (secs) still works", not err and (st or {}).get("bytes", 0) > 1000, "%.1f s: %s" % (dt, text[:160]))
+        for p in (path, path + ".fixed.mp4"):
+            if os.path.exists(p):
+                os.remove(p)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -169,9 +198,9 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["state", "launch", "abort", "delete"]:
+        for name in ["state", "launch", "abort", "record", "delete"]:
             if want(name):
-                getattr(r, name)()
+                getattr(r, name)(*([a.out] if name == "record" else []))
     finally:
         m.close()
     print("%d failed: %s" % (len(r.fails), ", ".join(r.fails)))

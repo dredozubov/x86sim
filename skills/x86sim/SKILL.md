@@ -148,6 +148,7 @@ colours, images, rendering, or when the snapshot shows too little (games, Metal 
 ```sh
 x86sim --phone qa screenshot out.png 3        # newest frame; the number divides the size (3 on a 3x phone = points)
 x86sim --phone qa io recordVideo --secs 10 out.mp4
+x86sim --phone qa record start out.mp4         # in the background (at most 300 s, --max S); record stop finishes it
 ```
 
 Without a divisor the PNG is full device pixels, while snapshot coordinates are points. The MCP `screenshot` tool
@@ -300,7 +301,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `app_state`, `screenshot`,
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `app_state`, `sim_record_video` (`action=start|stop|status`), `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 
