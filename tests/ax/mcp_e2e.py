@@ -9,8 +9,15 @@ running phone. Covers what host/simax + tools/launcher/core/src/ax.rs promise (d
   latency  snapshot time on a heavy screen (Settings search results, a long web page)
   busy     a busy WebContent process is named in the snapshot, the rest still comes
   duo      (an iPhone Duo) snapshot / tap on the outer screen and, unfolded, on the inner screen
+  type     a newline / submit is the Return key: a UIKit field's return, a SwiftUI TextField's onSubmit, a new line in a
+           text view (tests/apps/x86input), a web form, Safari's address bar
+  status   a status bar override (sim_status_bar time=9:41) is what the snapshot reads
+  lock     the Lock Screen is named (locked) and goes after unlocking
+  picker   the photos picker (PHPickerViewController, a hosted extension) is listed and taps reach it
+  sheet    SFSafariViewController (SafariViewService): listed while up; once closed, neither it nor a "busy" line stays
 
-Usage: tests/ax/mcp_e2e.py --phone NAME [--mcp PATH] [--only refs,iframes,...] [--out DIR]
+Usage: tests/ax/mcp_e2e.py --phone NAME [--mcp PATH] [--only refs,iframes,...] [--out DIR] [--input-app PATH]
+type / picker / sheet install tests/apps/x86input (tests/apps/build.sh x86input; default $X86SIM_SCRATCH/apps).
 The web checks serve test pages from this machine (the phone reaches it at 127.0.0.1). Exit status: failed checks.
 Use a phone of your own: the checks rotate, fold, open and terminate apps.
 """
@@ -96,6 +103,9 @@ PAGES = {
     # the WebContent process busy for 20 s, 2 s after the page loaded
     "/busy.html": """<!doctype html><meta name=viewport content='width=device-width'><title>Busy</title><p>Busy page</p>
 <script>setTimeout(() => { const t = Date.now(); while (Date.now() - t < 20000) {} document.title = 'Done'; }, 2000)</script>""",
+    "/form.html": """<!doctype html><meta name=viewport content='width=device-width'><title>Form</title>
+<form id=f onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'Sent ' + q.value"><input id=q name=q
+ placeholder="Web field" style="font-size:20px;width:80%"></form><p id=out>Not sent</p>""",
     "/inner.html": """<!doctype html><title>Inner</title><body style="margin:8px">
 <button id=b onclick="this.textContent='Clicked ' + location.search.slice(1)">Press inner</button>
 <p>Inside frame text</p><script>document.title = 'Inner ' + location.search.slice(1)</script>""",
@@ -322,12 +332,141 @@ class Run:
         time.sleep(3)
 
 
+    # -- type: Return as a key press
+    def input_app(self, path):
+        if getattr(self, "_input", None) is None:
+            text, _, err, _ = self.m.call("app_install", path=path)
+            self._input = not err
+            self.check("x86input installed", self._input, text[:200])
+        if self._input:
+            self.m.call("app_terminate", bundle_id=INPUT, after="none")
+            self.m.call("app_launch", bundle_id=INPUT)
+            self.m.call("wait_for", target="Pick Photo", timeout=60)
+        return self._input
+
+    def typing(self, port, app):
+        if self.input_app(app):
+            self.m.call("tap", target="UIKit field", after="none")
+            time.sleep(1.5)   # the focus moves a moment after the touch
+            self.m.call("type", text="hello", submit=True, after="none")
+            ok = not self.m.call("wait_for", target="uikit returns: 1 text: hello", timeout=10)[2]
+            self.check("type: submit is Return in a UIKit field", ok)
+            self.m.call("tap", target="SwiftUI field", after="none")
+            time.sleep(1.5)   # the focus moves a moment after the touch
+            self.m.call("type", text="world\n", after="none")
+            ok = not self.m.call("wait_for", target="swiftui submits: 1 submitted: world", timeout=10)[2]
+            s, _ = self.m.snap()
+            f = els(s, id="^swiftui-field$")
+            self.check("type: a newline submits a SwiftUI TextField", ok, "field value %r" % (f and f[0].get("value")))
+            self.check("type: no space instead of the newline", bool(f) and f[0].get("value") == "world", "")
+            self.m.call("tap", target="id:textview", after="none")
+            time.sleep(1.5)   # the focus moves a moment after the touch
+            self.m.call("type", text="one\ntwo\nthree", after="none")
+            s, _ = self.m.snap()
+            t = els(s, id="^textview$")
+            v = (t and t[0].get("value")) or ""
+            self.check("type: newlines are new lines in a text view", v == "one\ntwo\nthree", repr(v))
+            self.m.call("app_terminate", bundle_id=INPUT, after="none")
+        # a web form, typed into from Safari
+        self.m.call("open_url", url="http://127.0.0.1:%d/form.html" % port, after="none")
+        self.m.call("wait_for", target="Not sent", timeout=60)
+        self.m.call("tap", target="Web field", after="none")
+        time.sleep(1.5)   # the web view takes the focus a moment after the tap (text inserted before it is lost)
+        self.m.call("type", text="abc\n", after="none")
+        ok = not self.m.call("wait_for", target="Sent abc", timeout=10)[2]
+        self.check("type: a newline submits a web form", ok)
+        # Safari's address bar: a URL and a newline opens it
+        self.m.call("tap", target="Done", after="none")   # the form's keyboard
+        time.sleep(1)
+        self.m.call("tap", target="id:TabBarItemTitle", after="none")
+        time.sleep(1.5)
+        self.m.call("type", text="http://127.0.0.1:%d/rows.html\n" % port, clear=True, after="none")
+        ok = not self.m.call("wait_for", target="Item 3", timeout=30)[2]
+        self.check("type: a URL and a newline in Safari's address bar opens it", ok)
+        self.home()
+
+    # -- status bar override
+    def status(self):
+        self.home()
+        self.m.call("sim_status_bar", action="override", time="9:41")
+        time.sleep(2)
+        text, _, _, _ = self.m.call("snapshot")
+        line = next((l for l in text.split("\n") if l.startswith("status bar:")), "")
+        self.check("status: the overridden time is read", line.startswith("status bar: 9:41"), line)
+        self.m.call("sim_status_bar", action="clear")
+        time.sleep(2)
+        text, _, _, _ = self.m.call("snapshot")
+        line = next((l for l in text.split("\n") if l.startswith("status bar:")), "")
+        now = time.strftime("%-I:%M")
+        self.check("status: cleared, the clock again", now in line or not line.startswith("status bar: 9:41"), line)
+
+    # -- lock screen
+    def lock(self):
+        self.home()
+        self.m.call("press", button="lock", after="none")
+        time.sleep(3)
+        text, st, _, _ = self.m.call("snapshot", json=True)
+        self.check("lock: locked", bool((st or {}).get("locked")), str((st or {}).get("front")))
+        text, _, _, _ = self.m.call("snapshot")
+        self.check("lock: a line says so", "locked:" in text, text.split("\n")[1] if "\n" in text else text)
+        # wake, then unlock as a person does (home; the passcode-less phone opens)
+        self.m.call("press", button="home", after="none")
+        time.sleep(1.5)
+        self.m.call("press", button="home", after="none")
+        time.sleep(3)
+        _, st, _, _ = self.m.call("snapshot", json=True)
+        self.check("lock: unlocked again", not (st or {}).get("locked"), str((st or {}).get("front")))
+
+    # -- photos picker (a hosted extension)
+    def picker(self, app):
+        if not self.input_app(app):
+            return
+        self.m.call("tap", target="Pick Photo", after="none")
+        time.sleep(4)
+        s, _ = self.m.snap()
+        cancel = els(s, label="^Cancel$")
+        self.check("picker: its elements are listed", bool(cancel), "apps %s" % sorted({e["app"] for e in s["elements"]}))
+        if cancel:
+            self.m.call("tap", target="@" + cancel[0]["ref"], after="none")
+            ok = not self.m.call("wait_for", target="picked: cancelled", timeout=15)[2]
+            self.check("picker: tap Cancel reaches it", ok)
+        self.m.call("app_terminate", bundle_id=INPUT, after="none")
+
+    # -- SFSafariViewController (SafariViewService)
+    def sheet(self, app):
+        if not self.input_app(app):
+            return
+        self.m.call("tap", target="Open Safari", after="none")
+        time.sleep(5)
+        s, _ = self.m.snap()
+        svc = [e for e in s["elements"] if e["app"] == "com.apple.SafariViewService"]
+        self.check("sheet: SafariViewService listed while up", bool(svc), "%d elements" % len(svc))
+        done = els(s, app="SafariViewService", label="^(Done|Close)$")
+        if done:
+            self.m.call("tap", target="@" + done[0]["ref"], after="none")
+        ok = not self.m.call("wait_for", target="safari: closed again", timeout=15)[2]
+        self.check("sheet: Done closes it", ok)
+        time.sleep(15)   # long enough for RunningBoard to suspend it
+        for i in range(2):
+            text, st, _, _ = self.m.call("snapshot", json=True)
+            st = st or {"elements": []}
+            left = [e for e in st["elements"] if e["app"] == "com.apple.SafariViewService"]
+            busy = [b for b in st.get("busy", []) if "SafariViewService" in b]
+            self.check("sheet: closed, not listed (%d)" % i, not left, "%d elements" % len(left))
+            self.check("sheet: closed, no busy line (%d)" % i, not busy, str(busy))
+        self.m.call("app_terminate", bundle_id=INPUT, after="none")
+
+
+INPUT = "com.x86sim.test.x86input"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phone", required=True)
     ap.add_argument("--mcp", default=os.path.join(ROOT, "tools/launcher/target/release/x86sim-mcp"))
     ap.add_argument("--only", default="")
     ap.add_argument("--out", default=os.path.expanduser("~/scratch/x86sim/ax-e2e"))
+    ap.add_argument("--input-app", default=os.path.join(os.environ.get("X86SIM_SCRATCH", os.path.expanduser("~/scratch/x86sim")), "apps/x86input.app"))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     log = open(os.path.join(a.out, "mcp-%s.log" % a.phone), "w")
@@ -356,6 +495,16 @@ def main():
             r.land(ports[0])
         if want("duo") and "Duo" in model:
             r.duo()
+        if want("type"):
+            r.typing(ports[0], a.input_app)
+        if want("status"):
+            r.status()
+        if want("lock"):
+            r.lock()
+        if want("picker"):
+            r.picker(a.input_app)
+        if want("sheet"):
+            r.sheet(a.input_app)
     finally:
         for s in servers:
             s.shutdown()

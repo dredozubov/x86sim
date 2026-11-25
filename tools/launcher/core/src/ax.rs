@@ -173,6 +173,9 @@ pub struct Snapshot {
     pub front: Vec<String>,
     /// SpringBoard shows something over the apps (an alert, a banner, Control Center, the app switcher)
     pub overlay: bool,
+    /// the device is locked: the Lock Screen (Cover Sheet) is up and apps are behind it
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub locked: bool,
     pub elements: Vec<El>,
     /// processes on screen that did not answer in time (busy main thread)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -243,6 +246,9 @@ impl Snapshot {
             if self.front.is_empty() { "?".into() } else { self.front.join(", ") },
             if self.overlay { " · system overlay on top" } else { "" }
         );
+        if self.locked {
+            out += "locked: the Lock Screen is up (press home or swipe up from the bottom edge to unlock)\n";
+        }
         let layer_rank = |l: &str| match l {
             "system" => 0,
             "window" => 1,
@@ -796,13 +802,23 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     let geo = Geometry::of(inst);
     let mut silent: Vec<String> = Vec::new();
     let n_answers = answers.len();
+    // SpringBoard's word on the device: locked, and the processes FrontBoard suspended
+    let sb = answers.iter().filter_map(|a| a.1.as_ref().ok()).find(|v| v["bundle"] == SPRINGBOARD);
+    snap.locked = sb.and_then(|v| v["locked"].as_bool()).unwrap_or(false);
+    let suspended: HashSet<u32> = sb.and_then(|v| v["suspended"].as_array()).into_iter().flatten().filter_map(|p| p.as_u64()).map(|p| p as u32).collect();
     for (sock, r) in answers {
         let v = match r {
             Ok(v) => v,
             Err(e) => {
+                let pid = pid_of_sock(&sock);
+                if suspended.contains(&pid) {
+                    // suspended (a view service such as SafariViewService after its app closed it keeps a foreground
+                    // scene): not on screen. Its marker goes; simax makes it again when the process comes back.
+                    let _ = std::fs::remove_file(sock.with_extension("fg"));
+                    continue;
+                }
                 // no answer at all: hung, or suspended (an extension RunningBoard suspended keeps its .fg: it draws
                 // nothing either). Said once (the first time), then it gets a short timeout until it answers again.
-                let pid = pid_of_sock(&sock);
                 st.stuck.insert(pid);
                 let who = format!("{} (pid {pid}: {})", fg_bundle(&sock), if was_stuck.contains(&pid) { "still no answer".to_string() } else { format!("no answer in {:.1} s", timeout.as_secs_f64()) });
                 if std::env::var_os("X86SIM_AX_DEBUG").is_some() {
@@ -1608,14 +1624,70 @@ pub fn type_text(inst: &Instance, text: &str, clear: bool, submit: bool, keys: b
         }
         return Ok(outcome(inst, format!("typed {} keys", text.chars().count()), before, after));
     }
-    let v = type_in_app(inst, &json!({"op": "type", "text": text, "clear": clear, "submit": submit}))?;
+    // Return goes as a key press: insertText:"\n" is a space in a SwiftUI TextField (onSubmit never runs) and does not
+    // submit a web form; the Return key submits a single-line field and is a newline in a text view, as on a keyboard
+    let mut v = Value::Null;
+    let mut returns = 0;
+    let mut h: Option<Hid> = None;
+    let steps = type_steps(text, clear, submit);
+    for (i, st) in steps.iter().enumerate() {
+        match st {
+            TypeStep::Text { text, clear } => {
+                v = type_in_app(inst, &json!({"op": "type", "text": text, "clear": clear, "submit": false}))?;
+            }
+            TypeStep::Return => {
+                let h = h.get_or_insert_with(|| Hid::new(&inst.sock));
+                h.key(true, 0x28);
+                h.key(false, 0x28);
+                returns += 1;
+                // simhid can hold a key for up to ~1 s (the keyboard's attach settle, its guard after a touch's lift)
+                // and says nothing when it went out: text after it, or the screen after, waits for it
+                std::thread::sleep(Duration::from_millis(if i + 1 < steps.len() { 1200 } else { 1000 }));
+            }
+        }
+    }
     let did = format!(
-        "typed {} into {}{}",
+        "typed {} into {}{}{}",
         quote(text),
         v["field"].as_str().unwrap_or("the focused field"),
-        v["value"].as_str().map(|s| format!(" (now {})", quote(s))).unwrap_or_default()
+        v["value"].as_str().map(|s| format!(" (now {})", quote(s))).unwrap_or_default(),
+        match returns {
+            0 => String::new(),
+            1 => ", Return pressed".into(),
+            n => format!(", Return pressed {n} times"),
+        }
     );
     Ok(outcome(inst, did, before, after))
+}
+
+#[derive(Debug, PartialEq)]
+enum TypeStep<'a> {
+    /// insertText: into the focused field (clear: empty it first)
+    Text { text: &'a str, clear: bool },
+    /// the Return key (HID usage 0x28)
+    Return,
+}
+
+/// What `type` does: the text's lines through the app (insertText:), a Return key press between them, and one at the
+/// end for `submit`. `clear` goes with the first insert (an empty one when the text starts with a newline).
+fn type_steps(text: &str, clear: bool, submit: bool) -> Vec<TypeStep<'_>> {
+    let mut v = Vec::new();
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            v.push(TypeStep::Return);
+        }
+        if !line.is_empty() || (i == 0 && clear) {
+            v.push(TypeStep::Text { text: line, clear: i == 0 && clear });
+        }
+    }
+    if submit {
+        v.push(TypeStep::Return);
+    }
+    if v.is_empty() {
+        // nothing to type: still asked, so "no focused text field" comes back as before
+        v.push(TypeStep::Text { text: "", clear });
+    }
+    v
 }
 
 /// A type request to the process with the focused text field: apps first, SpringBoard (Spotlight, alerts' fields)
@@ -2241,6 +2313,21 @@ mod tests {
         assert_eq!(key_usage('@'), Some((0x1f, true)));
         assert_eq!(key_named("return"), Some(0x28));
         assert_eq!(key_named("0x2a"), Some(0x2a));
+    }
+
+    #[test]
+    fn type_returns_are_key_presses() {
+        use TypeStep::*;
+        assert_eq!(type_steps("hello", false, false), vec![Text { text: "hello", clear: false }]);
+        assert_eq!(type_steps("hello", true, true), vec![Text { text: "hello", clear: true }, Return]);
+        assert_eq!(
+            type_steps("a\nb\n", false, false),
+            vec![Text { text: "a", clear: false }, Return, Text { text: "b", clear: false }, Return]
+        );
+        assert_eq!(type_steps("\nx", true, false), vec![Text { text: "", clear: true }, Return, Text { text: "x", clear: false }]);
+        assert_eq!(type_steps("", false, true), vec![Return]);
+        assert_eq!(type_steps("", false, false), vec![Text { text: "", clear: false }]);
+        assert_eq!(type_steps("a\n\nb", false, false), vec![Text { text: "a", clear: false }, Return, Return, Text { text: "b", clear: false }]);
     }
 }
 

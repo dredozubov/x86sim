@@ -10,6 +10,7 @@ and appends it to `Documents/x86test-results.txt` in the app's data container.
 | x86net | URLSession HTTPS GET + JSON, download task, WKWebView page load (+ JS `document.title`) |
 | x86data | UIKit scene lifecycle, Core Data (SQLite store, model built in code), files (write/rename/attributes), UserDefaults, Core Image blur → PNG, local notification (authorization prompt, schedule, delivery) |
 | x86webinspect | two WKWebViews for Web Inspector (`x86sim inspect`, MCP `web_*`): `isInspectable = true` (listed: console logs, a fetch, `window.appValue`) and one without (not listed) |
+| x86input | agent tools (`tests/ax/mcp_e2e.py` type / picker / sheet): a UIKit text field (Return counted), a SwiftUI TextField (onSubmit), a multi-line text view, SFSafariViewController, PHPickerViewController; no X86TEST `done` (driven from the host) |
 
     tests/apps/build.sh [app...]                 build on the Mac (X86SIM_MAC) into $X86SIM_SCRATCH/apps/
     tests/apps/run.sh <phone> [--no-build] [app...]
