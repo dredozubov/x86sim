@@ -1,4 +1,5 @@
-// makes res/sdkcovChapters.mov and res/sdkcovStall.mov on a Mac (swiftc -parse-as-library sdkcovMovies.swift && ./sdkcovMovies: /tmp/sdkcovChapters.mov):
+// makes res/sdkcovChapters.mov and res/sdkcovStall.mov: an iOS simulator program, built on Linux and run on a phone by
+// res/sdkcovRes.sh (`sdkcovMovies [DIR]` writes both into DIR, default the program's own directory):
 // the movie checks/P21_Gaps.swift's p21ChapterMovie writes (64x64 video, 3 s, a QuickTime text track "Opening",
 // "Middle", "Credits" associated as its chapter list), for watchOS, which has no AVAssetWriter
 // (func:AVFoundation.chapters-bundled-movie in checks/P22_Gaps.swift), and the 6 s video + AAC movie p21AVMovie writes
@@ -124,9 +125,11 @@ func p21AVMovie(_ url: URL) async throws {
     try expect(w.status == .completed, "finishWriting: \(String(describing: w.error))")
 }
 @main struct Main { static func main() async throws {
-    let u = URL(fileURLWithPath: "/tmp/sdkcovChapters.mov")
+    let dir = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().path
+    let u = URL(fileURLWithPath: dir).appendingPathComponent("sdkcovChapters.mov")
     try await p21ChapterMovie(u, titles: ["Opening", "Middle", "Credits"])
     let g = try await AVURLAsset(url: u).loadChapterMetadataGroups(bestMatchingPreferredLanguages: ["en", "und"])
     print("chapters", g.count)
-    try await p21AVMovie(URL(fileURLWithPath: "/tmp/sdkcovStall.mov"))
+    try await p21AVMovie(URL(fileURLWithPath: dir).appendingPathComponent("sdkcovStall.mov"))
+    print("stall", (try? FileManager.default.attributesOfItem(atPath: URL(fileURLWithPath: dir).appendingPathComponent("sdkcovStall.mov").path)[.size]).map { "\($0)" } ?? "?")
 } }

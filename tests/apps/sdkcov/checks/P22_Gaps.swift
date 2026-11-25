@@ -42,7 +42,7 @@ final class P22BADelegate: NSObject, BADownloadManagerDelegate, @unchecked Senda
 }
 #endif
 
-/// sdkcov's movies made on a Mac (res/sdkcovMovies.swift; build.sh copies res/*.mov into the bundle): sdkcovChapters.mov
+/// sdkcov's bundled movies (res/sdkcovMovies.swift, run on a phone by res/sdkcovRes.sh; build.sh copies res/*.mov into the bundle): sdkcovChapters.mov
 /// (p21ChapterMovie's chapters "Opening" / "Middle" / "Credits") and sdkcovStall.mov (p21AVMovie's 6 s video + AAC)
 func p22Movie(_ name: String) throws -> URL {
     guard let u = Bundle.main.url(forResource: name, withExtension: "mov") else { throw Fail("\(name).mov not in the bundle") }
