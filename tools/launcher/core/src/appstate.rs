@@ -173,9 +173,17 @@ fn dirs(inst: &Instance) -> (PathBuf, PathBuf) {
     }
 }
 
-/// launchd's lines of the phone this boot (the state dir's copy), lossy text
+/// launchd's lines of the phone this boot, lossy text: launchd's own log in the prefix (complete), else the state dir's
+/// copy (boot-a64.sh tails it only for the boot's first SECS seconds: a launcher boot stops copying early, and exits
+/// after that were missing)
 fn launchd_log(inst: &Instance) -> String {
-    read(&dirs(inst).0.join("launchd.log").to_string_lossy())
+    let (state, prefix) = dirs(inst);
+    let own = prefix.join(format!("private/var/tmp/com.apple.CoreSimulator.SimDevice.{}/launchd.log", inst.udid));
+    let t = read(&own.to_string_lossy());
+    if !t.is_empty() {
+        return t;
+    }
+    read(&state.join("launchd.log").to_string_lossy())
 }
 
 /// The newest abort line in a file: simshim's records ("<time> abort_with_reason namespace 1 code 0x2a: ...") or the
