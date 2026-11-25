@@ -81,6 +81,7 @@ x86sim --phone qa swipe back                  # up/down/left/right, home, notifi
 x86sim --phone qa long-press @e9 --ms 800
 x86sim --phone qa press home                  # hardware button; open URL opens a URL / deep link
 x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappears; wakes on new frames
+x86sim --phone qa expect "Total" --contains "$42" --timeout 5   # PASS / FAIL (exit 1) with what is there instead
 ```
 
 - **Every action answers with the next screen**, after it has settled (no new frames, no transition running). Read
@@ -111,6 +112,11 @@ x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappe
   the number its label shows; `+N` / `-N` always works), segmented controls, wheel pickers (target the wheel; SwiftUI
   wheels have no identifiers, take the ref), date pickers, any adjustable element. `set-value TARGET` alone (MCP
   `info=true`) says what the control is and what it takes.
+- `expect TARGET` checks instead of eyeballing a snapshot: `--label`, `--value`, `--contains`, `--enabled` /
+  `--disabled`, `--selected`, `--focused`, `--count N`, `--gone`; `--timeout S` waits on frames for it to become true.
+  A failure is an error that lists the matches and which condition each misses, or the nearest labels by text (a
+  typo). `wait-for` (MCP `wait_for`) takes the same conditions: `wait-for "Status" --value Done`. A field's value can
+  be checked through the label beside it: `expect "Email" --value me@example.com`.
 - `drag FROM TO` (targets or `x,y`): hold (`--hold`, MCP `hold_ms`, default 600 ms) lifts a row, a draggable item or a
   home screen icon. The first drag and drop after a boot starts the drag service (druid) and may not drop: drag again.
 
@@ -282,7 +288,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `wait_for`, `screenshot`,
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `wait_for`, `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 

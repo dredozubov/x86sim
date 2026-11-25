@@ -7,6 +7,7 @@
 //! responder, types, and checks the text landed there. `fill` does that for several fields; field targets also match
 //! a placeholder and the label beside a field. `drag` presses, holds to lift, moves and drops; `set_value` sets a
 //! control (slider, switch, stepper, segmented control, picker wheels, date picker, anything adjustable) in the app.
+//! `expect` checks the screen (an element there or not, its label / value / states, how many), waiting on frames.
 use crate::ax::{self, After, El, Outcome, SnapOpts, Snapshot, Target};
 use serde::Deserialize;
 use crate::instance::Instance;
@@ -624,6 +625,217 @@ fn swiftui_stepper(inst: &Instance, e: &El, want: f64, before: Option<Snapshot>,
     bail!("set_value @{}: reached {cur}, not {want}", e.r)
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// expect
+
+/// What `expect` (and `wait_for` with conditions) checks of the elements a target matches
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Expect {
+    /// false: no element matches (with other conditions: none matches them all)
+    #[serde(default)]
+    pub exists: Option<bool>,
+    /// the label is this (case and space blind)
+    #[serde(default)]
+    pub label: Option<String>,
+    /// the value is this
+    #[serde(default)]
+    pub value: Option<String>,
+    /// the label or the value contains this
+    #[serde(default)]
+    pub contains: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub selected: Option<bool>,
+    #[serde(default)]
+    pub focused: Option<bool>,
+    /// exactly this many elements match (and meet the other conditions)
+    #[serde(default)]
+    pub count: Option<usize>,
+}
+
+fn norm(s: &str) -> String {
+    s.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect::<String>().trim().to_lowercase()
+}
+
+impl Expect {
+    /// Read from a tool's arguments (strings "true" / "false" taken for booleans)
+    pub fn of(a: &Value) -> Expect {
+        let b = |k: &str| a[k].as_bool().or_else(|| a[k].as_str().and_then(|s| s.parse().ok()));
+        let t = |k: &str| a[k].as_str().map(String::from).or_else(|| a[k].as_f64().map(|n| n.to_string()));
+        Expect { exists: b("exists"), label: t("label"), value: t("value"), contains: t("contains"), enabled: b("enabled"), selected: b("selected"), focused: b("focused"), count: a["count"].as_u64().map(|n| n as usize) }
+    }
+
+    /// Any condition beyond "it is there"
+    pub fn conditions(&self) -> bool {
+        self.label.is_some() || self.value.is_some() || self.contains.is_some() || self.enabled.is_some() || self.selected.is_some() || self.focused.is_some() || self.count.is_some()
+    }
+
+    /// Why `e` does not meet the conditions (None: it does)
+    fn miss(&self, e: &El) -> Option<String> {
+        let l = e.label.as_deref().unwrap_or("");
+        let v = e.value.as_deref().unwrap_or("");
+        if let Some(x) = &self.label {
+            if norm(l) != norm(x) {
+                return Some(format!("label is {}, not {}", ax::quote(l), ax::quote(x)));
+            }
+        }
+        if let Some(x) = &self.value {
+            if norm(v) != norm(x) {
+                return Some(format!("value is {}, not {}", ax::quote(v), ax::quote(x)));
+            }
+        }
+        if let Some(x) = &self.contains {
+            if !norm(l).contains(&norm(x)) && !norm(v).contains(&norm(x)) {
+                return Some(format!("neither label {} nor value {} contains {}", ax::quote(l), ax::quote(v), ax::quote(x)));
+            }
+        }
+        for (want, have, name) in [(self.enabled, e.enabled, "enabled"), (self.selected, e.selected, "selected"), (self.focused, e.focused, "focused")] {
+            if let Some(w) = want {
+                if w != have {
+                    return Some(format!("{}{name}", if have { "" } else { "not " }));
+                }
+            }
+        }
+        None
+    }
+
+    fn describe(&self, target: &str) -> String {
+        let mut v = vec![];
+        if self.exists == Some(false) {
+            v.push("gone".to_string());
+        }
+        if let Some(x) = &self.label {
+            v.push(format!("label {}", ax::quote(x)));
+        }
+        if let Some(x) = &self.value {
+            v.push(format!("value {}", ax::quote(x)));
+        }
+        if let Some(x) = &self.contains {
+            v.push(format!("contains {}", ax::quote(x)));
+        }
+        for (w, n) in [(self.enabled, "enabled"), (self.selected, "selected"), (self.focused, "focused")] {
+            if let Some(w) = w {
+                v.push(format!("{}{n}", if w { "" } else { "not " }));
+            }
+        }
+        if let Some(n) = self.count {
+            v.push(format!("count {n}"));
+        }
+        format!("{target:?}{}", if v.is_empty() { String::new() } else { format!(" {}", v.join(", ")) })
+    }
+}
+
+/// The elements on screen a target matches for `expect`: as `find` (text: exact, id / value, prefix), plus, when the
+/// conditions are about a field, the field beside a label that matches (`expect "Email" value=...`)
+fn expect_matches(snap: &Snapshot, target: &str, x: &Expect) -> Vec<El> {
+    let t = ax::parse_target(target);
+    let mut v: Vec<El> = ax::find_all_q(snap, &t, 2).into_iter().filter(|e| !e.offscreen && !e.covered).cloned().collect();
+    if (x.value.is_some() || x.focused.is_some()) && !v.iter().any(is_field) {
+        if let Ok(f) = find_field(snap, target) {
+            if is_field(&f) && !f.offscreen && !v.iter().any(|e| e.r == f.r) {
+                v.insert(0, f);
+            }
+        }
+    }
+    v
+}
+
+/// Levenshtein distance over chars, for "nearest by text"
+fn distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur.push((prev[j] + (ca != cb) as usize).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// The elements whose label reads most like `text` (a typo, other words around it)
+fn nearest<'a>(snap: &'a Snapshot, text: &str, n: usize) -> Vec<&'a El> {
+    let t = norm(text);
+    let mut v: Vec<(f64, &El)> = snap
+        .elements
+        .iter()
+        .filter(|e| !e.offscreen && e.layer != "status")
+        .filter_map(|e| {
+            let l = norm(e.label.as_deref().or(e.value.as_deref()).unwrap_or(""));
+            if l.is_empty() {
+                return None;
+            }
+            // the best part of the label of the target's length (a word in a sentence), or the whole
+            let words: Vec<&str> = l.split(' ').collect();
+            let k = t.split(' ').count().max(1);
+            let mut best = distance(&l, &t) as f64 / l.len().max(t.len()) as f64;
+            for w in words.windows(k.min(words.len())) {
+                let p = w.join(" ");
+                best = best.min(distance(&p, &t) as f64 / p.len().max(t.len()) as f64);
+            }
+            (best < 0.6).then_some((best, e))
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    v.into_iter().take(n).map(|x| x.1).collect()
+}
+
+/// Checks the screen once: pass, and one line saying what was seen
+fn expect_once(snap: &Snapshot, target: &str, x: &Expect) -> (bool, String) {
+    let m = expect_matches(snap, target, x);
+    let meets: Vec<&El> = m.iter().filter(|e| x.miss(e).is_none()).collect();
+    let line = |e: &El| e.line(snap.screen);
+    if x.exists == Some(false) {
+        let left: Vec<&El> = if x.conditions() { meets.clone() } else { m.iter().collect() };
+        return (left.is_empty(), if left.is_empty() { "none on screen".into() } else { format!("still there: {}", left.iter().map(|e| line(e)).collect::<Vec<_>>().join("; ")) });
+    }
+    if let Some(n) = x.count {
+        return (meets.len() == n, format!("{} match{}", meets.len(), if meets.is_empty() { String::new() } else { format!(": {}", meets.iter().take(8).map(|e| line(e)).collect::<Vec<_>>().join("; ")) }));
+    }
+    if let Some(e) = meets.first() {
+        return (true, line(e));
+    }
+    if !m.is_empty() {
+        let why: Vec<String> = m.iter().take(5).map(|e| format!("{} ({})", line(e), x.miss(e).unwrap_or_default())).collect();
+        return (false, format!("found, but: {}", why.join("; ")));
+    }
+    let near = match ax::parse_target(target) {
+        Target::Text(t) => nearest(snap, &t, 3),
+        _ => vec![],
+    };
+    (false, if near.is_empty() { "nothing matches".into() } else { format!("nothing matches; nearest by text: {}", near.iter().map(|e| line(e)).collect::<Vec<_>>().join("; ")) })
+}
+
+/// `expect`: checks the screen; with a timeout, waits (on new frames) for it to become true. Ok: it passed (the answer
+/// says what matched); Err: it failed, saying what was found instead (or the nearest by text).
+pub fn expect(inst: &Instance, target: &str, x: &Expect, timeout: Duration) -> Result<Outcome> {
+    anyhow::ensure!(!target.trim().is_empty(), "expect: target required");
+    let t0 = Instant::now();
+    let mut ring = Ring::new(&ax::screen_ring(inst));
+    loop {
+        let seq = ring.seq();
+        let snap = ax::snapshot(inst, SnapOpts::default());
+        if let Ok(s) = &snap {
+            let (ok, what) = expect_once(s, target, x);
+            if ok {
+                let ms = t0.elapsed().as_millis();
+                return Ok(Outcome { did: format!("PASS {} after {ms} ms: {what}", x.describe(target)), screen: Some(s.clone()), diff: None });
+            }
+            let left = timeout.saturating_sub(t0.elapsed());
+            if left.is_zero() {
+                bail!("FAIL {}{}: {what}", x.describe(target), if timeout.is_zero() { String::new() } else { format!(" (waited {:.1} s)", timeout.as_secs_f64()) });
+            }
+        } else if timeout.saturating_sub(t0.elapsed()).is_zero() {
+            bail!("FAIL {}: no snapshot: {:#}", x.describe(target), snap.err().map(|e| e.to_string()).unwrap_or_default());
+        }
+        let left = timeout.saturating_sub(t0.elapsed());
+        ring.wait(seq, left.min(Duration::from_secs(1)));
+        std::thread::sleep(Duration::from_millis(60).min(left));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +899,33 @@ mod tests {
         assert_eq!(shown_number(&e), Some(-3.5));
         e.label = Some("Count, Decrement".into());
         assert_eq!(shown_number(&e), None);
+    }
+
+    #[test]
+    fn expectations() {
+        let mut f = lab("e2", "textfield", "", [90.0, 95.0, 290.0, 34.0]);
+        f.value = Some("Ann".into());
+        f.focused = true;
+        let mut b = lab("e9", "button", "Sign Up", [16.0, 400.0, 100.0, 40.0]);
+        b.enabled = false;
+        let s = Snapshot {
+            screen: (400.0, 800.0),
+            elements: vec![lab("e1", "text", "Name", [16.0, 100.0, 60.0, 20.0]), f, b, lab("e3", "text", "Item", [0.0, 500.0, 50.0, 20.0]), lab("e4", "text", "Item", [0.0, 530.0, 50.0, 20.0])],
+            ..Default::default()
+        };
+        let x = |v: Value| Expect::of(&v);
+        assert!(expect_once(&s, "Name", &x(json!({"value": "ann"}))).0);
+        assert!(expect_once(&s, "Name", &x(json!({"focused": true}))).0);
+        assert!(!expect_once(&s, "Name", &x(json!({"value": "Bob"}))).0);
+        assert!(expect_once(&s, "Sign Up", &x(json!({"enabled": false}))).0);
+        let (ok, why) = expect_once(&s, "Sign Up", &x(json!({"enabled": "true"})));
+        assert!(!ok && why.contains("not enabled"), "{why}");
+        assert!(expect_once(&s, "Item", &x(json!({"count": 2}))).0);
+        assert!(!expect_once(&s, "Item", &x(json!({"count": 3}))).0);
+        assert!(expect_once(&s, "Nothing here", &x(json!({"exists": false}))).0);
+        let (ok, why) = expect_once(&s, "Sign Upp", &x(json!({})));
+        assert!(!ok && why.contains("nearest") && why.contains("Sign Up"), "{why}");
+        assert!(expect_once(&s, "Sign", &x(json!({"contains": "up"}))).0);
     }
 
     #[test]

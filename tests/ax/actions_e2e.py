@@ -9,6 +9,8 @@ test app tests/apps/x86forms (tests/apps/build.sh x86forms):
   controls set_value on a slider (number, percentage), switch, stepper, segmented control, wheel picker, date and
            time pickers: the app's bindings see each value; a value a control does not take is an error naming them
   drag     a list row dragged by its reorder handle to another place; an item dragged (held to lift) onto a drop box
+  expect   pass / fail on label, value (a field found by the label beside it), contains, enabled, focused, count,
+           gone; a failure names what is there or the nearest text; a timeout waits for the app; wait_for value=
 
 Usage: tests/ax/actions_e2e.py --phone NAME [--mcp PATH] [--only focus,...] [--out DIR] [--app PATH]
 Exit status: failed checks. Use a phone of your own: the checks install, launch and terminate apps.
@@ -162,6 +164,28 @@ class Run:
             got = self.state("dropbox")
         self.check("drag: an item held and dropped on the drop box", not err and "Parcel" in got and "nothing" not in got, "%s | %s" % (text.split("\n")[0], got))
 
+    # -- expect
+    def expect(self):
+        if not self.launch():
+            return
+        self.m.call("type", target="Name", text="Ann", after="none")
+        ok = lambda **kw: not self.m.call("expect", **kw)[2]
+        self.check("expect: the field beside \"Name\" has value Ann and the focus", ok(target="Name", value="Ann", focused=True))
+        self.check("expect: contains", ok(target="id:form-state", contains="name=Ann"))
+        self.check("expect: a button enabled", ok(target="Sign up", exists=True) and ok(target="Email", enabled=True))
+        self.check("expect: gone", ok(target="Welcome back", exists=False))
+        self.check("expect: count", ok(target="Sign up", count=1))
+        text, _, err, _ = self.m.call("expect", target="Name", value="Bob")
+        self.check("expect: a wrong value fails saying the value there", err and "FAIL" in text and "Ann" in text, text.split("\n")[0])
+        text, _, err, _ = self.m.call("expect", target="Sigm up")
+        self.check("expect: a missing element fails with the nearest by text", err and "nearest" in text and "Sign up" in text, text.split("\n")[0])
+        # timeout: the app changes a moment later (Sign Up's result; fill moves the button clear of the keyboard)
+        self.m.call("fill", fields=[{"target": "City", "text": "Oslo"}], submit="Sign Up", after="none")
+        text, _, err, _ = self.m.call("expect", target="id:submitted", contains="name=Ann", timeout=10)
+        self.check("expect: waits for the app with a timeout", not err, text.split("\n")[0])
+        text, _, err, _ = self.m.call("wait_for", target="id:submitted", contains="nobody", timeout=1.5)
+        self.check("wait_for: a condition that never holds times out as an error", err and "FAIL" in text, text.split("\n")[0])
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -178,7 +202,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["focus", "fill", "controls", "drag"]:
+        for name in ["focus", "fill", "controls", "drag", "expect"]:
             if want(name):
                 getattr(r, name)()
     finally:

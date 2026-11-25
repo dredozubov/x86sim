@@ -29,7 +29,11 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
                                        precise scroll (no fling), AMOUNT in screens (default 0.5)
   swipe up|down|left|right|home|notifications|controlcenter|back | swipe X1 Y1 X2 Y2 [MS]
   scroll-to TARGET [--dir down] [--max 10]
-  wait-for TARGET [--gone] [--timeout S]   (default 20 s)
+  wait-for TARGET [--gone] [--timeout S] [conditions]   (default 20 s; conditions as expect's)
+  expect TARGET [--gone] [--label L] [--value V] [--contains T] [--enabled|--disabled] [--selected|--unselected]
+         [--focused|--unfocused] [--count N] [--timeout S]
+                                       PASS (exit 0) or FAIL (exit 1, with what was found instead or the nearest
+                                       by text); --timeout waits on new frames for it to become true
   press BUTTON [MS]                    home lock side volup voldown siri action ...
   keyboard software on|off|toggle | hardware connect|disconnect|toggle | status
                                        Apple's I/O > Keyboard: Toggle Software Keyboard (Cmd-K), Connect Hardware
@@ -90,6 +94,11 @@ fn run() -> Result<()> {
     let submit = flag("--submit");
     let keys = flag("--keys");
     let append = flag("--append");
+    let tri = |on: bool, off: bool| if on { Some(true) } else if off { Some(false) } else { None };
+    let (en, dis) = (flag("--enabled"), flag("--disabled"));
+    let (sel, unsel) = (flag("--selected"), flag("--unselected"));
+    let (foc, unfoc) = (flag("--focused"), flag("--unfocused"));
+    let (enabled, selected, focused) = (tri(en, dis), tri(sel, unsel), tri(foc, unfoc));
     let dynamic_type = flag("--dynamic-type");
     let mut opt = |name: &str| -> Option<String> {
         let i = args.iter().position(|a| a == name)?;
@@ -113,6 +122,7 @@ fn run() -> Result<()> {
     let into = opt("--into");
     let submit_tap = opt("--submit-tap");
     let hold = opt("--hold");
+    let (xlabel, xvalue, xcontains, xcount) = (opt("--label"), opt("--value"), opt("--contains"), opt("--count"));
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
         println!("{USAGE}");
         return Ok(());
@@ -261,6 +271,22 @@ fn run() -> Result<()> {
         "scroll-to" | "scrollto" => {
             need("a target")?;
             print(ax::scroll_to(&inst, &rest, dir.as_deref().unwrap_or("down"), max.and_then(|m| m.parse().ok()).unwrap_or(10), after)?)
+        }
+        "expect" | "wait-for" | "waitfor" if cmd == "expect" || xlabel.is_some() || xvalue.is_some() || xcontains.is_some() || xcount.is_some() || enabled.is_some() || selected.is_some() || focused.is_some() => {
+            need("a target")?;
+            let x = x86sim_core::axact::Expect {
+                exists: gone.then_some(false),
+                label: xlabel,
+                value: xvalue,
+                contains: xcontains,
+                enabled,
+                selected,
+                focused,
+                count: xcount.and_then(|c| c.parse().ok()),
+            };
+            let dflt = if cmd == "expect" { 0.0 } else { 20.0 };
+            let t = Duration::from_secs_f64(timeout.and_then(|t| t.parse().ok()).unwrap_or(dflt));
+            print(x86sim_core::axact::expect(&inst, &rest, &x, t)?)
         }
         "wait-for" | "waitfor" => {
             need("a target")?;

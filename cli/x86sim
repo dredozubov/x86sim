@@ -78,8 +78,11 @@ Agents (read the screen as text, act on elements; same core as the MCP server's 
                        to VALUE as a touch would (the app hears it); no VALUE: the control and the values it takes
   key NAME|COMBO       return tab escape delete up down ... or cmd+a, shift+tab (a number: a HID usage)
   scroll up|down|left|right [SCREENS] [--at TARGET] | scroll-to TARGET [--dir D] | swipe up|down|left|right|home|back
-  wait-for TARGET [--gone] [--timeout S]
-                       until it shows (or goes); wakes on new frames
+  wait-for TARGET [--gone] [--timeout S] [--value V ...]
+                       until it shows (or goes); wakes on new frames; with expect's conditions: until they hold
+  expect TARGET [--gone] [--label L] [--value V] [--contains T] [--enabled|--disabled] [--selected|--unselected]
+         [--focused|--unfocused] [--count N] [--timeout S]
+                       check the screen: PASS, or FAIL (exit 1) with what is there instead / the nearest by text
   press BUTTON | open URL
                        a hardware button / a URL, answering with the screen
   ax-inspect [TARGET | X Y] [--json]
@@ -272,7 +275,7 @@ case $c in
 	logs) cmd_logs "$@" ;;
 	view) cmd_view "$@" ;;
 	screenshot|shot) cmd_screenshot "$@" ;;
-	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill|drag|set-value) ax "$c" "$@" ;;
+	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill|drag|set-value|expect) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)
 		if [ $# -ge 1 ] && case $1 in -*) false ;; *) true ;; esac && [ "$c" = ax-audit ]; then

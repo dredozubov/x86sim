@@ -150,6 +150,7 @@ fn tools() -> Value {
     }
     // ---- agent actions, round 2 ----
     if let Value::Array(v) = &mut t {
+        v.iter_mut().for_each(mcp_actions::extend_wait_for);
         v.extend(mcp_actions::tools(&phone));
     }
     t
