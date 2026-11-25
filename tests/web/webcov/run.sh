@@ -124,7 +124,8 @@ except Exception: print(0, 0)')
 [ "${PW:-0}" = 0 ] && { PW=402; PH=874; }
 # the phone's Metal: Safari's WebGL is ANGLE on Metal in the WebKit GPU process. A phone booted with software rendering
 # has no MTLDevice and every WebGL check fails (createShader null, getSupportedExtensions null, black texture reads) --
-# boot-a64.sh started by hand defaults iPhone/iPad to X86SIM_METAL=0 (the launcher / MCP sim_start boot with "all").
+# a phone booted with X86SIM_METAL=0, or whose mtlvk did not start (the launcher, MCP sim_start and boot-a64.sh run by
+# hand all default to "all").
 # Read from the phone's darlingserver (cmdline "darlingserver <its prefix> ...", environment from boot-a64.sh).
 metal=$(for p in /proc/[0-9]*; do
 	[ "$(cat "$p/comm" 2>/dev/null)" = darlingserver ] || continue

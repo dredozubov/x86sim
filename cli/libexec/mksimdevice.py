@@ -501,6 +501,11 @@ def main():
     metal = os.environ.get("X86SIM_METAL", "")
     if metal and metal != "0" and host_path("host/metalhostd/metalhostd"):
         procs = ["mtlprobe"] if metal == "1" else [p for p in metal.split(",") if p and p != "all"]
+        # x86Sim: iconservicesagent renders every app icon through CoreUI, which force-unwraps a Core Image context
+        # that is nil without a Metal device: with a list that left it out (e.g. backboardd) it crashed on each icon,
+        # the icon store stayed empty and Settings showed gray row icons. Apple's simulator always has a device.
+        if metal != "1" and "all" not in metal.split(",") and "iconservicesagent" not in procs:
+            procs.append("iconservicesagent")
         names = ["com.apple.metal.simulator." + p for p in procs]
         if "all" in metal.split(","):
             names.append("com.apple.metal.simulator")
