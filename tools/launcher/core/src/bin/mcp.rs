@@ -28,6 +28,9 @@ mod mcp_profile;
 // ---- device services (simctl location / privacy / push / addmedia): sim_location, sim_privacy, sim_push, sim_addmedia ----
 #[path = "mcp_parts/services.rs"]
 mod mcp_services;
+// ---- agent actions, round 2 (feat/agent-tools-2 C/D): fill, ... ----
+#[path = "mcp_parts/actions.rs"]
+mod mcp_actions;
 
 fn tools() -> Value {
     let phone = json!({"type": "string", "description": "the device: its name (as in the hub, e.g. \"QA\"), folder (device-a64-qa) or path. Default: the only running device, else the configured one"});
@@ -145,6 +148,10 @@ fn tools() -> Value {
     if let Value::Array(v) = &mut t {
         v.extend(mcp_services::tools(&phone));
     }
+    // ---- agent actions, round 2 ----
+    if let Value::Array(v) = &mut t {
+        v.extend(mcp_actions::tools(&phone));
+    }
     t
 }
 
@@ -242,6 +249,9 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
     }
     if let Some(r) = mcp_services::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(Answer::Json);
+    }
+    if let Some(r) = mcp_actions::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(|t| Answer::Text(t, None));
     }
     if matches!(name, "phones_list" | "sim_status") {
         return Ok(Answer::Json(json!({"phones": instance::summaries(1000)})));

@@ -72,6 +72,7 @@ x86sim --phone qa tap id:com.apple.settings.general
 x86sim --phone qa find "Wi"                   # what a target would match, best first (no action)
 x86sim --phone qa type "me@example.com" --submit      # into the focused field; --clear empties it first
 x86sim --phone qa type "me@example.com" --into "Email"   # tap the field, wait until it has the focus, type
+x86sim --phone qa fill Email=me@example.com Password=s3cret --submit-tap "Sign In"   # a form in one call
 x86sim --phone qa key cmd+a                   # return tab escape delete up down ... or combos
 x86sim --phone qa scroll down 1 --at @e5      # precise, in screens; scroll-to TARGET scrolls until it shows
 x86sim --phone qa swipe back                  # up/down/left/right, home, notifications, controlcenter, back
@@ -99,6 +100,10 @@ x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappe
   (on frames) until it has the focus before typing: no sleep between tap and type. Typing where the text would land
   in another field is an error, and the answer names the field that got the text and its value (a secure field's
   as dots).
+- `fill` (MCP `fields=[{target, text, clear}]`, `submit`: true for Return or a button's target) types a whole form:
+  each field scrolled into view and clear of the keyboard, tapped, focused, emptied (`--append` / `clear=false`
+  keeps its text) and typed; it stops at the first field that fails and says which were filled. A field target is
+  its label or placeholder, or the label written beside it (left of it on the row, or just above it).
 
 ### Accessibility checks
 
@@ -268,7 +273,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `wait_for`, `screenshot`,
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `wait_for`, `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 

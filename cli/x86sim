@@ -68,6 +68,9 @@ Agents (read the screen as text, act on elements; same core as the MCP server's 
                        into the focused field as the software keyboard does (any characters); --submit and a newline in
                        TEXT press the Return key (submits a field or web form, a new line in a text view); --keys: key presses;
                        --into: tap TARGET, wait until it has the focus, then type (an error if the text would land elsewhere)
+  fill TARGET=TEXT... [--submit | --submit-tap TARGET] [--append]
+                       a form in one call: each field (by its label, placeholder, the label beside it, @ref or id:) is
+                       scrolled into view, tapped, given the focus, emptied (not with --append) and typed into
   key NAME|COMBO       return tab escape delete up down ... or cmd+a, shift+tab (a number: a HID usage)
   scroll up|down|left|right [SCREENS] [--at TARGET] | scroll-to TARGET [--dir D] | swipe up|down|left|right|home|back
   wait-for TARGET [--gone] [--timeout S]
@@ -264,7 +267,7 @@ case $c in
 	logs) cmd_logs "$@" ;;
 	view) cmd_view "$@" ;;
 	screenshot|shot) cmd_screenshot "$@" ;;
-	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open) ax "$c" "$@" ;;
+	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)
 		if [ $# -ge 1 ] && case $1 in -*) false ;; *) true ;; esac && [ "$c" = ax-audit ]; then

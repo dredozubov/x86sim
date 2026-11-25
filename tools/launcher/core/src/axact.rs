@@ -4,8 +4,10 @@
 //! A tap moves the focus a moment after the touch (UIKit's first responder change, WebKit's focus in its content
 //! process): text typed right away went into the field focused before, or a web field dropped it. `type_into` taps
 //! the target, then waits on frames (up to 2 s) until simax says that element, or a text field inside it, is the first
-//! responder, types, and checks the text landed there.
-use crate::ax::{self, After, El, Outcome, SnapOpts};
+//! responder, types, and checks the text landed there. `fill` does that for several fields; field targets also match
+//! a placeholder and the label beside a field.
+use crate::ax::{self, After, El, Outcome, SnapOpts, Snapshot, Target};
+use serde::Deserialize;
 use crate::instance::Instance;
 use crate::ring::Ring;
 use anyhow::{bail, Result};
@@ -90,11 +92,12 @@ fn holds_focus(e: &El, f: &Value) -> bool {
 /// Taps a target (ref, id:, text) and waits on frames until it has the focus. Answers the element and simax's
 /// `focus`. A web field: WebKit's content view is the first responder, the DOM's activeElement is the field.
 pub fn tap_focus(inst: &Instance, target: &str) -> Result<(El, Value)> {
-    let (e0, _) = ax::resolve(inst, target)?;
+    let e0 = field_el(inst, target)?;
     // already focused (a second `type` into the same field): no tap, which would move the caret
     if let Some(f) = focus_of(inst, e0.pid).filter(|f| !e0.web && holds_focus(&e0, f)) {
         return Ok((e0, f));
     }
+    let e0 = clear_of_keyboard(inst, e0)?;
     ax::tap(inst, &format!("@{}", e0.r), 80, After::None)?;
     // a field that was scrolled into view by the tap is somewhere else now
     let mut e = if e0.offscreen { ax::snapshot(inst, SnapOpts::default()).ok().and_then(|s| s.get(&e0.r).cloned()).unwrap_or(e0) } else { e0 };
@@ -204,6 +207,185 @@ fn returns(did: &str) -> String {
     did.find(", Return pressed").map(|i| did[i..].to_string()).unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Fields by what is written next to them, and `fill`
+
+fn is_field(e: &El) -> bool {
+    matches!(e.role.as_str(), "textfield" | "searchfield")
+}
+
+/// How far a field is from a label beside it: to its right on the same row (closest first), else below it in the same
+/// column (after every field on the row); None: not beside it
+fn beside(l: &El, f: &El) -> Option<f64> {
+    let [lx, ly, lw, lh] = l.frame;
+    let [fx, fy, fw, fh] = f.frame;
+    let (lc, fc) = (ly + lh / 2.0, fy + fh / 2.0);
+    if fx >= lx + lw - 4.0 && (lc - fc).abs() < fh.max(lh) / 2.0 + 4.0 {
+        return Some(fx - (lx + lw));
+    }
+    // above it: left-aligned with it and close (a title over a row that starts with its own label is not one)
+    if fy >= ly + lh - 4.0 && fy - (ly + lh) < 30.0 && (fx - lx).abs() < 12.0 && fw > 0.0 {
+        return Some(1000.0 + fy - (ly + lh));
+    }
+    None
+}
+
+/// The text field a target means: a ref / id: / point as everywhere; text: a field whose label, placeholder (simax
+/// gives an unlabelled field its placeholder as label), identifier or value matches, else the field beside a label
+/// that matches ("Email" written left of, or above, a field with nothing in it), else whatever matches
+pub fn find_field(snap: &Snapshot, target: &str) -> Result<El> {
+    let t = ax::parse_target(target);
+    if !matches!(t, Target::Text(_)) {
+        return ax::find(snap, target).cloned();
+    }
+    let usable = |e: &&El| !e.covered;
+    // a field whose own text matches well (exact, id / value, prefix), then the field beside a label that does, then a
+    // field whose text only contains it ("Name" in "Username" comes after the field next to "Name")
+    if let Some(e) = ax::find_all_q(snap, &t, 2).into_iter().filter(usable).find(|e| is_field(e)) {
+        return Ok(e.clone());
+    }
+    for l in ax::find_all_q(snap, &t, 2).into_iter().filter(usable).filter(|e| !is_field(e)) {
+        let near = snap
+            .elements
+            .iter()
+            .filter(|f| is_field(f) && f.pid == l.pid && !f.covered && f.offscreen == l.offscreen)
+            .filter_map(|f| beside(l, f).map(|d| (d, f)))
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, f)) = near {
+            return Ok(f.clone());
+        }
+    }
+    if let Some(e) = ax::find_all_q(snap, &t, 3).into_iter().filter(usable).find(|e| is_field(e)) {
+        return Ok(e.clone());
+    }
+    ax::find(snap, target).cloned()
+}
+
+/// The field for a target on screen now; one scrolled out of view (`snapshot all`) is scrolled into view first
+pub fn field_el(inst: &Instance, target: &str) -> Result<El> {
+    let snap = ax::snapshot(inst, SnapOpts::default())?;
+    let here = find_field(&snap, target);
+    if here.as_ref().is_ok_and(is_field) || !matches!(ax::parse_target(target), Target::Text(_)) {
+        return here;
+    }
+    // no field on screen matches: a field scrolled out of view does (also over a text on screen that only contains
+    // the words, as a form's summary line does)
+    let all = ax::snapshot(inst, SnapOpts { all: true, ..Default::default() })?;
+    let e = match find_field(&all, target) {
+        Ok(e) if is_field(&e) => e,
+        _ => return here,
+    };
+    if !e.offscreen {
+        return Ok(e);
+    }
+    ax::scroll_into_view(inst, &e)?;
+    let now = ax::snapshot(inst, SnapOpts::default())?;
+    now.get(&e.r).cloned().or_else(|| find_field(&now, target).ok()).ok_or_else(|| anyhow::anyhow!("{target:?} scrolled into view, then not found"))
+}
+
+/// The top of the software keyboard on screen (its keys' and suggestion bar's), when it is up
+fn keyboard_top(s: &Snapshot) -> Option<f64> {
+    if !ax::software_keyboard_up(s) {
+        return None;
+    }
+    let keys = s.elements.iter().filter(|e| e.role == "key").map(|e| e.frame[1]).fold(f64::MAX, f64::min);
+    let win = s.elements.iter().filter(|e| e.window.contains("Keyboard")).map(|e| e.frame[1]).fold(f64::MAX, f64::min);
+    // the suggestion bar above the keys is not always listed: count it in
+    Some(win.min(keys - 50.0))
+}
+
+/// An element under the software keyboard (a button below a form, a field low on the page) is scrolled up clear of
+/// it before a tap: a touch there would hit the keyboard (its suggestion bar typed a word into the field). Answers the
+/// element where it is now.
+pub fn clear_of_keyboard(inst: &Instance, e: El) -> Result<El> {
+    for _ in 0..3 {
+        let s = ax::snapshot(inst, SnapOpts::default())?;
+        let cur = s.get(&e.r).cloned().unwrap_or_else(|| e.clone());
+        let Some(top) = keyboard_top(&s) else { return Ok(cur) };
+        if cur.window.contains("Keyboard") || cur.role == "key" {
+            return Ok(cur);
+        }
+        let cy = cur.frame[1] + cur.frame[3] / 2.0;
+        if cy < top - 8.0 {
+            return Ok(cur);
+        }
+        // drag the content up from the middle of the visible part above the keyboard
+        let room = (top - 120.0).max(80.0);
+        let amount = ((cy - (top - 60.0)) / s.screen.1.max(1.0)).clamp(0.08, 0.6);
+        let _ = room;
+        ax::scroll(inst, "down", amount, None, After::None)?;
+        ax::settle(inst, Duration::from_millis(200), Duration::from_millis(1500));
+    }
+    let s = ax::snapshot(inst, SnapOpts::default())?;
+    let cur = s.get(&e.r).cloned().unwrap_or(e);
+    match keyboard_top(&s) {
+        Some(top) if cur.frame[1] + cur.frame[3] / 2.0 >= top - 8.0 => bail!("@{} {} is under the keyboard and the content does not scroll it up", cur.r, cur.label.as_deref().map(ax::quote).unwrap_or_default()),
+        _ => Ok(cur),
+    }
+}
+
+/// One field of `fill`
+#[derive(Debug, Clone, Deserialize)]
+pub struct FillField {
+    pub target: String,
+    pub text: String,
+    /// empty it first (default: yes; false appends)
+    #[serde(default)]
+    pub clear: Option<bool>,
+}
+
+/// After the last field: nothing, the Return key, or a tap on a button
+#[derive(Debug, Clone)]
+pub enum Submit {
+    None,
+    Return,
+    Tap(String),
+}
+
+impl Submit {
+    /// MCP `submit`: true (Return), a target (a tap), false / absent
+    pub fn of(v: &Value) -> Submit {
+        match v {
+            Value::Bool(true) => Submit::Return,
+            Value::String(s) if s == "return" || s == "true" => Submit::Return,
+            Value::String(s) if !s.is_empty() && s != "false" => Submit::Tap(s.clone()),
+            _ => Submit::None,
+        }
+    }
+}
+
+/// Fills a form: per field, in order, tap it (scrolled into view first), wait for its focus, type (clearing it first
+/// unless clear=false); then submit. Stops at the first field that fails, saying which ones were filled.
+pub fn fill(inst: &Instance, fields: &[FillField], submit: &Submit, after: After) -> Result<Outcome> {
+    anyhow::ensure!(!fields.is_empty(), "fill: fields required ([{{target, text}}, ...])");
+    let before = ax::last(inst);
+    let mut done: Vec<String> = vec![];
+    for (i, fl) in fields.iter().enumerate() {
+        let r = type_into(inst, Some(&fl.target), &fl.text, fl.clear.unwrap_or(true), false, false, After::None);
+        match r {
+            Ok(o) => done.push(format!("{}. {}: {}", i + 1, fl.target, o.did)),
+            Err(e) => {
+                let so_far = if done.is_empty() { String::new() } else { format!("\nfilled before it:\n{}", done.join("\n")) };
+                bail!("fill: field {} ({:?}): {e:#}{so_far}", i + 1, fl.target);
+            }
+        }
+    }
+    match submit {
+        Submit::None => {}
+        Submit::Return => {
+            ax::type_text(inst, "", false, true, false, After::None)?;
+            done.push("Return pressed".into());
+        }
+        Submit::Tap(t) => {
+            let (e, _) = ax::resolve(inst, t)?;
+            let e = clear_of_keyboard(inst, e)?;
+            let o = ax::tap(inst, &format!("@{}", e.r), 80, After::None)?;
+            done.push(o.did);
+        }
+    }
+    Ok(ax::outcome(inst, format!("filled {} field(s):\n{}", fields.len(), done.join("\n")), before, after))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +406,39 @@ mod tests {
         // a button is first responder: no text input
         let b = json!({"focused": true, "text_input": false, "oid": "a1"});
         assert!(!holds_focus(&el("a1", [0.0, 0.0, 1.0, 1.0]), &b));
+    }
+
+    fn lab(r: &str, role: &str, label: &str, frame: [f64; 4]) -> El {
+        El { r: r.into(), role: role.into(), label: (!label.is_empty()).then(|| label.to_string()), frame, oid: r.into(), app: "a".into(), pid: 1, layer: "app".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn fields_by_placeholder_or_the_label_beside_them() {
+        let s = Snapshot {
+            screen: (400.0, 800.0),
+            elements: vec![
+                lab("e1", "text", "Name", [16.0, 100.0, 60.0, 20.0]),
+                lab("e2", "textfield", "", [90.0, 95.0, 290.0, 34.0]),
+                lab("e3", "textfield", "Email", [16.0, 140.0, 370.0, 34.0]),
+                lab("e4", "text", "City", [16.0, 200.0, 60.0, 20.0]),
+                lab("e5", "textfield", "", [90.0, 195.0, 290.0, 34.0]),
+                lab("e6", "text", "Phone", [16.0, 250.0, 100.0, 20.0]),
+                lab("e7", "textfield", "", [16.0, 276.0, 370.0, 34.0]),
+                lab("e8", "text", "Sign up", [16.0, 60.0, 100.0, 30.0]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(find_field(&s, "Email").unwrap().r, "e3");
+        assert_eq!(find_field(&s, "Name").unwrap().r, "e2");
+        assert_eq!(find_field(&s, "city").unwrap().r, "e5");
+        // a label above its field
+        assert_eq!(find_field(&s, "Phone").unwrap().r, "e7");
+        assert_eq!(find_field(&s, "@e5").unwrap().r, "e5");
+        // a title above a row that has its own label is no field's label
+        assert_eq!(find_field(&s, "Sign up").unwrap().r, "e8");
+        assert!(matches!(Submit::of(&json!(true)), Submit::Return));
+        assert!(matches!(Submit::of(&json!("Sign Up")), Submit::Tap(_)));
+        assert!(matches!(Submit::of(&json!(false)), Submit::None));
     }
 
     #[test]

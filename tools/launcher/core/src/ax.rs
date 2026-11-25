@@ -1586,7 +1586,7 @@ fn wait_front_change(inst: &Instance, front: Vec<String>, timeout: Duration) -> 
     false
 }
 
-fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
+pub(crate) fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
     let sock = sock_of_pid(inst, e.pid).ok_or_else(|| anyhow!("{} is gone", e.app))?;
     let r = ask(&sock, &json!({"op": "scroll", "oid": e.oid}), Duration::from_secs(3))?.ok_or_else(|| anyhow!("{} is gone", e.app))?;
     if let Some(err) = r["error"].as_str() {

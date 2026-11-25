@@ -4,6 +4,8 @@ test app tests/apps/x86forms (tests/apps/build.sh x86forms):
 
   focus    type target= waits for the tapped field: two fields typed back to back with no pause between, each gets
            its own text (the second used to race the focus move); typing into a button (no field) is an error
+  fill     a sign-up form in one call: fields by placeholder ("Email"), by the label beside them ("Name", "City"), a
+           secure field, a field far down (scrolled into view), then a tap on Sign Up; again with Return as submit
 
 Usage: tests/ax/actions_e2e.py --phone NAME [--mcp PATH] [--only focus,...] [--out DIR] [--app PATH]
 Exit status: failed checks. Use a phone of your own: the checks install, launch and terminate apps.
@@ -72,6 +74,24 @@ class Run:
         st = self.state("form-state")
         self.check("focus: nothing typed after the error", "zzz" not in st, st)
 
+    # -- fill: a form in one call
+    def fill(self):
+        if not self.launch():
+            return
+        fields = [{"target": "Name", "text": "Bo Diaz"}, {"target": "Email", "text": "bo@example.com"},
+                  {"target": "Password", "text": "s3cret!"}, {"target": "City", "text": "Lyon"},
+                  {"target": "Notes", "text": "far down"}]
+        text, _, err, dt = self.m.call("fill", fields=fields, submit="Sign Up", after="diff")
+        self.check("fill: five fields and a submit tap", not err, "%.1f s: %s" % (dt, text[:600].replace("\n", " | ")))
+        sub = self.state("submitted")
+        self.check("fill: the app got every field", sub == "submitted: name=Bo Diaz email=bo@example.com password=7 city=Lyon notes=far down", sub)
+        # filled again: fields are emptied first (no "Bo DiazBo Diaz"), Return submits the last one
+        text, _, err, _ = self.m.call("fill", fields=[{"target": "Notes", "text": "again"}], submit=True, after="none")
+        self.check("fill: Return as submit", not err and "Return pressed" in text, text[:300].replace("\n", " | "))
+        # a field that does not exist: an error naming it
+        text, _, err, _ = self.m.call("fill", fields=[{"target": "Email", "text": "x@y.z"}, {"target": "No such field", "text": "x"}], after="none")
+        self.check("fill: a missing field is an error after the ones before it", err and "No such field" in text and "filled before it" in text, text[:300].replace("\n", " | "))
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -88,7 +108,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["focus"]:
+        for name in ["focus", "fill"]:
             if want(name):
                 getattr(r, name)()
     finally:

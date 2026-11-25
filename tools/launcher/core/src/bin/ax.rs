@@ -16,6 +16,10 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
                                        into the focused field (as the software keyboard: any text); --submit and a newline in TEXT
                                        press the Return key; --keys: key presses; --into: tap TARGET first and wait (up to 2 s) until it
                                        has the focus (an error when the text would land elsewhere)
+  fill TARGET=TEXT... [--submit] [--submit-tap TARGET] [--append]
+                                       a form in one call: each field (its label, placeholder, the label beside it,
+                                       @ref, id:) tapped, focused, emptied (not with --append) and typed; then Return
+                                       (--submit) or a tap (--submit-tap)
   key COMBO                            return | tab | escape | delete | up ... | cmd+a | shift+tab
   scroll up|down|left|right [AMOUNT] [--at TARGET]
                                        precise scroll (no fling), AMOUNT in screens (default 0.5)
@@ -81,6 +85,7 @@ fn run() -> Result<()> {
     let clear = flag("--clear");
     let submit = flag("--submit");
     let keys = flag("--keys");
+    let append = flag("--append");
     let dynamic_type = flag("--dynamic-type");
     let mut opt = |name: &str| -> Option<String> {
         let i = args.iter().position(|a| a == name)?;
@@ -102,6 +107,7 @@ fn run() -> Result<()> {
     let rules = opt("--rules");
     let aname = opt("--name");
     let into = opt("--into");
+    let submit_tap = opt("--submit-tap");
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
         println!("{USAGE}");
         return Ok(());
@@ -202,6 +208,21 @@ fn run() -> Result<()> {
             print(ax::tap(&inst, &rest, ms.and_then(|m| m.parse().ok()).unwrap_or(800), after)?)
         }
         "type" => print(x86sim_core::axact::type_into(&inst, into.as_deref(), &rest, clear, submit, keys, after)?),
+        "fill" => {
+            let fields: Vec<x86sim_core::axact::FillField> = args
+                .iter()
+                .map(|a| {
+                    let (t, v) = a.split_once('=').ok_or_else(|| anyhow!("fill: TARGET=TEXT, not {a:?}"))?;
+                    Ok(x86sim_core::axact::FillField { target: t.to_string(), text: v.to_string(), clear: Some(!append) })
+                })
+                .collect::<Result<_>>()?;
+            let sub = match (submit, submit_tap) {
+                (_, Some(t)) => x86sim_core::axact::Submit::Tap(t),
+                (true, None) => x86sim_core::axact::Submit::Return,
+                _ => x86sim_core::axact::Submit::None,
+            };
+            print(x86sim_core::axact::fill(&inst, &fields, &sub, after)?)
+        }
         "key" => {
             need("a key")?;
             print(ax::key(&inst, &rest, after)?)
