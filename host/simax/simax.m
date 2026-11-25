@@ -250,6 +250,13 @@ static void emit(Walk* w, id e, int depth, NSString* container) {
 		if ([e respondsToSelector:@selector(accessibilityIdentifier)]) ident = str([e accessibilityIdentifier]);
 	} @catch (id ex) {
 	}
+	// the status bar's time as drawn: its label is the wall clock, also while a status bar override (simctl
+	// status_bar --time 9:41) draws another text. The label is kept when it says the shown time (with AM / PM).
+	if ([e isKindOfClass:[UIView class]] && [NSStringFromClass([e class]) containsString:@"StatusBarStringView"]) {
+		NSString* shown = nil;
+		@try { shown = str([e valueForKey:@"text"]); } @catch (id ex) { shown = nil; }
+		if (shown && (!label || ![label hasPrefix:shown])) label = shown;
+	}
 	NSString* role = role_of(e, t);
 	if ([role isEqualToString:@"element"] && [NSStringFromClass([e class]) hasSuffix:@"IconView"]) role = @"icon";
 	if (!label && !value && !ident && [role isEqualToString:@"element"]) return;  // nothing to say, nothing to act on
@@ -632,9 +639,13 @@ static NSArray<UIWindow*>* hosted_windows(void) {
 	id scr = ((id(*)(id, SEL))objc_msgSend)(NSClassFromString(@"UIScreen"), NSSelectorFromString(@"mainScreen"));
 	CGRect sb = scr ? ((CGRect(*)(id, SEL))objc_msgSend)(scr, @selector(bounds)) : CGRectNull;
 	for (UIWindow* win in every) {
-		if (![win isKindOfClass:[UIWindow class]] || ![NSStringFromClass([win class]) isEqualToString:@"_UIHostedWindow"]) continue;
+		if (![win isKindOfClass:[UIWindow class]]) continue;
+		// an ExtensionKit UI extension's content (the photos picker, PHPickerViewController): a plain UIWindow of a
+		// _UIHostedWindowScene, which is not one of the application's connected scenes
+		BOOL ext_scene = win.windowScene && [NSStringFromClass([win.windowScene class]) isEqualToString:@"_UIHostedWindowScene"];
+		if (!ext_scene && ![NSStringFromClass([win class]) isEqualToString:@"_UIHostedWindow"]) continue;
 		if (win.hidden || win.alpha < 0.01 || !win.subviews.count || !win.rootViewController) continue;
-		if (CGRectIsNull(sb) || !CGRectEqualToRect(win.bounds, sb)) continue;
+		if (ext_scene ? win.bounds.size.width < 1 : (CGRectIsNull(sb) || !CGRectEqualToRect(win.bounds, sb))) continue;
 		[a addObject:win];
 	}
 	return a;
@@ -815,6 +826,48 @@ static NSNumber* orient_of(UIWindowScene* sc) {
 	@try { id o = [sc valueForKey:@"interfaceOrientation"]; return [o isKindOfClass:[NSNumber class]] ? o : @0; } @catch (id ex) { return @0; }
 }
 
+static id msg0(id o, NSString* sel) {
+	SEL s = NSSelectorFromString(sel);
+	return o && [o respondsToSelector:s] ? ((id(*)(id, SEL))objc_msgSend)(o, s) : nil;
+}
+static long msgl(id o, NSString* sel, long dflt) {
+	SEL s = NSSelectorFromString(sel);
+	return o && [o respondsToSelector:s] ? ((long(*)(id, SEL))objc_msgSend)(o, s) : dflt;
+}
+static int msgi(id o, NSString* sel) {
+	SEL s = NSSelectorFromString(sel);
+	return o && [o respondsToSelector:s] ? ((int(*)(id, SEL))objc_msgSend)(o, s) : 0;
+}
+static BOOL msgb(id o, NSString* sel) {
+	SEL s = NSSelectorFromString(sel);
+	return o && [o respondsToSelector:s] ? ((BOOL(*)(id, SEL))objc_msgSend)(o, s) : NO;
+}
+
+// SpringBoard: whether the device is locked (the Lock Screen / Cover Sheet is up with the UI locked), and the
+// processes FrontBoard has suspended (FBProcessTaskStateSuspended): a view service such as SafariViewService keeps a
+// foreground scene, and with it its .fg marker, after the app that hosted it closed it, but RunningBoard suspended it
+// and it answers nobody. The host stops asking those.
+static void springboard_info(NSMutableDictionary* d) {
+	@try {
+		Class lm = NSClassFromString(@"SBLockScreenManager");
+		id m = msg0(lm, @"sharedInstanceIfExists") ?: msg0(lm, @"sharedInstance");
+		if (m && [m respondsToSelector:NSSelectorFromString(@"isUILocked")]) d[@"locked"] = @(msgb(m, @"isUILocked"));
+	} @catch (id ex) {
+	}
+	@try {
+		id pm = msg0(NSClassFromString(@"FBProcessManager"), @"sharedInstance");
+		NSArray* all = msg0(pm, @"allProcesses");
+		NSMutableArray* sus = [NSMutableArray array];
+		for (id p in [all isKindOfClass:[NSArray class]] ? all : @[]) {
+			id st = msg0(p, @"state");
+			int pid = msgi(p, @"pid") ?: msgi(st, @"pid");
+			if (pid > 0 && msgl(st, @"taskState", 0) == 3) [sus addObject:@(pid)];   // FBProcessTaskStateSuspended
+		}
+		d[@"suspended"] = sus;
+	} @catch (id ex) {
+	}
+}
+
 static NSMutableDictionary* info(void) {
 	UIApplication* app = UIApplication.sharedApplication;
 	NSMutableDictionary* d = [NSMutableDictionary dictionary];
@@ -870,6 +923,7 @@ static NSMutableDictionary* info(void) {
 		}
 	}
 	d[@"ax"] = @(atomic_load(&g_ax_loaded));
+	if ([d[@"bundle"] isEqualToString:@"com.apple.springboard"]) springboard_info(d);
 	return d;
 }
 
@@ -1735,7 +1789,8 @@ static void* listen_thread(void* arg) {
 static char g_fg[260];
 static void set_fg(bool on) {
 	static int cur = -1;
-	if (cur == (int)on) return;
+	// (the host removes the marker of a process FrontBoard suspended: made again when it comes back on screen)
+	if (cur == (int)on && (!on || access(g_fg, F_OK) == 0)) return;
 	cur = on;
 	if (on) {
 		int fd = open(g_fg, O_CREAT | O_WRONLY | O_TRUNC, 0644);

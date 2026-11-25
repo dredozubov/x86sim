@@ -29,7 +29,9 @@ Each application listens on a Unix socket next to the phone's frame ring:
 
 `.fg` is created when the app enters the foreground or becomes active, and removed when it enters the background
 or terminates; scene and window notifications update it too, so a view service whose scene or full-screen
-`_UIHostedWindow` comes up (watchOS's QuickboardViewService, the text input sheet) counts as on screen. SpringBoard
+`_UIHostedWindow` comes up (watchOS's QuickboardViewService, the text input sheet) counts as on screen, and so does a
+window of a `_UIHostedWindowScene`, the scene an ExtensionKit UI extension or remote view service draws an app's sheet
+in (the photos picker of `PHPickerViewController`, SafariViewService for `SFSafariViewController`). SpringBoard
 keeps its own. The host only asks processes that have one. Connections are
 non-blocking, because a process RunningBoard suspended (a poster extension, for example) never accepts. A process
 that did not answer is given 80 ms the next time, until it answers again. `mksimdevice.py` removes the previous
@@ -53,9 +55,9 @@ says whether that screen is `UIScreen.mainScreen` and `display` gives its displa
 
 | op | arguments | answer |
 |---|---|---|
-| `info` | | the fields above |
+| `info` | | the fields above; SpringBoard's also `locked` (`SBLockScreenManager isUILocked`) and `suspended` (pids FrontBoard suspended) |
 | `tree` | `fg` (only walk when on screen), `all` (include elements scrolled out of view), `noax`, `timeout` | plus `elements`, `focus` (oid of the first responder), `focus_item` (the focus engine's item: `oid`, `class`, `frame`, `label`; tvOS's remote focus), `animating`, `web_pending` |
-| `type` | `text`, `clear`, `submit` | `typed`, `field` (class), `value` |
+| `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `value` |
 | `scroll` | `oid` | `ok` (`accessibilityScrollToVisible`, else `scrollRectToVisible` in the nearest scroll view) |
 | `activate` | `oid`, `tap` | `ok` (`accessibilityActivate`); with `tap`, when that answers NO, a tap made in the process at the element's activation point (a UITouch with an IOHIDEvent digitizer event through `sendEvent:`): `tapped`, `at` |
 | `scrollby` | `dir` (up down left right), `amount` (part of the view) | scrolls the largest visible scroll view that scrolls that way: `ok`, `moved`, `view` |
@@ -160,9 +162,20 @@ turns them by that window's interface orientation onto the panel. An unfolded iP
 screen's display (`@<id> touch`, its native turn added), and settling and screenshots use that screen's ring. A
 snapshot says `· inner screen` / `· outer screen` and `· landscape` in its first line.
 
+A process on screen that does not answer while SpringBoard lists it as `suspended` (a poster extension, a view
+service whose app closed it) is not on screen: the host removes its `.fg` without a word, and simax makes it again
+when the process comes back. `locked` from SpringBoard becomes the snapshot's `locked` and a `locked:` line. The status
+bar's time is the text it draws (its accessibility label is the wall clock, also under a status bar override), unless
+the label starts with that text (it adds AM / PM).
+
 A process on screen that does not answer is reported in `busy` by bundle and pid the first time ("no answer in
 6.0 s"). After that it gets 80 ms per snapshot and is not reported again until it answers. When no process on
 screen answers at all, the snapshot fails and names them.
+
+`type` sends the text without its newlines and presses the Return key (HID) for each newline and for `submit`:
+`insertText:` of a newline is a space in a SwiftUI `TextField` and submits no web form, while Return submits a
+single-line field and is a new line in a text view. simhid can hold a key up to about a second (keyboard attach, the
+guard after a touch) and does not say when it went, so the host waits 1-1.2 s after each Return.
 
 After an action, the host waits for the frame ring to go quiet (350 ms, at most 4 s) and for `animating` to clear
 (at most 6 s), then takes the snapshot.

@@ -13,7 +13,8 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
   tap TARGET                           TARGET: @e3 | id:IDENTIFIER | \"label text\" | X Y (points)
   long-press TARGET [--ms N]           (default 800 ms)
   type TEXT [--clear] [--submit] [--keys]
-                                       into the focused field (as the software keyboard: any text); --keys: key presses
+                                       into the focused field (as the software keyboard: any text); --submit and a newline in TEXT
+                                       press the Return key; --keys: key presses
   key COMBO                            return | tab | escape | delete | up ... | cmd+a | shift+tab
   scroll up|down|left|right [AMOUNT] [--at TARGET]
                                        precise scroll (no fling), AMOUNT in screens (default 0.5)

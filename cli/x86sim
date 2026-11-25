@@ -65,7 +65,8 @@ Agents (read the screen as text, act on elements; same core as the MCP server's 
                        touch an element (scrolled into view first if needed); answers with the screen after it settled
                        (--after diff|none). tap X Y with two numbers stays device pixels (below)
   type TEXT [--clear] [--submit] [--keys]
-                       into the focused field as the software keyboard does (any characters); --keys: key presses
+                       into the focused field as the software keyboard does (any characters); --submit and a newline in
+                       TEXT press the Return key (submits a field or web form, a new line in a text view); --keys: key presses
   key NAME|COMBO       return tab escape delete up down ... or cmd+a, shift+tab (a number: a HID usage)
   scroll up|down|left|right [SCREENS] [--at TARGET] | scroll-to TARGET [--dir D] | swipe up|down|left|right|home|back
   wait-for TARGET [--gone] [--timeout S]
