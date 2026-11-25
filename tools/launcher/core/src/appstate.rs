@@ -242,6 +242,58 @@ pub fn app_state(inst: &Instance, bundle: Option<&str>) -> Result<Vec<AppState>>
     Ok(out)
 }
 
+/// launchd's exit lines of an app's job, oldest first
+fn exits(log: &str, bundle: &str) -> Vec<String> {
+    let key = format!("UIKitApplication:{bundle}[");
+    log.lines().filter(|l| l.contains(&key) && (l.contains("exited due to") || l.contains("exited with"))).map(|l| l.trim().to_string()).collect()
+}
+
+/// Is a process with this pid (inside the phone) alive on it
+pub fn alive(inst: &Instance, pid: u32) -> bool {
+    let procs = scan();
+    phone_pids(inst, &procs).into_iter().any(|p| ns_pid(p) == pid && procs.get(&p).is_some_and(|r| r.state != 'Z' && r.state != 'X'))
+}
+
+/// Why a launch failed, from what launchd logged since (`n0` exit lines before it): "; exit(3) at ..."
+fn why(inst: &Instance, bundle: &str, n0: usize) -> String {
+    // launchd writes the line a moment after the process ends
+    for _ in 0..8 {
+        let ex = exits(&launchd_log(inst), bundle);
+        if ex.len() > n0 {
+            let e = last_exit_in(&ex[n0..].join("\n"), bundle).unwrap_or_default();
+            return format!(": {} at {}", e.how, e.when);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    String::new()
+}
+
+/// How long a launched app must stay alive to count as started
+pub const LAUNCH_WATCH: Duration = Duration::from_secs(3);
+
+/// Launches an app (apps::launch_env, simctl launch) and checks it started: a pid came back and the process is still
+/// alive after LAUNCH_WATCH. Else an error with launchd's exit line (exit code, signal). Answers the helper's line.
+pub fn launch_checked(inst: &Instance, bundle: &str, args: &[String], env: &[(String, String)]) -> Result<String> {
+    let n0 = exits(&launchd_log(inst), bundle).len();
+    let a = match crate::apps::launch_env(inst, bundle, args, env) {
+        Ok(a) => a,
+        Err(e) => bail!("{e:#}{}", why(inst, bundle, n0)),
+    };
+    let pid: i64 = a.rsplit(": ").next().and_then(|p| p.trim().parse().ok()).unwrap_or(-1);
+    if pid <= 0 {
+        bail!("launching {bundle}: no process started (pid {pid}){}", why(inst, bundle, n0));
+    }
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < LAUNCH_WATCH {
+        if !alive(inst, pid as u32) {
+            let secs = t0.elapsed().as_secs_f64();
+            bail!("{bundle} (pid {pid}) died within {secs:.1} s of its launch{}", why(inst, bundle, n0));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(a)
+}
+
 impl AppState {
     pub fn text(&self) -> String {
         let mut s = format!("{}{}: ", self.bundle_id, self.name.as_deref().map(|n| format!(" ({n})")).unwrap_or_default());

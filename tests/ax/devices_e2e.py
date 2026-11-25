@@ -6,6 +6,8 @@
            removed with --privileged, which needs a person at the password dialog)
   state    app_state of the test app (tests/apps/x86forms): not running, then launched (its pid, foreground,
            memory), sent to the background by Home, terminated (last exit SIGKILL); without bundle_id: running apps
+  launch   app_launch of an app that exits at once (x86forms --exit-early, exit(3)) fails saying so; a good launch
+           still answers its pid
 
 Usage: tests/ax/devices_e2e.py --phone NAME [--mcp PATH] [--only delete,...] [--out DIR] [--app PATH]
   --phone: a running phone of yours for the app checks; delete makes and deletes <phone>-del itself.
@@ -114,6 +116,17 @@ class Run:
         e = a.get("last_exit") or {}
         self.check("state: terminated: not running, last exit recorded", not a.get("running") and "SIGKILL" in e.get("how", ""), text[:300])
 
+    # -- launch: an app that dies at once
+    def launch(self):
+        if not self.install():
+            return
+        self.m.call("app_terminate", bundle_id=APP, after="none")
+        text, _, err, dt = self.m.call("app_launch", bundle_id=APP, args=["--exit-early"], after="none")
+        self.check("launch: an app that exits at once is an error", err and "exit(3)" in text, "%.1f s: %s" % (dt, text[:300]))
+        text, _, err, dt = self.m.call("app_launch", bundle_id=APP, after="none")
+        self.check("launch: a good launch answers its pid", not err and re.search(r": \d+", text), "%.1f s: %s" % (dt, text[:200]))
+        self.m.call("app_terminate", bundle_id=APP, after="none")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -130,7 +143,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["state", "delete"]:
+        for name in ["state", "launch", "delete"]:
             if want(name):
                 getattr(r, name)()
     finally:

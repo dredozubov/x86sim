@@ -81,7 +81,7 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "path": {"type": "string", "description": "the .app directory on this machine"}}, "required": ["path"]}},
         {"name": "app_uninstall", "description": "Uninstall an app from a running device (simctl uninstall).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}}, "required": ["bundle_id"]}},
-        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app, env sets environment variables in its process (simctl's SIMCTL_CHILD_NAME, x86sim launch --env). Returns the pid.",
+        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app, env sets environment variables in its process (simctl's SIMCTL_CHILD_NAME, x86sim launch --env). Returns the pid; an error when no process started or it died within 3 s, with how it ended (exit code, signal).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "environment variables for the app, e.g. {\"API_URL\": \"http://localhost:8080\"}"}, "after": after}, "required": ["bundle_id"]}},
         {"name": "app_list", "description": "Installed apps on a running device (simctl listapps).", "inputSchema": {"type": "object", "properties": {"phone": phone}}},
         // agents: the screen as text and actions on its elements (x86sim_core::ax, host/simax)

@@ -2057,7 +2057,8 @@ pub fn launch(inst: &Instance, bundle: &str, args: &[String], after: After) -> R
 /// `launch` with environment variables for the app (KEY, VALUE)
 pub fn launch_env(inst: &Instance, bundle: &str, args: &[String], env: &[(String, String)], after: After) -> Result<Outcome> {
     let before = last(inst);
-    let a = crate::apps::launch_env(inst, bundle, args, env)?;
+    // a launch that started nothing, or an app that died at once, is an error with why (appstate.rs)
+    let a = crate::appstate::launch_checked(inst, bundle, args, env)?;
     if after != After::None {
         wait_front_is(inst, bundle, Duration::from_secs(20));
     }
