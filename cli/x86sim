@@ -87,6 +87,9 @@ Agents (read the screen as text, act on elements; same core as the MCP server's 
   expect TARGET [--gone] [--label L] [--value V] [--contains T] [--enabled|--disabled] [--selected|--unselected]
          [--focused|--unfocused] [--count N] [--timeout S]
                        check the screen: PASS, or FAIL (exit 1) with what is there instead / the nearest by text
+  app-state [BUNDLEID]
+                       installed, running, pid(s), foreground / background / suspended, memory, CPU, uptime, last
+                       exit (launchd's line); no BUNDLEID: every running app
   press BUTTON | open URL
                        a hardware button / a URL, answering with the screen
   ax-inspect [TARGET | X Y] [--json]
@@ -282,7 +285,7 @@ case $c in
 	logs) cmd_logs "$@" ;;
 	view) cmd_view "$@" ;;
 	screenshot|shot) cmd_screenshot "$@" ;;
-	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill|drag|set-value|expect) ax "$c" "$@" ;;
+	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill|drag|set-value|expect|app-state) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)
 		if [ $# -ge 1 ] && case $1 in -*) false ;; *) true ;; esac && [ "$c" = ax-audit ]; then

@@ -176,6 +176,7 @@ x86sim --phone qa logs com.example.myapp --relaunch   # restart it with os_log r
 x86sim --phone qa log stream --app com.example.myapp --match ERROR
 x86sim --phone qa launch --console com.example.myapp  # stdout / stderr here
 x86sim --phone qa logs                        # the phone's service logs; logs LABEL tails one
+x86sim --phone qa app-state com.example.myapp # running? pid, foreground / background / suspended, MB, CPU, last exit
 ```
 
 ## 6b. Debug with LLDB
@@ -293,7 +294,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `screenshot`,
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `app_state`, `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 

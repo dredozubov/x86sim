@@ -4,6 +4,8 @@
   delete   sim_add_device + sim_start a scratch device, sim_delete refuses it running, deletes it with stop=true:
            its folder, state dir, prefix and ring are gone; the overlay's root-owned work folder is reported (or
            removed with --privileged, which needs a person at the password dialog)
+  state    app_state of the test app (tests/apps/x86forms): not running, then launched (its pid, foreground,
+           memory), sent to the background by Home, terminated (last exit SIGKILL); without bundle_id: running apps
 
 Usage: tests/ax/devices_e2e.py --phone NAME [--mcp PATH] [--only delete,...] [--out DIR] [--app PATH]
   --phone: a running phone of yours for the app checks; delete makes and deletes <phone>-del itself.
@@ -71,6 +73,47 @@ class Run:
         text, _, err, _ = self.m.call("sim_delete", phone=name)
         self.check("delete: a device that is not there is an error", err, text[:120])
 
+    def install(self):
+        if getattr(self, "_installed", None) is None:
+            text, _, err, _ = self.m.call("app_install", path=self.app)
+            self._installed = not err
+            self.check("x86forms installed", self._installed, text[:160])
+        return self._installed
+
+    def app_info(self):
+        text, st, err, _ = self.m.call("app_state", bundle_id=APP)
+        a = ((st or {}).get("apps") or [{}])[0]
+        return a, text
+
+    # -- state
+    def state(self):
+        if not self.install():
+            return
+        self.m.call("app_terminate", bundle_id=APP, after="none")
+        time.sleep(1)
+        a, text = self.app_info()
+        self.check("state: installed, not running", a.get("installed") and not a.get("running"), text[:200])
+        text, _, err, _ = self.m.call("app_launch", bundle_id=APP, after="none")
+        pid = int(re.search(r": (-?\d+)", text).group(1)) if re.search(r": (-?\d+)", text) else -1
+        self.m.call("wait_for", target="Sign up", timeout=60)
+        a, text = self.app_info()
+        p = (a.get("processes") or [{}])[0]
+        self.check("state: running with the launch's pid, in front", a.get("running") and p.get("pid") == pid and p.get("state", "").startswith("foreground"),
+                   "launch pid %s | %s" % (pid, text[:240]))
+        self.check("state: memory and uptime", p.get("memory_mb", 0) > 5 and p.get("uptime_s", -1) >= 0, "%s MB, %s s" % (p.get("memory_mb"), p.get("uptime_s")))
+        text, st, err, _ = self.m.call("app_state")
+        self.check("state: without bundle_id the running apps", not err and APP in text, text[:200])
+        self.m.call("press", button="home", after="none")
+        time.sleep(3)
+        a, text = self.app_info()
+        p = (a.get("processes") or [{}])[0]
+        self.check("state: Home sends it to the background", p.get("state") in ("background", "suspended"), text[:200])
+        self.m.call("app_terminate", bundle_id=APP, after="none")
+        time.sleep(1.5)
+        a, text = self.app_info()
+        e = a.get("last_exit") or {}
+        self.check("state: terminated: not running, last exit recorded", not a.get("running") and "SIGKILL" in e.get("how", ""), text[:300])
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -87,7 +130,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["delete"]:
+        for name in ["state", "delete"]:
             if want(name):
                 getattr(r, name)()
     finally:

@@ -9,6 +9,7 @@ pub mod axaudit;
 pub mod axinspect;
 pub mod appcache;
 pub mod apps;
+pub mod appstate;
 pub mod desktop;
 pub mod dev;
 pub mod devapp;

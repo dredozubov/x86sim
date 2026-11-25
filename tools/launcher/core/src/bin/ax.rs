@@ -39,6 +39,8 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
                                        Apple's I/O > Keyboard: Toggle Software Keyboard (Cmd-K), Connect Hardware
                                        Keyboard (Shift-Cmd-K; kept across boots)
   open URL | launch BUNDLEID [ARGS] | terminate BUNDLEID
+  app-state [BUNDLEID]                 installed, running, pid(s), foreground / background / suspended, memory, CPU,
+                                       uptime, last exit; no BUNDLEID: every running app
   screenshot [OUT.png] [--scale N]     N: divisor (default: the device scale, a picture in points)
   inspect [TARGET | X Y] [--json]      Accessibility Inspector: every property of an element (label, value, hint,
                                        traits, actions, custom actions, rotors, language, class, view, controller,
@@ -330,6 +332,18 @@ fn run() -> Result<()> {
         "terminate" => {
             need("a bundle id")?;
             print(ax::terminate(&inst, &rest, after)?)
+        }
+        "app-state" | "appstate" => {
+            let v = x86sim_core::appstate::app_state(&inst, args.first().map(|s| s.as_str()))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if v.is_empty() {
+                println!("no app running");
+            } else {
+                for x in &v {
+                    println!("{}", x.text());
+                }
+            }
         }
         "screenshot" | "shot" => {
             let div = scale.and_then(|s| s.parse().ok()).unwrap_or(inst.scale.round().max(1.0) as u32);
