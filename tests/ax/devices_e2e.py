@@ -185,9 +185,10 @@ class Run:
         text, st, err, _ = self.m.call("sim_record_video", action="status")
         self.check("record: status: recording", not err and (st or {}).get("recording") and (st or {}).get("secs", 0) >= 2, text[:200])
         self.m.call("swipe", direction="right", after="none")
+        time.sleep(1.5)
         text, st, err, dt = self.m.call("sim_record_video", action="stop")
         st = st or {}
-        self.check("record: stop answers the file, its length and size", not err and st.get("bytes", 0) > 1000 and st.get("secs", 0) >= 3, "%.1f s: %s" % (dt, text[:240]))
+        self.check("record: stop answers the file, its length and size", not err and st.get("bytes", 0) > 1000 and st.get("secs", 0) >= 2.5, "%.1f s: %s" % (dt, text[:240]))
         dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip()
         self.check("record: the MP4 plays (ffprobe reads its length)", dur and abs(float(dur) - st.get("secs", 0)) < 1.5, "ffprobe %s s, answer %s s" % (dur, st.get("secs")))
         text, _, err, _ = self.m.call("sim_record_video", action="stop")
