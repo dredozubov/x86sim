@@ -217,7 +217,8 @@ id, openat/mkdirat/... on behalf of extensions, package lookup, directory entrie
 
 `host/simaudio/arm64/libsimaudio.dylib`, injected into each process, provides the audio devices a Mac's CoreSimulator
 and coreaudiod would, and streams PCM over `simaudio.sock` to `cli/libexec/simaudio.py`, which boot-a64.sh starts on
-every boot. With `X86SIM_AUDIO=1` it plays the output on PipeWire and records the host's microphone; otherwise input
+every boot. With `X86SIM_AUDIO=1` it plays the output on PipeWire and records the host's microphone (`pw-cat -a`; with
+PipeWire before 1.4, whose pw-cat has no raw mode, `pacat`/`parec --raw` through pipewire-pulse); otherwise input
 streams get silence. Either way it offers the output streams on a tap, `simaudio-tap.sock` in the state dir, where
 `x86sim serve` (`tools/launcher/core/src/share/audio.rs`) mixes them for a browser (Opus or PCM on the page's
 WebSocket) and feeds a browser's microphone back to the input streams. `X86SIM_AUDIO_SOCKET=none` leaves the devices
