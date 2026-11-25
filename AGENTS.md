@@ -5,9 +5,10 @@
 - x86Sim is built on Linux. Every binary, library, test app and resource must build here with the Linux toolchain
   (build/linux-env.sh: clang, ld64.lld, swiftc and the SDKs in sdks/). Nothing in the product, the release or the
   setup may depend on copying files or build output from a Mac.
-- The Mac ($X86SIM_MAC) is only for comparing against Apple's simulator (tests/apps/sdkcov/ref-mac.sh) and for
-  what is impossible on Linux. If something really cannot be built here, say so in the change, explain why, and
-  find the Linux path before adding a new Mac dependency.
+- The Mac ($X86SIM_MAC) is for comparison testing and validation: running the same app, check or input on Apple's
+  simulator to see what Apple does (tests/apps/sdkcov/ref-mac.sh), and validating x86Sim's results against it. It
+  is not a build machine and not a source of files for the product. If something really cannot be built here, say
+  so in the change, explain why, and find the Linux path before adding a Mac dependency.
 
 ## Stopping processes
 
