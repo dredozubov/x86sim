@@ -38,7 +38,7 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
   keyboard software on|off|toggle | hardware connect|disconnect|toggle | status
                                        Apple's I/O > Keyboard: Toggle Software Keyboard (Cmd-K), Connect Hardware
                                        Keyboard (Shift-Cmd-K; kept across boots)
-  open URL | launch BUNDLEID [ARGS] | terminate BUNDLEID
+  open URL | launch BUNDLEID [ARGS] | terminate BUNDLEID [--kill]   (--kill: SIGKILL its process, as a crash)
   record start OUT.mp4 [--max S] | record stop | record status
                                        screen recording in the background (default at most 300 s); stop finishes the
                                        file and prints its path, length and size
@@ -101,6 +101,7 @@ fn run() -> Result<()> {
     let append = flag("--append");
     let stop = flag("--stop");
     let privileged = flag("--privileged");
+    let kill = flag("--kill");
     let tri = |on: bool, off: bool| if on { Some(true) } else if off { Some(false) } else { None };
     let (en, dis) = (flag("--enabled"), flag("--disabled"));
     let (sel, unsel) = (flag("--selected"), flag("--unselected"));
@@ -331,6 +332,12 @@ fn run() -> Result<()> {
         "launch" => {
             let b = args.first().cloned().ok_or_else(|| anyhow!("launch: a bundle id"))?;
             print(ax::launch(&inst, &b, &args[1..], after)?)
+        }
+        "terminate" if kill => {
+            need("a bundle id")?;
+            let before = ax::last(&inst);
+            let pids = x86sim_core::appstate::kill_app(&inst, &rest)?;
+            print(ax::outcome(&inst, format!("killed {rest} (SIGKILL, pid {pids:?})"), before, after))
         }
         "terminate" => {
             need("a bundle id")?;

@@ -359,6 +359,32 @@ pub fn launch_checked(inst: &Instance, bundle: &str, args: &[String], env: &[(St
     Ok(a)
 }
 
+/// Kills an app's process(es) with SIGKILL, as a crash or the kernel would end them (`app_terminate signal=kill`):
+/// its own processes only, found below the phone's launchd_sim by the app's executable path, signalled by pid. Waits
+/// until they are gone (3 s). Answers the pids (inside the phone) it killed.
+pub fn kill_app(inst: &Instance, bundle: &str) -> Result<Vec<u32>> {
+    let apps = installed(inst)?;
+    let app = apps.get(bundle).ok_or_else(|| anyhow::anyhow!("{bundle} is not installed on {}", inst.name))?;
+    let procs = scan();
+    let hp = app_pids(app, &phone_pids(inst, &procs));
+    anyhow::ensure!(!hp.is_empty(), "{bundle} is not running");
+    let pids: Vec<u32> = hp.iter().map(|p| ns_pid(*p)).collect();
+    for p in &hp {
+        unsafe {
+            libc::kill(*p as i32, libc::SIGKILL);
+        }
+    }
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) {
+        let now = scan();
+        if hp.iter().all(|p| now.get(p).is_none_or(|r| r.state == 'Z' || r.state == 'X')) {
+            return Ok(pids);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!("{bundle}: pid(s) {pids:?} still there 3 s after SIGKILL")
+}
+
 impl AppState {
     pub fn text(&self) -> String {
         let mut s = format!("{}{}: ", self.bundle_id, self.name.as_deref().map(|n| format!(" ({n})")).unwrap_or_default());

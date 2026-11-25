@@ -178,6 +178,7 @@ x86sim --phone qa log stream --app com.example.myapp --match ERROR
 x86sim --phone qa launch --console com.example.myapp  # stdout / stderr here
 x86sim --phone qa logs                        # the phone's service logs; logs LABEL tails one
 x86sim --phone qa app-state com.example.myapp # running? pid, foreground / background / suspended, MB, CPU, last exit
+x86sim --phone qa terminate com.example.myapp --kill   # SIGKILL, as a crash would (MCP app_terminate signal=kill)
 ```
 
 Why an app died at launch shows in three places: `app_launch` fails when no process started or it died within 3 s,

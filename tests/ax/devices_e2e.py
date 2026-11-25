@@ -8,6 +8,7 @@
            memory), sent to the background by Home, terminated (last exit SIGKILL); without bundle_id: running apps
   abort    why an app died: dyld refusing x86dyldfail (a missing symbol) and x86forms calling abort_with_reason
            (recorded by libsimshim) reach app_launch's error and app_state's last exit
+  kill     app_terminate signal=kill ends the app's process (SIGKILL) and answers its pid; again: not running
   record   sim_record_video action=start returns at once, status says it records, stop finishes a playable MP4 and
            answers its length and size; the fixed-length form (secs) still works
   launch   app_launch of an app that exits at once (x86forms --exit-early, exit(3)) fails saying so; a good launch
@@ -155,6 +156,21 @@ class Run:
         self.check("abort: and in app_state", "the reason agents should see" in text, text[:400])
         self.m.call("app_uninstall", bundle_id="com.x86sim.test.x86dyldfail")
 
+    # -- kill: app_terminate signal=kill
+    def kill(self):
+        if not self.install():
+            return
+        self.m.call("app_terminate", bundle_id=APP, after="none")
+        text, _, err, _ = self.m.call("app_launch", bundle_id=APP, after="none")
+        m = re.search(r": (\d+)", text)
+        pid = int(m.group(1)) if m else -1
+        text, st, err, dt = self.m.call("app_terminate", bundle_id=APP, signal="kill", after="none")
+        self.check("kill: SIGKILL ends it and names its pid", not err and pid in ((st or {}).get("killed") or []), "%.1f s: %s" % (dt, text[:200]))
+        a, text = self.app_info()
+        self.check("kill: not running after", not a.get("running"), text[:200])
+        text, _, err, _ = self.m.call("app_terminate", bundle_id=APP, signal="kill", after="none")
+        self.check("kill: killing an app that is not running is an error", err and "not running" in text, text[:120])
+
     # -- record: start / stop
     def record(self, out):
         import subprocess
@@ -198,7 +214,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["state", "launch", "abort", "record", "delete"]:
+        for name in ["state", "launch", "abort", "kill", "record", "delete"]:
             if want(name):
                 getattr(r, name)(*([a.out] if name == "record" else []))
     finally:

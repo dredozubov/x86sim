@@ -158,6 +158,7 @@ fn tools() -> Value {
     }
     // ---- devices and apps, round 2 ----
     if let Value::Array(v) = &mut t {
+        v.iter_mut().for_each(mcp_devices::extend_terminate);
         v.extend(mcp_devices::tools(&phone));
     }
     t
