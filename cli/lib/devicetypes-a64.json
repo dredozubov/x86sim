@@ -329,6 +329,16 @@
   "suffix": "iphone",
   "json": "devicetype-iphone12,1.json"
  },
+ "iPad mini (A20 Pro)": {
+  "model": "iPad19,2",
+  "class": "J511",
+  "w": "1512",
+  "h": "2316",
+  "scale": "2.000000",
+  "pitch": "326.000000",
+  "suffix": "ipad",
+  "json": "devicetype-ipad19,2.json"
+ },
  "iPad Pro 13-inch (M5) (16GB)": {
   "model": "iPad17,4",
   "class": "J821",
@@ -629,6 +639,28 @@
   "suffix": "iphone",
   "json": "devicetype-iphone19,4.json",
   "note": "iOS 27.2 lists it as unsupported (Xcode can't create it on this runtime); it has a build of its own (iPhone Duo: 27.2 24B91016s, runtime-fetch.py fetch 24B91016s)"
+ },
+ "Apple TV 4K (4th generation)": {
+  "model": "AppleTV18,1",
+  "class": "J265",
+  "w": "3840",
+  "h": "2160",
+  "scale": "1.000000",
+  "pitch": "0.000000",
+  "suffix": "",
+  "json": "devicetype-appletv18,1.json",
+  "platform": "tvos"
+ },
+ "Apple TV 4K (4th generation) (at 1080p)": {
+  "model": "AppleTV18,1",
+  "class": "J265",
+  "w": "1920",
+  "h": "1080",
+  "scale": "1.000000",
+  "pitch": "0.000000",
+  "suffix": "",
+  "json": "devicetype-appletv18,1.json",
+  "platform": "tvos"
  },
  "Apple TV 4K (3rd generation)": {
   "model": "AppleTV14,1",

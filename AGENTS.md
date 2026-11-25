@@ -19,8 +19,8 @@
     Xcode itself run in `x86sim test` (comparison). Linux-built tests are covered by `x86sim test --spm`.
   - Fixtures only an Apple framework can write are made by guest programs built here and run on a phone (sdkcov's
     `res/*.mov` / `res/sdkcovGK.sks`: `tests/apps/sdkcov/res/sdkcovRes.sh`).
-  - Still Mac-made, with a Linux path not done yet: `cli/lib/devicetype-*.json` (Xcode's device type plists, inside
-    Xcode.xip).
+  - Simulator device types (`cli/lib/devicetype*.json`) come from Xcode.xip too (its XcodeSystemResources.pkg), read
+    on Linux by `tools/devicetypes/extract-devicetypes.py`; which ones a runtime takes comes from the runtime's profile.
 
 ## Stopping processes
 
