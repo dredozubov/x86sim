@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#101214" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ededef" media="(prefers-color-scheme: light)">
 <meta name="robots" content="noindex">
 <title>x86Sim Devices</title>
 <link rel="stylesheet" href="app.css">
@@ -15,45 +17,65 @@
   <span id="crumb" class="crumb"></span>
   <span class="grow"></span>
   <span id="role" class="pill"></span>
-  <button id="shareBtn" class="btn" hidden>Share</button>
+  <span id="acts" class="acts"></span>
+  <button id="shareBtn" class="btn small" type="button" hidden>Share</button>
 </header>
 <main id="main"></main>
 
-<dialog id="shareDlg">
+<dialog id="shareDlg" aria-labelledby="shareTitle">
   <form method="dialog" class="dlg">
-    <h2>Share</h2>
-    <section>
-      <h3>Remote access</h3>
-      <div id="tunnels" class="tunnels"></div>
-      <p class="hint">Tailscale: HTTPS on your tailnet only. Funnel and Cloudflare: a public HTTPS address. Every link carries a token; anyone holding a control link can drive the devices.</p>
-    </section>
-    <section>
-      <h3>New link</h3>
-      <div class="row">
-        <label>Device <select id="linkPhone"><option value="">Every device</option></select></label>
-        <label>Access <select id="linkRole"><option value="view">Watch only</option><option value="control">Watch and drive</option></select></label>
-        <label>Expires <select id="linkTtl"><option value="900">15 min</option><option value="3600" selected>1 hour</option><option value="28800">8 hours</option><option value="86400">1 day</option><option value="604800">1 week</option></select></label>
+    <div class="dhead">
+      <h2 id="shareTitle">Share</h2>
+      <button class="btn ghost icon" value="close" aria-label="Close" title="Close">✕</button>
+    </div>
+    <div class="dbody">
+      <section class="dsect">
+        <h3>New link</h3>
+        <div class="fields">
+          <label class="field wide">Device <select id="linkPhone"><option value="">Every device</option></select></label>
+          <div class="field">Access
+            <div class="seg" role="radiogroup" aria-label="Access">
+              <label><input type="radio" name="linkRole" value="view" checked><span>Watch only</span></label>
+              <label><input type="radio" name="linkRole" value="control"><span>Watch and drive</span></label>
+            </div>
+          </div>
+          <label class="field">Expires
+            <select id="linkTtl"><option value="900">in 15 min</option><option value="3600" selected>in 1 hour</option><option value="28800">in 8 hours</option><option value="86400">in 1 day</option><option value="604800">in 1 week</option></select>
+          </label>
+        </div>
         <button type="button" id="linkMake" class="btn primary">Make link</button>
-      </div>
-      <div id="linkOut" class="linkout"></div>
-    </section>
-    <section>
-      <h3>Links made</h3>
-      <div id="linkList" class="linklist"></div>
-    </section>
-    <div class="row end"><button class="btn">Close</button></div>
+        <div id="linkOut" hidden></div>
+      </section>
+      <section class="dsect">
+        <h3>Remote access</h3>
+        <div id="tunnels" class="list"></div>
+        <p class="hint">Tailscale: HTTPS on your tailnet only. Funnel and Cloudflare: a public HTTPS address. Every link carries a token; anyone holding a drive link can use the devices.</p>
+      </section>
+      <section class="dsect">
+        <h3>Links made</h3>
+        <div id="linkList" class="list"></div>
+      </section>
+    </div>
   </form>
 </dialog>
 
-<dialog id="pasteDlg">
+<dialog id="pasteDlg" aria-labelledby="pasteTitle">
   <form method="dialog" class="dlg">
-    <h2>Type into the device</h2>
-    <textarea id="pasteText" rows="5" placeholder="Text to type (US keyboard characters)"></textarea>
-    <div class="row end"><button class="btn" value="cancel">Cancel</button><button class="btn primary" id="pasteGo" value="ok">Type it</button></div>
+    <div class="dhead">
+      <h2 id="pasteTitle">Type into the device</h2>
+      <button class="btn ghost icon" value="cancel" aria-label="Close" title="Close">✕</button>
+    </div>
+    <div class="dbody">
+      <section class="dsect">
+        <textarea id="pasteText" rows="5" placeholder="Text to type (US keyboard characters)"></textarea>
+      </section>
+    </div>
+    <div class="dfoot"><button class="btn" value="cancel">Cancel</button><button class="btn primary" id="pasteGo" value="ok">Type it</button></div>
   </form>
 </dialog>
 
 <script src="axinspect.js"></script>
+<script src="panels.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

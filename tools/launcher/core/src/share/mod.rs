@@ -5,6 +5,7 @@
 //! find it there and talk to it over loopback with its control token.
 /// the Accessibility Inspector's routes (/api/phones/<id>/ax/...)
 pub mod axapi;
+pub mod device;
 pub mod audio;
 /// Web Inspector routes (control role): x86sim inspect, the viewer's Inspect button
 pub mod inspect;
@@ -344,6 +345,13 @@ pub fn link(phone: Option<&str>, role: Role, ttl_s: u64) -> Result<Value> {
 }
 
 /// The QR code as an SVG (dark modules on white, a 4-module quiet zone)
+/// `text` as a QR code's modules, row by row (true: dark), and its width: for a window that draws its own (the launcher)
+pub fn qr_matrix(text: &str) -> Option<(usize, Vec<bool>)> {
+    let q = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let dark = q.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect();
+    Some((q.width(), dark))
+}
+
 pub fn qr_svg(q: &qrcode::QrCode) -> String {
     let w = q.width();
     let c = q.to_colors();

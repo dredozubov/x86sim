@@ -35,6 +35,8 @@ const APP_CSS: &str = include_str!("web/app.css");
 const AX_JS: &str = include_str!("web/axinspect.js");
 const AX_CSS: &str = include_str!("web/axinspect.css");
 const MIC_JS: &str = include_str!("web/mic.js");
+// the device page's panels the launcher has (device.rs)
+const PANELS_JS: &str = include_str!("web/panels.js");
 
 pub struct Server {
     pub opts: Options,
@@ -43,6 +45,8 @@ pub struct Server {
     tunnels: Mutex<Vec<Tunnel>>,
     phones_cache: Mutex<(Option<Instant>, Value)>,
     thumbs: Mutex<HashMap<(String, u32), (Instant, Vec<u8>)>>,
+    /// the device page's panels (device.rs)
+    devices: super::device::Devices,
     started: u64,
     pub stop: AtomicBool,
 }
@@ -202,6 +206,13 @@ fn json_resp(s: &mut TcpStream, code: u16, v: &Value) {
     respond(s, code, "application/json", &[], v.to_string().as_bytes());
 }
 
+fn answer(s: &mut TcpStream, r: super::device::Answer) {
+    match r {
+        Ok(v) => json_resp(s, 200, &v),
+        Err((code, e)) => json_resp(s, code, &json!({"error": e})),
+    }
+}
+
 fn host_only(h: &str) -> &str {
     // "[::1]:7380" -> "[::1]", "localhost:7380" -> "localhost"
     if h.starts_with('[') {
@@ -296,6 +307,7 @@ impl Server {
             tunnels: Mutex::new(vec![]),
             phones_cache: Mutex::new((None, Value::Null)),
             thumbs: Mutex::new(HashMap::new()),
+            devices: Default::default(),
             started: now_s(),
             stop: AtomicBool::new(false),
         })
@@ -551,6 +563,8 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         "/app.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], APP_JS.as_bytes()),
         "/app.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], APP_CSS.as_bytes()),
         "/axinspect.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], AX_JS.as_bytes()),
+
+        "/panels.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], PANELS_JS.as_bytes()),
         "/axinspect.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], AX_CSS.as_bytes()),
         "/mic.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], MIC_JS.as_bytes()),
         "/favicon.ico" => return respond(&mut s, 204, "image/x-icon", &[], b""),
@@ -622,8 +636,29 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
                         Err(e) => json_resp(&mut s, 409, &json!({"error": format!("{e:#}")})),
                     }
                 }
+                // the device page's panels (device.rs): the overview and Performance for anyone who sees the device,
+                // logs and settings for control links
+                "detail" => answer(&mut s, srv.devices.detail(&inst)),
+                "logs" if control => {
+                    let after = req.query.get("after").and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let q = |k: &str| req.query.get(k).cloned().unwrap_or_default();
+                    answer(&mut s, srv.devices.logs(&inst, after, &q("group"), &q("q")))
+                }
+                "features" if control => answer(&mut s, srv.devices.features(&inst)),
+                "simulate" if control => answer(&mut s, srv.devices.simulate(&inst)),
                 _ => json_resp(&mut s, 404, &json!({"error": "not found"})),
             }
+        }
+        ("POST", ["api", "phones", id, "features" | "simulate" | "restart"]) if control && srv.visible(&g, id) => {
+            let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
+            let b: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            let r = match seg[3] {
+                "features" => srv.devices.set_feature(&inst, &b),
+                "simulate" => srv.devices.set_simulate(&inst, &b),
+                _ => srv.devices.restart(&inst),
+            };
+            srv.phones_cache.lock().unwrap().0 = None;
+            answer(&mut s, r)
         }
         ("POST", ["api", "phones", id, act]) if control && srv.visible(&g, id) => {
             let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
@@ -790,7 +825,7 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let state = |inst: &Instance| json!({"t": "state", "orientation": inst.orientation(), "hinge": inst.hinge(), "inner_active": inst.inner_active(), "running": crate::ring::Ring::new(&inst.ring).seq() != 0});
     let _ = tx.send(Out::Text(
         json!({"t": "hello", "role": g.role, "phone": inst.id, "name": inst.name, "model": inst.model, "platform": inst.platform, "two_screens": inst.inner.is_some(),
-               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label})).collect::<Vec<_>>()})
+               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle})).collect::<Vec<_>>()})
         .to_string(),
     ));
     let (streamer, sub) = video::join(&inst, StreamKey { phone: inst.id.clone(), codec, width, quality, fps }, tx.clone());
@@ -1004,6 +1039,8 @@ impl Input {
                     "down" => "pointer button down".into(),
                     "up" => "pointer button up".into(),
                     "click" => "pointer click".into(),
+                    // an iPad's pointer capture ends: the pointer goes away
+                    "remove" => "pointer remove".into(),
                     "scroll" => format!("pointer scroll {:.2} {:.2}", f("dx").clamp(-2000.0, 2000.0), f("dy").clamp(-2000.0, 2000.0)),
                     a => return Err(format!("pointer: at, down, up, click or scroll, not {a:?}")),
                 };
@@ -1013,6 +1050,11 @@ impl Input {
             "shake" => self.hid.shake(),
             "hinge" => {
                 self.inst.inner.as_ref().ok_or("this device has one screen")?;
+                // an angle (the launcher's hinge slider): 0 folded .. 180 flat, moved over `ms`
+                if let Some(deg) = v["deg"].as_f64() {
+                    self.hid.hinge(deg.clamp(0.0, 180.0), v["ms"].as_u64().unwrap_or(300).clamp(20, 2000) as u32);
+                    return Ok(());
+                }
                 let k = v["pose"].as_str().unwrap_or("");
                 let pose = hid::HINGE_POSES.iter().find(|p| p.key == k).ok_or("unknown pose")?;
                 self.hid.hinge_pose(pose);

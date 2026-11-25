@@ -20,6 +20,8 @@ function h(tag, attrs = {}, ...kids) {
     if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else if (k === "class") e.className = v;
     else if (k === "text") e.textContent = v;
+    // the page's CSP refuses style attributes; the CSSOM is allowed
+    else if (k === "style") e.style.cssText = v;
     else e.setAttribute(k, v === true ? "" : v);
   }
   for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) e.append(c.nodeType ? c : String(c));
@@ -47,6 +49,18 @@ async function api(path, body) {
   }
   return j;
 }
+
+// the launcher's units: 1.2 GB / 640 MB, 35%, 13 min
+function fmtMem(mb) { return mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB"; }
+function fmtUp(s) {
+  if (s == null) return "–";
+  if (s < 60) return Math.round(s) + " s";
+  if (s < 3600) return Math.round(s / 60) + " min";
+  if (s < 86400) return (s / 3600).toFixed(1).replace(/\.0$/, "") + " h";
+  return (s / 86400).toFixed(1).replace(/\.0$/, "") + " d";
+}
+const stateLabel = (s) => ({ running: "Running", starting: "Starting", stopping: "Stopping", off: "Off" })[s] || s || "";
+function badge(state) { return h("span", { class: "badge " + state }, h("span", { class: "dot " + state }), stateLabel(state)); }
 
 function toast(msg, ms = 3500) {
   const t = h("div", { class: "toast", text: msg });
@@ -84,7 +98,7 @@ async function boot() {
     return;
   }
   const role = $("#role");
-  role.textContent = ME.role === "control" ? "Watch and drive" : "Watching only";
+  role.textContent = ME.role === "control" ? "Watch and drive" : "Watch only";
   role.classList.toggle("view", ME.role !== "control");
   if (ME.expires) role.title = "Link expires " + new Date(ME.expires * 1000).toLocaleString();
   // tunnels and links are the server owner's (a link can't make more links)
@@ -102,7 +116,8 @@ async function boot() {
 let currentPhone = null;
 function dashboard() {
   currentPhone = null;
-  $("#crumb").textContent = "Phones";
+  $("#crumb").replaceChildren();
+  $("#acts").replaceChildren();
   document.title = "x86Sim Devices";
   const control = ME.role === "control";
   // what the viewer picked, kept in this browser (a remembered convenience only: the page works without it)
@@ -131,10 +146,11 @@ function dashboard() {
   const viewGrid = h("button", { class: "btn small", text: "Grid", title: "Cards" });
   const viewList = h("button", { class: "btn small", text: "List", title: "Rows" });
   const bar = h("div", { class: "dashbar" }, search, chips, h("div", { class: "grow" }), h("label", { class: "meta sortlbl" }, "Sort ", sortSel), h("div", { class: "seg" }, viewGrid, viewList));
-  const secRun = h("section", { class: "dsec" }, h("h2", {}, "Running ", h("span", { class: "count" })), h("div"));
-  const secOff = h("section", { class: "dsec" }, h("h2", {}, "Off ", h("span", { class: "count" })), h("div"));
+  const total = h("span", { class: "meta" });
+  const secRun = h("section", { class: "dsec" }, h("h2", {}, "running", h("span", { class: "count" })), h("div"));
+  const secOff = h("section", { class: "dsec" }, h("h2", {}, "off", h("span", { class: "count" })), h("div"));
   const empty = h("div", { class: "empty" });
-  main.append(bar, secRun, secOff, empty);
+  main.append(h("div", { class: "page" }, h("div", { class: "phead" }, h("h1", { text: "Devices" }), total), bar, secRun, secOff, empty));
 
   const cards = new Map();  // id -> the element of the current view + its parts
   let phones = [], n = 0, alive = true;
@@ -155,16 +171,18 @@ function dashboard() {
     const open = () => location.hash = "#/phone/" + encodeURIComponent(p.id);
     const scr = h("div", { class: "scr" });
     const thumb = h("div", { class: "thumb", title: "Open " + p.name, onclick: open }, scr);
-    const title = h("div", { class: "dname" });
+    const title = h("a", { class: "dname", href: "#/phone/" + encodeURIComponent(p.id) });
     const meta = h("div", { class: "meta dmodel" });
+    const dot = h("span", { class: "dot" });
     const st = h("div", { class: "meta state" });
     const stats = h("div", { class: "meta dstats" });
     const row = h("div", { class: "row" });
     const list = pref.view === "list";
+    // the GUI's card: the screen, then a dot, the name and the one action, then model and load
     const el = list
-      ? h("div", { class: "drow" }, thumb, h("div", { class: "dinfo" }, title, meta), st, stats, row)
-      : h("div", { class: "card" }, thumb, title, meta, h("div", { class: "dline" }, st, stats), row);
-    return { el, scr, thumb, title, meta, st, stats, row, img: h("img", { alt: "" }), loading: false, open };
+      ? h("div", { class: "drow" }, thumb, h("div", { class: "dinfo" }, h("div", { class: "cname" }, dot, title), meta), st, stats, row)
+      : h("div", { class: "card" }, thumb, h("div", { class: "cfoot" }, h("div", { class: "cname" }, dot, title, row), meta, stats));
+    return { el, scr, thumb, title, meta, dot, st, stats, row, img: h("img", { alt: "" }), loading: false, open };
   }
 
   function update(c, p) {
@@ -175,8 +193,11 @@ function dashboard() {
     if (Array.isArray(p.screen) && p.screen[0] > 0 && p.screen[1] > 0) c.scr.style.setProperty("--arn", String(p.screen[0] / p.screen[1]));
     c.scr.className = "scr k-" + kindOf(p);
     const running = p.state === "running" || p.state === "starting";
-    c.st.replaceChildren(h("span", { class: "dot " + p.state }), p.state);
-    c.stats.textContent = p.state === "running" && p.memory_mb ? `${Math.round(p.memory_mb)} MB · ${Math.round(p.cpu_pct || 0)}% CPU` : "";
+    c.dot.className = "dot " + p.state;
+    c.dot.title = stateLabel(p.state);
+    c.st.replaceChildren(h("span", { class: "dot " + p.state }), stateLabel(p.state));
+    c.stats.textContent = p.state === "running" && p.memory_mb ? `${fmtMem(p.memory_mb)} · ${Math.round(p.cpu_pct || 0)}% CPU` : p.state === "off" ? "" : stateLabel(p.state);
+    c.stats.hidden = !c.stats.textContent && pref.view !== "list";
     if (running && !c.loading) {
       c.loading = true;
       const im = new Image();
@@ -190,10 +211,9 @@ function dashboard() {
     if (c.row.dataset.k !== key) {
       c.row.dataset.k = key;
       c.row.replaceChildren(...[
-        h("button", { class: "btn small primary", text: "Open", onclick: c.open }),
-        control && p.state === "off" && p.installed ? h("button", { class: "btn small", text: "Start", onclick: (e) => act(e, p.id, "start") }) : null,
+        control && p.state === "off" && p.installed ? h("button", { class: "btn small good", text: "Start", onclick: (e) => act(e, p.id, "start") }) : null,
         control && running ? h("button", { class: "btn small danger", text: "Stop", onclick: (e) => act(e, p.id, "stop") }) : null,
-        control ? h("button", { class: "btn small", text: "Share", onclick: () => openShare(p.id) }) : null].filter(Boolean));
+        !control ? h("button", { class: "btn small", text: "Open", onclick: c.open }) : null].filter(Boolean));
     }
   }
 
@@ -222,6 +242,8 @@ function dashboard() {
       }
     }
     for (const [id, c] of cards) if (!shown.some((p) => p.id === id)) { c.el.remove(); if (!phones.some((p) => p.id === id)) cards.delete(id); }
+    const on = phones.filter((p) => p.state === "running");
+    total.textContent = phones.length ? `${phones.length} · ${on.length} running` + (on.length ? ` · ${fmtMem(on.reduce((a, p) => a + (p.memory_mb || 0), 0))}` : "") : "";
     empty.hidden = shown.length > 0;
     empty.textContent = !phones.length ? "No devices yet. Make one in the x86Sim launcher or with `x86sim device create`."
       : "No device matches the search or the device type.";
@@ -290,7 +312,8 @@ function phoneView(id) {
     const scr = info?.screen;
     const w = fw || (scr && scr[0]), hh = fh || (scr && scr[1]);
     if (!w) return;
-    const r = stage.getBoundingClientRect(), m = innerWidth <= 760 ? 12 : 24;
+    // the stage's padding and the bezel drawn around the canvas (app.css) on both sides
+    const r = stage.getBoundingClientRect(), m = innerWidth <= 760 ? 28 : 64;
     const s = Math.min((r.width - m) / w, (r.height - m) / hh);
     canvas.style.width = Math.max(50, Math.floor(w * s)) + "px";
     canvas.style.height = Math.max(50, Math.floor(hh * s)) + "px";
@@ -312,11 +335,12 @@ function phoneView(id) {
   }
 
   // --- stats
-  let frames = 0, bytes = 0, lat = [], lastStats = performance.now(), statLine = "";
+  let frames = 0, bytes = 0, lat = [], lastStats = performance.now(), statLine = "", curFps = 0;
   const statIv = setInterval(() => {
     const now = performance.now(), dt = (now - lastStats) / 1000;
     lastStats = now;
     const l = lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length : null;
+    curFps = Math.round(frames / dt);
     statLine = `${codec.toUpperCase()} ${fw}×${fh}\n${(frames / dt).toFixed(0)} fps · ${(bytes * 8 / dt / 1e6).toFixed(2)} Mbit/s` + (l !== null && l >= 0 && l < 5000 ? `\nframe age ${l.toFixed(0)} ms` : "");
     if (soundOn && actx && aLat.length) {
       // packet age on arrival + what is queued + the output's own latency
@@ -420,8 +444,8 @@ function phoneView(id) {
     updateSound();
   }
   function updateSound() {
-    for (const b of [soundBtn, quickSound]) if (b) { b.textContent = soundOn ? "🔊 Sound on" : "🔇 Sound off"; b.classList.toggle("on", soundOn); }
-    if (micBtn) { micBtn.textContent = mic ? "🎙 Mic on" : "🎙 Mic off"; micBtn.classList.toggle("on", !!mic); }
+    for (const b of [soundBtn, quickSound]) if (b) { b.textContent = soundOn ? "Sound on" : "Sound off"; b.classList.toggle("on", soundOn); }
+    if (micBtn) { micBtn.textContent = mic ? "Mic on" : "Mic off"; micBtn.classList.toggle("on", !!mic); }
   }
   function schedule(planes, n) {
     if (!actx) return;
@@ -524,14 +548,14 @@ function phoneView(id) {
   function onText(m) {
     if (m.t === "hello") {
       info = { ...info, ...m };
-      $("#crumb").textContent = `${m.name} · ${m.model}`;
+      head();
       document.title = m.name + " · x86Sim";
       canvas.classList.toggle("watch", m.platform === "watchos");
       canvas.classList.toggle("tv", m.platform === "tvos" || m.platform === "xros");
       buildSide();
     } else if (m.t === "state") {
       lastState = m;
-      if (!m.running) { overlay.hidden = false; overlay.textContent = control ? "The device is off. Start it from the dashboard." : "The device is off."; }
+      if (!m.running) { overlay.hidden = false; overlay.textContent = control ? "The device is off. Start it with Start above." : "The device is off."; }
       updateSide();
     } else if (m.t === "expired") {
       alive = false;
@@ -556,15 +580,17 @@ function phoneView(id) {
   function group(title, ...kids) { return h("div", {}, h("h4", { text: title }), h("div", { class: "btns" }, ...kids)); }
   function buildSide() {
     const p = info.platform;
-    const parts = [];
-    if (axi) parts.push(axi.panel());
+    // the launcher's panels (panels.js): overview, Features, Logs, Performance, Simulate
+    if (!pan && window.PANELS) pan = PANELS.attach({ id, control, platform: p, api, h, toast, fmtMem, fmtUp, send, fps: () => curFps, restart,
+      onDetail: (d) => { needsRestart = !!d.needs_restart; head(); } });
+    const parts = [pan ? pan.overview : null].filter(Boolean);
     if (control) {
       if (p === "tvos") {
         parts.push(h("div", {}, h("h4", { text: "Siri Remote" }), h("div", { class: "remote" },
           h("span"), keyHold(0x52, "▲", "Up"), h("span"),
           keyHold(0x50, "◀", "Left"), keyHold(0x28, "●", "Select"), keyHold(0x4f, "▶", "Right"),
           h("span"), keyHold(0x51, "▼", "Down"), h("span"))));
-        parts.push(group("Buttons", hold("menu", "Back"), hold("tv", "TV"), hold("playpause", "⏯", "Play / Pause"), hold("siri", "Siri"), hold("volup", "Vol +"), hold("voldown", "Vol −"), hold("mute", "Mute")));
+        parts.push(group("Buttons", hold("menu", "Back"), hold("tv", "TV"), hold("playpause", "Play/Pause", "Play / Pause"), hold("siri", "Siri"), hold("volup", "Vol +"), hold("voldown", "Vol −"), hold("mute", "Mute")));
       } else if (p === "watchos") {
         parts.push(group("Digital Crown", btn("▲", "Turn up", () => send({ t: "crown", d: -120 })), btn("▼", "Turn down", () => send({ t: "crown", d: 120 })), hold("home", "Press")));
         parts.push(group("Buttons", hold("side", "Side"), btn("Double tap", "Hand gesture", () => send({ t: "sys", a: "double_tap" })), btn("Wrist flick", "Hand gesture", () => send({ t: "sys", a: "wrist_flick" }))));
@@ -573,14 +599,17 @@ function phoneView(id) {
       } else {
         parts.push(group("Buttons", hold("home", "Home"), hold("lock", "Lock"), hold("volup", "Vol +"), hold("voldown", "Vol −"), hold("siri", "Siri"), hold("action", "Action"),
           btn("Switcher", "App Switcher", () => send({ t: "sys", a: "app_switcher" }))));
+        // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
+        const ptr = info.ipad ? btn(pointerMode ? "Pointer on" : "Pointer", "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll). Again: back to touches", () => {
+          pointerMode = !pointerMode;
+          if (!pointerMode) send({ t: "pointer", a: "remove" });
+          ptr.textContent = pointerMode ? "Pointer on" : "Pointer";
+          ptr.classList.toggle("on", pointerMode);
+        }) : null;
+        if (ptr) ptr.classList.toggle("on", pointerMode);
         parts.push(group("Device", btn("Rotate ←", "Rotate left", () => send({ t: "rotate", dir: "left" })), btn("Rotate →", "Rotate right", () => send({ t: "rotate", dir: "right" })),
-          btn("Shake", "Device > Shake", () => send({ t: "shake" })), btn("Paste…", "Type text into the device", openPaste)));
-        parts.push(group("Keyboard", btn("Software", "I/O > Keyboard > Toggle Software Keyboard (Cmd-K): the on-screen keyboard while a text field is focused", () => send({ t: "sys", a: "soft_keyboard" })),
-          btn("Hardware", "I/O > Keyboard > Connect Hardware Keyboard (Shift-Cmd-K): connect / disconnect; disconnected, the software keyboard shows on every focus", () => send({ t: "sys", a: "hw_keyboard" }))));
-        if (info.two_screens) {
-          fold = h("div", { class: "btns" }, ...info.poses.map((ps) => btn(ps.label, "Hinge: " + ps.label, () => send({ t: "hinge", pose: ps.key }))));
-          parts.push(h("div", {}, h("h4", { text: "Fold" }), fold));
-        }
+          btn("Shake", "Device > Shake", () => send({ t: "shake" })), ptr, btn("Paste…", "Type text into the device", openPaste)));
+        if (info.two_screens) parts.push(hingePanel());
       }
       if (p !== "ios") parts.push(group("Text", btn("Paste…", "Type text into the device", openPaste)));
     }
@@ -597,23 +626,27 @@ function phoneView(id) {
     const volIn = h("input", { type: "range", min: 0, max: 1, step: 0.05, value: volume, title: "Volume (this browser only)", class: "vol", oninput: (e) => setVolume(Number(e.target.value)) });
     micBtn = control ? btn("", canMic ? "Your microphone into the device (asks the browser for it)" : "The microphone needs HTTPS (or localhost) and a browser with AudioWorklet", () => (mic ? micStop() : micStart())) : null;
     if (micBtn && !canMic) micBtn.disabled = true;
+    if (pan) parts.push(...[pan.features, pan.logs].filter(Boolean));
+    if (axi) parts.push(axi.panel());
+    if (pan) parts.push(...[pan.perf, pan.simulate].filter(Boolean));
     parts.push(group("Sound", soundBtn, volIn, micBtn));
     updateSound();
     recBtn = btn("Record", "Record the screen to a video file", toggleRec);
     // x86sim profile: 5 s CPU profile of the app in front, downloaded as speedscope JSON (control links only)
     const profBtn = control ? h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/profile.json?secs=5`), download: "",
       title: "CPU profile of the app in front for 5 seconds (speedscope JSON: open it at speedscope.app)", text: "Profile 5 s" }) : null;
-    parts.push(group("Capture", h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`), download: "", text: "Screenshot" }), recBtn, profBtn));
+    const capture = [h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`), download: "", text: "Screenshot" }), recBtn, profBtn];
     const qSel = h("select", { onchange: (e) => { quality = Number(e.target.value); save(); connect(); } }, ["Low", "Medium", "High"].map((l, i) => h("option", { value: i, selected: i === quality, text: l })));
     const cSel = h("select", { onchange: (e) => { codec = e.target.value; save(); connect(); } },
       h("option", { value: "h264", text: "H.264" + (canH264 ? "" : " (needs HTTPS)"), selected: codec === "h264", disabled: !canH264 }), h("option", { value: "jpeg", text: "JPEG", selected: codec === "jpeg" }));
     const fSel = h("select", { onchange: (e) => { fps = Number(e.target.value); save(); connect(); } }, [15, 30, 60].map((f) => h("option", { value: f, selected: f === fps, text: f + " fps" })));
     parts.push(h("div", {}, h("h4", { text: "Stream" }), h("div", { class: "btns" }, qSel, cSel, fSel), stats));
+    parts.push(group("Capture", ...capture));
     if (control) parts.push(h("div", { class: "kbd" }, ...keyHelp(p)));
     if (control) parts.push(group("Share", btn("Share this device…", "", () => openShare(id))));
     if (control && p !== "watchos") parts.push(webPanel());
-    parts.push(h("div", { class: "btns" }, h("a", { class: "btn small", href: "#/", text: "← All devices" })));
     side.replaceChildren(...parts);
+    updateSide();
   }
   // Web Inspector: the phone's inspectable pages (Safari, WKWebViews with isInspectable), each with an Inspect link
   // (share/inspect.rs). Asked for on a click only: the first ask starts the phone's webinspectord.
@@ -636,12 +669,71 @@ function phoneView(id) {
     return h("div", {}, h("h4", { text: "Web Inspector" }), h("div", { class: "btns" }, btn("Web pages…", "Safari's pages and apps' inspectable web views, to open in WebKit's Web Inspector", find)), list);
   }
   function keyHelp(p) {
-    if (p === "xros") return [h("h4", { text: "Keys" }), ...[["Mouse", "the system pointer: hover, click, drag"], ["Wheel", "scroll where it points"], ["Keys", "the keyboard (click the screen first)"], ["Ctrl+V", "paste"]].map(([a, b]) => h("div", {}, h("b", { text: a }), " " + b))];
+    if (p === "xros") return [h("h4", { text: "Keys" }), ...[["Mouse", "the system pointer: hover, click, drag"], ["Wheel", "scroll where it points"], ["Keys", "the keyboard (click the screen first)"], ["Ctrl+V", "paste"]].flatMap(([a, b]) => [h("b", { text: a }), h("span", { text: b })])];
     const l = [["Click / drag", "touch"], ["Alt + drag", "pinch / rotate"], ["Shift + drag", "two-finger pan"], ["Wheel", p === "watchos" ? "Digital Crown" : p === "tvos" ? "swipe the remote" : "scroll"], ["Keys", "the device's keyboard (click the screen first)"], ["Ctrl+V", "paste"], ["F1 / F2 / F3 / F4", p === "tvos" ? "TV / play / vol" : "home / lock / vol"]];
     if (p === "tvos") l.splice(0, 3, ["Arrows, Enter, Esc", "remote: move, select, back"], ["Click", "select"]);
-    return [h("h4", { text: "Keys" }), ...l.map(([a, b]) => h("div", {}, h("b", { text: a }), " " + b))];
+    return [h("h4", { text: "Keys" }), ...l.flatMap(([a, b]) => [h("b", { text: a }), h("span", { text: b })])];
   }
-  function updateSide() {}
+  // the title bar: Devices / name, model and OS, the state, Start or Stop; the tiles: memory, CPU, uptime (the
+  // dashboard's numbers, polled)
+  let lastHead = "", pan = null, needsRestart = false, pointerMode = false;
+  function head() {
+    const d = info || {};
+    const state = d.state || (lastState.running === false ? "off" : lastState.running ? "running" : "");
+    const k = [d.name, d.model, d.os, state, control, needsRestart].join("|");
+    if (k === lastHead) return;
+    lastHead = k;
+    $("#crumb").replaceChildren(h("a", { class: "back", href: "#/", title: "All devices" }, "‹ ", h("span", { class: "lbl", text: "Devices" })), h("span", { class: "sep", text: "/" }),
+      h("span", { class: "here", text: d.name || id }), h("span", { class: "sub", text: [d.model, d.os].filter(Boolean).join(" · ") }), ...(state ? [badge(state)] : []));
+    const running = state === "running" || state === "starting";
+    const acts = [];
+    if (control && state === "off" && d.installed !== false) acts.push(h("button", { class: "btn small good", type: "button", text: "Start", onclick: (e) => power(e, "start") }));
+    if (control && state === "running") acts.push(h("button", { class: "btn small" + (needsRestart ? " primary" : ""), type: "button", text: needsRestart ? "Restart to apply" : "Restart",
+      title: needsRestart ? "Feature or start settings changed since this device started" : "Stop and start again", onclick: restart }));
+    if (control && running) acts.push(h("button", { class: "btn small danger", type: "button", text: "Stop", onclick: (e) => power(e, "stop") }));
+    $("#acts").replaceChildren(...acts);
+  }
+  async function power(e, what) {
+    e.target.disabled = true;
+    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting… the first boot can take a few minutes" : "Stopping…"); }
+    catch (err) { toast(err.message); e.target.disabled = false; }
+    poll();
+  }
+  async function restart(e) {
+    if (e && e.target) e.target.disabled = true;
+    try { await api(`/api/phones/${encodeURIComponent(id)}/restart`, {}); toast("Restarting…"); needsRestart = false; }
+    catch (err) { toast(err.message); if (e && e.target) e.target.disabled = false; }
+    poll();
+  }
+  // the hinge of a two-screen phone, as the launcher's panel: a slider from folded to flat, and the poses
+  function hingePanel() {
+    const val = h("span", { class: "muted" });
+    const show = (v) => { val.textContent = `${Math.round(v)}° · ${v < 10 ? "closed" : v < 85 ? "half open" : v < 170 ? "open" : "flat"}`; };
+    const at = Number(lastState.hinge ?? info.hinge ?? 180);
+    let sentAt = 0, pend = null;
+    const slider = h("input", { type: "range", min: 0, max: 180, step: 1, value: at, class: "vol", "aria-label": "Hinge angle",
+      oninput: (e) => {
+        const v = Number(e.target.value);
+        show(v);
+        // while dragged: a short move at most every 40 ms, the last value when let go
+        clearTimeout(pend);
+        const go = () => { sentAt = performance.now(); send({ t: "hinge", deg: v, ms: 40 }); };
+        if (performance.now() - sentAt >= 40) go(); else pend = setTimeout(go, 40);
+      } });
+    show(at);
+    return h("div", {}, h("h4", { text: "Fold" }), h("div", { class: "hingerow" }, slider, val),
+      h("div", { class: "btns", style: "margin-top:8px" }, ...info.poses.map((ps) => btn(ps.label, "Hinge: " + ps.label, () => { send({ t: "hinge", pose: ps.key }); slider.value = ps.angle ?? slider.value; show(Number(slider.value)); }))));
+  }
+  function updateSide() {
+    head();
+  }
+  async function poll() {
+    try {
+      const ps = await api("/api/phones");
+      const p = ps.find((x) => x.id === id || x.name === id);
+      if (p && alive) { info = { ...info, ...p }; updateSide(); }
+    } catch {}
+  }
   function save() { localStorageSet("x86sim_prefs", JSON.stringify({ codec, quality, fps, volume })); }
 
   // --- recording (the canvas as the browser shows it)
@@ -685,7 +777,7 @@ function phoneView(id) {
   };
   const isTv = () => info?.platform === "tvos";
   // Vision Pro: the mouse is the system pointer (hover, click where it points); touches reach nothing there
-  const isXr = () => info?.platform === "xros";
+  const isXr = () => info?.platform === "xros" || pointerMode;
   let xrLast = 0;
   const pts = new Map(); // pointerId -> [x, y]
   let mode = null; // "wait" (a finger, maybe a second coming) | "one" | "two" (real fingers) | "pinch" | "pan" | "tv"
@@ -804,7 +896,7 @@ function phoneView(id) {
     const p = info?.platform;
     if (p === "watchos") { send({ t: "crown", d: dy * 1.2 }); return; }
     // Vision Pro: the wheel scrolls where the pointer is (the crown has its buttons)
-    if (p === "xros") { send({ t: "pointer", a: "scroll", dx, dy }); return; }
+    if (p === "xros" || pointerMode) { send({ t: "pointer", a: "scroll", dx, dy }); return; }
     if (p === "tvos") {
       wheelAcc[0] += dx; wheelAcc[1] += dy;
       while (Math.abs(wheelAcc[0]) >= 40 || Math.abs(wheelAcc[1]) >= 40) {
@@ -884,17 +976,21 @@ function phoneView(id) {
   // a bigger window asks for a sharper stream (reconnect when the wanted width changes by a third)
   let lastW = 0;
   const sizeIv = setInterval(() => { const w = wantWidth(); if (lastW && Math.abs(w - lastW) / lastW > 0.33) connect(); lastW = w; }, 2000);
-  api("/api/phones").then((ps) => { const p = ps.find((x) => x.id === id || x.name === id); if (p) { info = { ...p, ...info }; lastW = wantWidth(); fit(); } }).catch(() => {});
+  api("/api/phones").then((ps) => { const p = ps.find((x) => x.id === id || x.name === id); if (p) { info = { ...p, ...info }; lastW = wantWidth(); fit(); updateSide(); } }).catch(() => {});
+  const pollIv = setInterval(poll, 3000);
   return () => {
     alive = false;
     if (axi) axi.close();
+    if (pan) pan.close();
+    if (pointerMode) send({ t: "pointer", a: "remove" });
     releaseAll();
     if (mic) micStop();
     if (soundOn) soundStop();
     if (rec) rec.stop();
     if (ws) { ws.onclose = null; ws.close(); }
     if (dec && dec.state !== "closed") try { dec.close(); } catch {}
-    clearInterval(statIv); clearInterval(sizeIv); ro.disconnect();
+    clearInterval(statIv); clearInterval(sizeIv); clearInterval(pollIv); ro.disconnect();
+    $("#acts").replaceChildren();
     document.removeEventListener("paste", onPaste);
   };
 }
@@ -903,56 +999,95 @@ function localStorageGet(k) { try { return localStorage.getItem(k); } catch { re
 function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
 // ---------- share dialog ----------
+// New link first (what the sheet is opened for), then the tunnels that make a link reach other machines, then the links
+// already handed out. A bottom sheet on a phone, a centred panel on a wide screen (app.css).
+const fmtWhen = (t) => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const KIND_LABEL = { local: "This machine", lan: "Local network", tailscale: "Tailscale", funnel: "Funnel", cloudflared: "Cloudflare" };
+let sharePhones = [];
+
 async function openShare(phone) {
   const d = $("#shareDlg");
   const sel = $("#linkPhone");
   try {
-    const ps = await api("/api/phones");
-    sel.replaceChildren(h("option", { value: "", text: "Every device" }), ...ps.map((p) => h("option", { value: p.id, text: p.name, selected: p.id === phone })));
+    sharePhones = await api("/api/phones");
+    sel.replaceChildren(h("option", { value: "", text: "Every device" }), ...sharePhones.map((p) => h("option", { value: p.id, text: p.name, selected: p.id === phone })));
   } catch {}
-  $("#linkOut").replaceChildren();
+  const out = $("#linkOut");
+  out.hidden = true;
+  out.replaceChildren();
   $("#linkMake").onclick = makeLink;
-  await refreshTunnels();
-  await refreshLinks();
   if (!d.open) d.showModal();
+  // the sheet shows at once; its lists fill in
+  refreshTunnels();
+  refreshLinks();
+  let iv = setInterval(() => { if (d.open) refreshTunnels(true); }, 3000);
+  d.addEventListener("close", () => clearInterval(iv), { once: true });
+}
+// a click on the backdrop closes it
+$("#shareDlg").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+
+function lrow(title, sub, subClass, ...trail) {
+  return h("div", { class: "lrow" }, h("div", { class: "txt" }, h("div", { class: "t1" }, ...[title].flat()), sub ? h("div", { class: "t2 " + (subClass || ""), text: sub }) : null), ...trail);
 }
 
-async function refreshTunnels() {
+let tunnelBusy = null;
+async function refreshTunnels(quiet) {
   const box = $("#tunnels");
+  if (!quiet && !box.childElementCount) box.replaceChildren(h("div", { class: "lrow none", text: "Looking…" }));
   let u;
-  try { u = await api("/api/urls"); } catch (e) { box.textContent = e.message; return; }
+  try { u = await api("/api/urls"); } catch (e) { box.replaceChildren(h("div", { class: "lrow none", text: e.message })); return; }
   const a = u.available;
   const rows = [
-    ["tailscale", "Tailscale", a.tailscale_ready, a.tailscale ? a.tailscale_detail : "not installed"],
-    ["funnel", "Funnel", a.tailscale_ready, "public, through Tailscale"],
-    ["cloudflared", "Cloudflare", a.cloudflared, a.cloudflared ? "trycloudflare.com quick tunnel" : "cloudflared not installed"],
+    ["tailscale", "Tailscale", "your tailnet only", a.tailscale_ready, a.tailscale ? a.tailscale_detail : "Not installed"],
+    ["funnel", "Funnel", "public", a.tailscale_ready, "A public address, through Tailscale"],
+    ["cloudflared", "Cloudflare", "public", a.cloudflared, a.cloudflared ? "A trycloudflare.com quick tunnel" : "cloudflared is not installed"],
   ];
-  box.replaceChildren(...rows.map(([kind, label, ok, detail]) => {
+  box.replaceChildren(...rows.map(([kind, label, scope, ok, detail]) => {
     const t = u.tunnels.find((x) => x.kind === kind);
-    const on = t && (t.state === "up" || t.state === "starting");
-    const status = t ? (t.state === "up" ? t.url : t.state === "failed" ? "failed: " + (t.error || "") : t.state) : detail;
-    const b = h("button", { type: "button", class: "btn small" + (on ? " on" : ""), text: on ? "Turn off" : "Turn on", disabled: !ok && !on });
-    b.onclick = async () => {
-      b.disabled = true; b.textContent = on ? "Stopping…" : "Starting…";
+    const on = !!t && (t.state === "up" || t.state === "starting");
+    const busy = tunnelBusy === kind || t?.state === "starting";
+    const [sub, cls] = t ? (t.state === "up" ? [t.url, "ok"] : t.state === "failed" ? ["Failed: " + (t.error || "unknown error"), "bad"] : [t.state === "starting" ? "Starting…" : t.state, ""]) : [detail, ""];
+    const sw = h("button", { type: "button", class: "switch" + (busy ? " busy" : ""), role: "switch", "aria-checked": on ? "true" : "false", "aria-label": label, disabled: (!ok && !on) || busy || !!tunnelBusy });
+    sw.onclick = async () => {
+      tunnelBusy = kind;
+      refreshTunnels(true);
       try { await api("/api/tunnel", { kind, on: !on }); } catch (e) { toast(e.message, 8000); }
-      refreshTunnels();
+      tunnelBusy = null;
+      refreshTunnels(true);
     };
-    return h("div", { class: "tunnel" }, h("span", { class: "name", text: label }), h("span", { class: "info", text: status }), b);
+    const st = t?.state === "up" ? "running" : t?.state === "failed" ? "failed" : busy ? "starting" : "off";
+    return lrow([h("span", { class: "dot " + st }), label, h("span", { class: "meta", text: scope })], sub, cls, sw);
   }));
 }
 
 async function makeLink() {
   const out = $("#linkOut");
-  out.textContent = "…";
+  const btn = $("#linkMake");
+  btn.disabled = true;
   try {
-    const r = await api("/api/links", { phone: $("#linkPhone").value || null, role: $("#linkRole").value, ttl_s: Number($("#linkTtl").value) });
+    const role = (document.querySelector('input[name="linkRole"]:checked') || {}).value || "view";
+    const r = await api("/api/links", { phone: $("#linkPhone").value || null, role, ttl_s: Number($("#linkTtl").value) });
     const best = r.urls.find((x) => x.kind !== "local") || r.urls[0];
+    const name = r.phone ? (sharePhones.find((p) => p.id === r.phone)?.name || r.phone) : "every device";
+    out.className = "result";
     out.replaceChildren(
-      h("img", { src: withToken("/api/qr.svg?text=" + encodeURIComponent(best.url)), alt: "QR code" }),
-      h("div", { class: "urls" }, ...r.urls.map((x) => h("div", { class: "url" }, h("span", { class: "pill", text: x.kind }), h("code", { text: x.url }), h("button", { type: "button", class: "btn small", text: "Copy", onclick: () => copy(x.url) }))),
-        r.urls.every((x) => x.kind === "local") ? h("p", { class: "hint", text: "Only this machine can open it: turn on a tunnel above for others." }) : null,
-        h("p", { class: "hint", text: `${r.role === "control" ? "Watch and drive" : "Watch only"} · expires ${new Date(r.expires * 1000).toLocaleString()}` })));
-  } catch (e) { out.textContent = e.message; }
+      h("div", { class: "qr", title: "Scan to open " + best.url }, h("img", { src: withToken("/api/qr.svg?text=" + encodeURIComponent(best.url)), alt: "QR code of the link" })),
+      h("div", { class: "urls" },
+        h("div", { class: "hint" }, h("b", { text: r.role === "control" ? "Watch and drive" : "Watch only", style: "color:var(--ink);font-weight:600" }), ` · ${name} · until ${fmtWhen(r.expires)}`),
+        ...r.urls.map((x) => h("div", { class: "url" },
+          h("div", { class: "uh" }, h("span", { class: "pill", text: KIND_LABEL[x.kind] || x.kind }),
+            navigator.share ? h("button", { type: "button", class: "btn small ghost", text: "Send…", onclick: () => navigator.share({ title: "x86Sim: " + name, url: x.url }).catch(() => {}) }) : null,
+            h("button", { type: "button", class: "btn small", text: "Copy", onclick: () => copy(x.url) })),
+          h("code", { text: x.url }))),
+        r.urls.every((x) => x.kind === "local") ? h("p", { class: "hint", text: "Only this machine can open it: turn on a tunnel under Remote access for others." }) : null));
+    out.hidden = false;
+    out.scrollIntoView({ block: "nearest" });
+  } catch (e) {
+    out.className = "result";
+    out.replaceChildren(h("div", { class: "hint", text: e.message }));
+    out.hidden = false;
+  }
+  btn.disabled = false;
   refreshLinks();
 }
 
@@ -960,10 +1095,12 @@ async function refreshLinks() {
   const box = $("#linkList");
   try {
     const l = await api("/api/links");
-    box.replaceChildren(...(l.length ? l.map((x) => h("div", { class: "tunnel" },
-      h("span", { class: "info", text: `${x.role === "control" ? "drive" : "watch"} · ${x.phone || "every device"} · until ${x.expires ? new Date(x.expires * 1000).toLocaleString() : "server stop"}` }),
-      h("button", { type: "button", class: "btn small danger", text: "Revoke", onclick: async () => { await api("/api/links/revoke", { id: x.id }); refreshLinks(); } }))) : ["None"]));
-  } catch (e) { box.textContent = e.message; }
+    box.replaceChildren(...(l.length ? l.map((x) => lrow(
+      [h("span", { class: "dot " + (x.role === "control" ? "running" : "off") }), x.role === "control" ? "Watch and drive" : "Watch only"],
+      `${x.phone ? (sharePhones.find((p) => p.id === x.phone)?.name || x.phone) : "Every device"} · ${x.expires ? "until " + fmtWhen(x.expires) : "until the server stops"}`, "",
+      h("button", { type: "button", class: "btn small danger", text: "Revoke", onclick: async (e) => { e.target.disabled = true; await api("/api/links/revoke", { id: x.id }).catch((er) => toast(er.message)); refreshLinks(); } })))
+      : [h("div", { class: "lrow none", text: "No links yet" })]));
+  } catch (e) { box.replaceChildren(h("div", { class: "lrow none", text: e.message })); }
 }
 
 boot();
