@@ -21,6 +21,7 @@
 //                                views VoiceOver cannot reach), for the audit (host: core/src/axaudit.rs)
 //   action oid name [dir|custom] perform an accessibility action: activate, increment, decrement, scroll, escape,
 //                                magic_tap, custom (by name)
+// The tree's `pixels` (views drawing their own pixels: Metal, OpenGL, SpriteKit, SceneKit) come from simax_pixels.m.
 #include <TargetConditionals.h>
 #if TARGET_OS_WATCH
 // watchOS's headers mark UIKit unavailable (apps use SwiftUI / WatchKit), but UIKitCore runs every watch app
@@ -164,7 +165,11 @@ typedef struct {
 	NSMutableSet* covered;
 	NSMutableSet* holds;
 	NSMutableDictionary* nth;    // per cell key + role: how many elements of that role the cell gave so far
+	NSMutableArray* pixels;      // views that draw their own pixels (simax_pixels.m): the host reads them with OCR
 } Walk;
+
+NSString* simax_pixel_kind(UIView* v);
+void simax_pixels_note(NSMutableArray* out, UIView* v, CGRect f, int win, CGRect screen);
 
 static void more_of(Walk* w, id e, uint64_t t, NSMutableDictionary* d);
 
@@ -317,6 +322,8 @@ static void walk(Walk* w, id o, int depth, NSString* container) {
 	[w->seen addObject:[NSValue valueWithPointer:(__bridge void*)o]];
 	if ([o isKindOfClass:[UIView class]]) {
 		UIView* v = o;
+		// a view drawing its own pixels counts even when it hides its (missing) accessibility from VoiceOver
+		if (w->pixels && !v.hidden && v.alpha >= 0.01) simax_pixels_note(w->pixels, v, place(w, to_screen(v, v.bounds)), w->win, w->clip);
 		if (view_hidden(v)) return;
 #if SIMAX_WEB
 		if ([v isKindOfClass:[WKWebView class]]) {
@@ -405,7 +412,8 @@ static NSString* const kDomWalker = @
 	"    if (ty === 'radio') return 'radio'; if (ty === 'range') return 'adjustable'; if (ty === 'hidden') return null;"
 	"    return ty === 'search' ? 'searchfield' : 'textfield'; }"
 	"  if (t === 'textarea' || el.isContentEditable) return 'textfield'; if (t === 'select') return 'popup';"
-	"  if (/^h[1-6]$/.test(t)) return 'heading'; if (t === 'img') return el.alt ? 'image' : null; return null; };"
+	"  if (/^h[1-6]$/.test(t)) return 'heading'; if (t === 'img') return el.alt ? 'image' : null;"
+	"  if (t === 'canvas') return 'canvas'; return null; };"
 	"const shown = el => { const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && +s.opacity > 0.01; };"
 	"const visible = (el, r) => { if (r.width < 1 || r.height < 1) return false;"
 	"  if (!all && (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw)) return false; return shown(el); };"
@@ -1215,6 +1223,7 @@ static void tree(NSDictionary* req, void (^reply)(NSDictionary*)) {
 	w.all = [req[@"all"] boolValue];
 	w.focus = first_responder();
 	w.budget = 20000;
+	w.pixels = [NSMutableArray array];
 	if ([req[@"full"] boolValue]) {
 		w.full = YES;
 		w.path = [NSMutableArray array];
@@ -1235,6 +1244,7 @@ static void tree(NSDictionary* req, void (^reply)(NSDictionary*)) {
 		walk(&w, wins[i], 0, nil);
 	}
 	if (w.focus) d[@"focus"] = hex(w.focus);
+	if (w.pixels.count) d[@"pixels"] = w.pixels;
 	if (w.focus_item) {
 		CGRect ff = w.focus_frame;
 		NSMutableDictionary* fd = [NSMutableDictionary dictionaryWithDictionary:@{ @"oid": hex(w.focus_item), @"class": NSStringFromClass([w.focus_item class]) }];

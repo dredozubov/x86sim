@@ -82,8 +82,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "environment variables for the app, e.g. {\"API_URL\": \"http://localhost:8080\"}"}, "after": after}, "required": ["bundle_id"]}},
         {"name": "app_list", "description": "Installed apps on a running device (simctl listapps).", "inputSchema": {"type": "object", "properties": {"phone": phone}}},
         // agents: the screen as text and actions on its elements (x86sim_core::ax, host/simax)
-        {"name": "snapshot", "description": "The device's screen as text: the accessibility elements of the app(s) in front, SpringBoard (alerts, home screen icons, status bar, Control Center) and web pages (DOM: links, buttons, fields, headings, text). One line per element: @ref role \"label\" value= id= [states] (center x,y in points). Refs stay the same for the same element across snapshots, so act on them (tap ref=@e3). diff=true: only what changed since the last snapshot. all=true: also elements scrolled out of view. json=true: full records (frames, app, layer, window).",
-         "inputSchema": {"type": "object", "properties": {"phone": phone, "diff": {"type": "boolean"}, "all": {"type": "boolean"}, "json": {"type": "boolean"}}}},
+        {"name": "snapshot", "description": "The device's screen as text: the accessibility elements of the app(s) in front, SpringBoard (alerts, home screen icons, status bar, Control Center) and web pages (DOM: links, buttons, fields, headings, text). One line per element: @ref role \"label\" value= id= [states] (center x,y in points). Refs stay the same for the same element across snapshots, so act on them (tap ref=@e3). diff=true: only what changed since the last snapshot. all=true: also elements scrolled out of view. json=true: full records (frames, app, layer, window). Text drawn as pixels (Metal / OpenGL / SpriteKit / SceneKit views, games, a web page's canvas) is read by OCR when such a view covers a quarter of the screen and has no elements: role text, tagged [ocr] (json: ocr: true); tap / wait_for find it by its text. ocr=true reads the whole screen and adds any text no element says (images with text, custom-drawn controls).",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "diff": {"type": "boolean"}, "all": {"type": "boolean"}, "json": {"type": "boolean"}, "ocr": {"type": "boolean"}}}},
         {"name": "tap", "description": "Tap an element and answer with the screen after it settled. target: a ref from the snapshot (@e3), id:<accessibility identifier>, or label text (exact, then prefix, then substring; alerts over the app win); or x and y in points. An element scrolled out of view is scrolled in first. hold_ms >= 500 is a long press.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "hold_ms": {"type": "integer"}, "after": after}}},
         {"name": "long_press", "description": "Touch and hold an element (target as tap) or a point, ms (default 800): context menus, icon editing.",
@@ -428,7 +428,7 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
         }
         "snapshot" => {
             let prev = ax::last(&inst);
-            let snap = ax::snapshot(&inst, ax::SnapOpts { all: a["all"].as_bool().unwrap_or(false), ..Default::default() })?;
+            let snap = ax::snapshot(&inst, ax::SnapOpts { all: a["all"].as_bool().unwrap_or(false), ocr: a["ocr"].as_bool().unwrap_or(false), ..Default::default() })?;
             let text = match (a["diff"].as_bool().unwrap_or(false), prev) {
                 (true, Some(p)) => snap.diff(&p),
                 _ => snap.text(),

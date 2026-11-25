@@ -51,9 +51,9 @@ simax)
 	axsdk=; axweb="-framework WebKit"
 	case ${X86SIM_PLATFORM:-ios} in tvos) axweb= ;; watchos) axweb=; axsdk="SDK_WATCHOS=$X/sdks/WatchSimulator-xcode.sdk" ;;
 		xros) axsdk="SDK_XROS=$X/sdks/XRSimulator-xcode.sdk" ;; esac
-	tar cf - -C "$X/host/simax" simax.m | build a64ax "$X/host/simax/arm64$SUF/libsimax.dylib" "$axsdk $CC \
+	tar cf - -C "$X/host/simax" simax.m simax_pixels.m | build a64ax "$X/host/simax/arm64$SUF/libsimax.dylib" "$axsdk $CC \
 		-O1 -Wall -Wno-unused-function -Wno-deprecated-declarations -Wno-unguarded-availability-new -fobjc-arc -dynamiclib \
-		-framework Foundation -framework CoreGraphics -framework QuartzCore -framework UIKit $axweb -o libsimax.dylib simax.m" ;;
+		-framework Foundation -framework CoreGraphics -framework QuartzCore -framework UIKit $axweb -o libsimax.dylib simax.m simax_pixels.m" ;;
 simaudio)
 	# Speed 27: the audio devices (CoreAudio HAL stand-in, host/simaudio) for arm64 processes:
 	# flat namespace + dynamic lookup, CoreAudio references weak (inert in processes without CoreAudio)

@@ -54,3 +54,8 @@ sha1_smol = "1"
 # keeps it off the host's pkg-config and lets its CMake build under CMake 4)
 opus = "0.3"
 audiopus_sys = { version = "0.2", features = ["static"] }
+# OCR of frames (snapshot ocr, text in Metal / game / canvas views): pure Rust, models downloaded once (ocr.rs)
+ocrs = { version = "0.14", default-features = false, features = ["onnx"] }
+rten = { version = "0.28", default-features = false, features = ["onnx_format"] }
+rten-imageproc = "0.28"
+sha2 = "0.10"

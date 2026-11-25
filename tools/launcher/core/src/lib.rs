@@ -28,6 +28,8 @@ pub mod profile;
 pub mod macho;
 /// Network capture of native apps (host/simnet): records, capture on / off, mocks
 pub mod net;
+/// Text in pixels: OCR of frames (snapshot ocr=true, views with no elements)
+pub mod ocr;
 pub mod ring;
 /// Web Inspector: Safari and WKWebView pages over webinspectord (RWI)
 pub mod rwi;

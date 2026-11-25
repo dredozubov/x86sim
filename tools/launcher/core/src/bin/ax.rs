@@ -9,9 +9,12 @@ use x86sim_core::instance;
 mod ax_net;
 
 const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
-  snapshot [--json] [--all] [--diff]   the screen as text: one element per line with a ref (@e3), role, label, value,
+  snapshot [--json] [--all] [--diff] [--ocr]
+                                       the screen as text: one element per line with a ref (@e3), role, label, value,
                                        id and its center point; --diff: only what changed since the last snapshot;
-                                       --all: also elements scrolled out of view; --json: everything (frames, states)
+                                       --all: also elements scrolled out of view; --json: everything (frames, states);
+                                       --ocr: also text read from the whole screen's pixels that no element says (large
+                                       Metal / game / canvas views with no elements are always read: [ocr] lines)
   find TARGET                          the elements a target matches, best first
   tap TARGET                           TARGET: @e3 | id:IDENTIFIER | \"label text\" | X Y (points)
   long-press TARGET [--ms N]           (default 800 ms)
@@ -92,6 +95,7 @@ fn run() -> Result<()> {
     let submit = flag("--submit");
     let keys = flag("--keys");
     let dynamic_type = flag("--dynamic-type");
+    let ocr = flag("--ocr");
     let mut opt = |name: &str| -> Option<String> {
         let i = args.iter().position(|a| a == name)?;
         if i + 1 >= args.len() {
@@ -135,7 +139,7 @@ fn run() -> Result<()> {
     match cmd.as_str() {
         "snapshot" | "snap" | "ss" => {
             let prev = ax::last(&inst);
-            let s = ax::snapshot(&inst, SnapOpts { all, ..Default::default() })?;
+            let s = ax::snapshot(&inst, SnapOpts { all, ocr, ..Default::default() })?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&s)?);
             } else if diff {
