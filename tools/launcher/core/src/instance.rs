@@ -264,6 +264,13 @@ pub struct Summary {
     pub processes: usize,
     pub uptime_s: Option<f64>,
     pub path: PathBuf,
+    /// its SpringBoard answers (crate::liveness): None while not known (booting, or the shell never answered)
+    pub responsive: Option<bool>,
+    /// running, but SpringBoard has not answered for a while: the phone needs a restart
+    pub hung: bool,
+    /// why the last check failed (empty when it answered)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hung_reason: String,
 }
 
 /// Every phone's state; samples CPU over `sample_ms` (0: memory and state only).
@@ -279,10 +286,23 @@ pub fn summaries(sample_ms: u64) -> Vec<Summary> {
         std::thread::sleep(std::time::Duration::from_millis(sample_ms));
         st = m.poll(&insts);
     }
+    // SpringBoard liveness of the phones at their home screen, in parallel (a stuck one costs one probe timeout)
+    let live: Vec<Option<crate::liveness::Liveness>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = insts
+            .iter()
+            .zip(&st)
+            .map(|(i, s)| {
+                let boot = s.boot_time.filter(|_| s.phase == Phase::Running && s.home);
+                sc.spawn(move || boot.map(|b| crate::liveness::check(i, b)))
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
     insts
         .iter()
         .zip(st)
-        .map(|(i, s)| Summary {
+        .zip(live)
+        .map(|((i, s), l)| Summary {
             id: i.id.clone(),
             name: i.name.clone(),
             model: i.model.clone(),
@@ -297,6 +317,9 @@ pub fn summaries(sample_ms: u64) -> Vec<Summary> {
             processes: s.procs.len(),
             uptime_s: s.uptime_s.map(|u| u.round()),
             path: i.dir.clone(),
+            responsive: l.as_ref().and_then(|l| l.responsive),
+            hung: l.as_ref().is_some_and(|l| l.hung),
+            hung_reason: l.map(|l| l.why).unwrap_or_default(),
         })
         .collect()
 }

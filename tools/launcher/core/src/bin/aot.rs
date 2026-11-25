@@ -281,7 +281,9 @@ fn run() -> Result<()> {
                     } else {
                         for s in all {
                             let live = if s.state == "off" { String::new() } else { format!("  {:.0} MB  {:.0}% CPU  {} procs{}", s.memory_mb, s.cpu_pct, s.processes, if s.home { "  home" } else { "" }) };
-                            println!("{:20} {:18} {:10} {:9}{}{}", s.name, s.model, s.ios, s.state, if s.installed { "" } else { "  (iOS not installed)" }, live);
+                            // running, but SpringBoard does not answer (core liveness.rs): say so, and why
+                            let (state, why) = if s.hung { ("hung".to_string(), format!("  (SpringBoard does not answer: {}; restart it)", s.hung_reason)) } else { (s.state.clone(), String::new()) };
+                            println!("{:20} {:18} {:10} {:9}{}{}{}", s.name, s.model, s.ios, state, if s.installed { "" } else { "  (iOS not installed)" }, live, why);
                         }
                     }
                 }

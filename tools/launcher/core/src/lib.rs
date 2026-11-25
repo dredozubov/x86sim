@@ -18,6 +18,8 @@ pub mod hid;
 pub mod host;
 pub mod hot;
 pub mod instance;
+/// SpringBoard liveness: a phone whose shell stopped answering is "hung"
+pub mod liveness;
 pub mod key;
 pub mod keymap;
 pub mod logs;

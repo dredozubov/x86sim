@@ -26,7 +26,7 @@ const SPRINGBOARD: &str = "com.apple.springboard";
 /// alerts), Carousel (watchOS: the app grid, the time over apps), visionOS's SurfBoard; the homes that are apps of
 /// their own: tvOS's HeadBoard (TVSystemUIService: its clock corner), a watch face (com.apple.clockface), visionOS's
 /// Home View (RealityLauncher; RealityHUD: the Home / Control Center buttons)
-const SHELLS: &[&str] = &[SPRINGBOARD, "com.apple.PineBoard", "com.apple.Carousel", "com.apple.SurfBoard"];
+pub(crate) const SHELLS: &[&str] = &[SPRINGBOARD, "com.apple.PineBoard", "com.apple.Carousel", "com.apple.SurfBoard"];
 const TV_HOME: &str = "com.apple.HeadBoard";
 const WATCH_FACE: &str = "com.apple.clockface";
 const XR_HOME: &str = "com.apple.RealityLauncher";
@@ -346,12 +346,12 @@ impl Snapshot {
 // Talking to the guest
 
 /// A process's reader: its socket and whether it is on screen (its .fg marker)
-struct Endpoint {
-    sock: PathBuf,
-    fg: bool,
+pub(crate) struct Endpoint {
+    pub sock: PathBuf,
+    pub fg: bool,
 }
 
-fn endpoints(inst: &Instance) -> Vec<Endpoint> {
+pub(crate) fn endpoints(inst: &Instance) -> Vec<Endpoint> {
     let dir = inst.ring.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/tmp"));
     let pre = format!("x86sim-ax-{}-", if inst.udid.is_empty() { "phone" } else { &inst.udid });
     let mut v = Vec::new();
@@ -399,7 +399,7 @@ fn connect_nb(sock: &Path) -> std::io::Result<UnixStream> {
 }
 
 /// One request to one process; Ok(None): the process is gone (its socket removed)
-fn ask(sock: &Path, req: &Value, timeout: Duration) -> Result<Option<Value>> {
+pub(crate) fn ask(sock: &Path, req: &Value, timeout: Duration) -> Result<Option<Value>> {
     let mut s = match connect_nb(sock) {
         Ok(s) => s,
         Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => {
@@ -760,7 +760,7 @@ pub fn interface_rot(o: u64) -> u32 {
 }
 
 /// The bundle id a process's `.fg` marker names (simax writes it), for messages about a process that did not answer
-fn fg_bundle(sock: &Path) -> String {
+pub(crate) fn fg_bundle(sock: &Path) -> String {
     std::fs::read_to_string(sock.with_extension("fg")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "?".into())
 }
 
