@@ -1,7 +1,7 @@
 //! Network capture of native apps (docs/protocols/NET.md): what host/simnet (a recording NSURLProtocol in the app's
 //! process) and libsimshim's connection records write under the device's `data/x86sim-net/`, read back as requests;
-//! turning capture on and off per app. Used by the MCP tools net_capture / net_log / net_request
-//! (bin/mcp_parts/net.rs), `x86sim net` (x86sim-ax net), the browser page (share/device.rs) and the launcher.
+//! turning capture on and off per app; mock rules. Used by the MCP tools net_capture / net_log / net_request /
+//! net_mock (bin/mcp_parts/net.rs), `x86sim net` (x86sim-ax net), the browser page (share/device.rs) and the launcher.
 use crate::instance::Instance;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -25,6 +25,10 @@ fn cap_dir(inst: &Instance) -> PathBuf {
 
 fn log_dir(inst: &Instance) -> PathBuf {
     dir(inst).join("log")
+}
+
+fn mocks_path(inst: &Instance) -> PathBuf {
+    dir(inst).join("mocks.json")
 }
 
 fn valid_bundle(b: &str) -> Result<()> {
@@ -433,6 +437,136 @@ pub fn clear_log(inst: &Instance, app: Option<&str>) -> Result<usize> {
         }
     }
     Ok(n)
+}
+
+// ---- mocks
+
+/// A mock rule as the hook reads it (docs/protocols/NET.md)
+pub fn mocks(inst: &Instance) -> Vec<Value> {
+    std::fs::read(mocks_path(inst)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v["rules"].as_array().cloned()).unwrap_or_default()
+}
+
+fn save_mocks(inst: &Instance, rules: &[Value]) -> Result<()> {
+    if rules.is_empty() {
+        match std::fs::remove_file(mocks_path(inst)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => return Ok(()),
+        }
+    }
+    write_atomic(&mocks_path(inst), serde_json::to_vec_pretty(&json!({"rules": rules}))?.as_slice())
+}
+
+pub const FAILS: [&str; 5] = ["offline", "timeout", "dns", "refused", "reset"];
+
+/// Adds a rule from a tool's arguments: url (pattern), method, status, headers, body (text or JSON) | body_file,
+/// latency_ms, fail. The newest rule wins over older ones that match the same request.
+pub fn add_mock(inst: &Instance, a: &Value) -> Result<Value> {
+    let url = a["url"].as_str().unwrap_or("").trim().to_string();
+    if url.is_empty() {
+        bail!("url: a pattern (part of the URL; with * a glob over the whole URL; re:<regex>)");
+    }
+    if let Some(r) = url.strip_prefix("re:") {
+        // the guest uses NSRegularExpression; reject what is clearly broken here
+        if r.is_empty() {
+            bail!("url: re: needs a regular expression");
+        }
+    }
+    let mut r = serde_json::Map::new();
+    r.insert("url".into(), json!(url));
+    if let Some(m) = a["method"].as_str().filter(|m| !m.is_empty()) {
+        r.insert("method".into(), json!(m.to_uppercase()));
+    }
+    if let Some(f) = a["fail"].as_str().filter(|f| !f.is_empty()) {
+        if !FAILS.contains(&f) {
+            bail!("fail: one of {}", FAILS.join(", "));
+        }
+        r.insert("fail".into(), json!(f));
+    }
+    let has_body = !a["body"].is_null() || a["body_file"].as_str().is_some_and(|f| !f.is_empty());
+    if let Some(st) = a["status"].as_u64() {
+        if !(100..=599).contains(&st) {
+            bail!("status: 100..599");
+        }
+        r.insert("status".into(), json!(st));
+    } else if has_body || a["headers"].is_object() {
+        r.insert("status".into(), json!(200));
+    }
+    if let Some(h) = a["headers"].as_object() {
+        r.insert("headers".into(), Value::Object(h.iter().map(|(k, v)| (k.clone(), json!(v.as_str().map(String::from).unwrap_or_else(|| v.to_string())))).collect()));
+    }
+    if let Some(f) = a["body_file"].as_str().filter(|f| !f.is_empty()) {
+        let b = std::fs::read(f).with_context(|| format!("body_file {f}"))?;
+        r.insert("body_b64".into(), json!(crate::ax::base64(&b)));
+        if !r.contains_key("headers") || !r["headers"].as_object().is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("content-type"))) {
+            let ct = content_type_for(f);
+            let mut h = r.get("headers").and_then(|h| h.as_object().cloned()).unwrap_or_default();
+            h.insert("Content-Type".into(), json!(ct));
+            r.insert("headers".into(), Value::Object(h));
+        }
+    } else if !a["body"].is_null() {
+        r.insert("body".into(), a["body"].clone());
+    }
+    if let Some(l) = a["latency_ms"].as_u64() {
+        r.insert("latency_ms".into(), json!(l.min(600_000)));
+    }
+    if !r.contains_key("status") && !r.contains_key("fail") && !r.contains_key("latency_ms") {
+        bail!("say what the rule does: status / body / headers (an answer), fail, or latency_ms");
+    }
+    let mut rules = mocks(inst);
+    let next = rules.iter().filter_map(|r| r["id"].as_str()?.strip_prefix('m')?.parse::<u64>().ok()).max().unwrap_or(0) + 1;
+    r.insert("id".into(), json!(format!("m{next}")));
+    let rule = Value::Object(r);
+    // newest first: the hook takes the first rule that matches
+    rules.insert(0, rule.clone());
+    save_mocks(inst, &rules)?;
+    Ok(rule)
+}
+
+fn content_type_for(f: &str) -> &'static str {
+    match f.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+        "json" => "application/json",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
+        "xml" => "application/xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "js" => "text/javascript",
+        "css" => "text/css",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Removes one rule (its id) or, with None, all of them; answers how many went
+pub fn remove_mock(inst: &Instance, id: Option<&str>) -> Result<usize> {
+    let rules = mocks(inst);
+    let keep: Vec<Value> = match id {
+        Some(id) => rules.iter().filter(|r| r["id"].as_str() != Some(id)).cloned().collect(),
+        None => vec![],
+    };
+    let n = rules.len() - keep.len();
+    if id.is_some() && n == 0 {
+        bail!("no mock rule {}", id.unwrap_or(""));
+    }
+    save_mocks(inst, &keep)?;
+    Ok(n)
+}
+
+/// A rule as one line
+pub fn mock_line(r: &Value) -> String {
+    let mut s = format!("{} {} {}", r["id"].as_str().unwrap_or("?"), r["method"].as_str().unwrap_or("*"), r["url"].as_str().unwrap_or(""));
+    if let Some(f) = r["fail"].as_str() {
+        s += &format!(" -> fail {f}");
+    } else if let Some(st) = r["status"].as_u64() {
+        let len = r["body_b64"].as_str().map(|b| b.len() * 3 / 4).or_else(|| r["body"].as_str().map(|b| b.len())).or_else(|| (!r["body"].is_null()).then(|| r["body"].to_string().len())).unwrap_or(0);
+        s += &format!(" -> {st} ({})", fmt_size(len as u64));
+    }
+    if let Some(l) = r["latency_ms"].as_u64() {
+        s += &format!(" +{l}ms");
+    }
+    s
 }
 
 #[cfg(test)]

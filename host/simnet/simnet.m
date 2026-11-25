@@ -1,5 +1,5 @@
 // x86Sim (agents): network capture inside an app's process (docs/protocols/NET.md; host side
-// tools/launcher/core/src/net.rs, the MCP tools net_capture / net_log / net_request, `x86sim net`).
+// tools/launcher/core/src/net.rs, the MCP tools net_capture / net_log / net_request / net_mock, `x86sim net`).
 //
 // libsimshim dlopens this only into third-party apps (and their extensions) that have capture turned on (a file
 // <X86SIM_NET_DIR>/capture/<bundle id>), and calls simnet_start(). From then on a recording NSURLProtocol stands in
@@ -9,6 +9,9 @@
 // including server trust, errors, cancellation) and writes one JSON line per request into
 // <X86SIM_NET_DIR>/log/<bundle>-<pid>.jsonl: method, URL, both header sets, status, sizes, bodies up to the
 // configured limit (text as is, other bytes base64), timings from the task's metrics, error.
+//
+// Mocks: <X86SIM_NET_DIR>/mocks.json (written by the host; re-read when it changes) answers matching requests with a
+// status / headers / body, adds latency, or fails them (offline, timeout, DNS error, refused) without the network.
 //
 // Turning capture off (the host removes the capture file) takes effect at once: canInitWithRequest: answers NO and
 // requests go to the system's loader as before. Background sessions (an identifier) are never touched: their tasks
@@ -24,6 +27,7 @@
 
 static NSString* g_capfile;   // the capture file that turned this process on
 static NSString* g_logpath;   // where the records go
+static NSString* g_mockpath;  // the mock rules
 static NSString* g_bundle;
 static int g_logfd = -1;
 static dispatch_queue_t g_wq; // serial: record writes
@@ -101,6 +105,89 @@ static void write_record(NSDictionary* rec) {
 			n -= (size_t)k;
 		}
 	});
+}
+
+// ---- mocks
+
+// A rule: {id, url (substring; with * a glob over the whole URL; "re:..." a regular expression), method,
+// status, headers, body | body_b64, latency_ms, fail: offline | timeout | dns | refused | reset}
+static NSArray<NSDictionary*>* g_rules;
+static struct timespec g_rules_mtime;
+static double g_rules_checked;
+
+static NSArray<NSDictionary*>* mock_rules(void) {
+	@synchronized([NSURLProtocol class]) {
+		double t = now_s();
+		if (t - g_rules_checked < 0.3) return g_rules;
+		g_rules_checked = t;
+		struct stat st;
+		if (stat(g_mockpath.fileSystemRepresentation, &st) != 0) {
+			g_rules = nil;
+			memset(&g_rules_mtime, 0, sizeof g_rules_mtime);
+			return nil;
+		}
+		if (st.st_mtimespec.tv_sec == g_rules_mtime.tv_sec && st.st_mtimespec.tv_nsec == g_rules_mtime.tv_nsec) return g_rules;
+		g_rules_mtime = st.st_mtimespec;
+		NSData* d = [NSData dataWithContentsOfFile:g_mockpath];
+		id o = d.length ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+		if ([o isKindOfClass:NSDictionary.class]) o = o[@"rules"];
+		g_rules = [o isKindOfClass:NSArray.class] ? o : nil;
+		nlog(@"%lu mock rules", (unsigned long)g_rules.count);
+		return g_rules;
+	}
+}
+
+static bool glob_match(const char* p, const char* s) {
+	// '*' any run of characters, '?' one character
+	const char *star = NULL, *ss = NULL;
+	while (*s) {
+		if (*p == '*') { star = p++; ss = s; continue; }
+		if (*p == '?' || *p == *s) { p++; s++; continue; }
+		if (star) { p = star + 1; s = ++ss; continue; }
+		return false;
+	}
+	while (*p == '*') p++;
+	return !*p;
+}
+
+static bool rule_matches(NSDictionary* r, NSURLRequest* req) {
+	NSString* m = r[@"method"];
+	if ([m isKindOfClass:NSString.class] && m.length && ![m isEqualToString:@"*"] &&
+	    [m caseInsensitiveCompare:req.HTTPMethod ?: @"GET"] != NSOrderedSame)
+		return false;
+	NSString* pat = r[@"url"];
+	NSString* url = req.URL.absoluteString ?: @"";
+	if (![pat isKindOfClass:NSString.class] || !pat.length) return true;
+	if ([pat hasPrefix:@"re:"]) {
+		NSRegularExpression* re = [NSRegularExpression regularExpressionWithPattern:[pat substringFromIndex:3] options:0 error:nil];
+		return re && [re firstMatchInString:url options:0 range:NSMakeRange(0, url.length)] != nil;
+	}
+	if ([pat rangeOfString:@"*"].location != NSNotFound || [pat rangeOfString:@"?"].location != NSNotFound)
+		return glob_match(pat.UTF8String, url.UTF8String);
+	return [url rangeOfString:pat].location != NSNotFound;
+}
+
+static NSDictionary* mock_for(NSURLRequest* req) {
+	for (NSDictionary* r in mock_rules())
+		if ([r isKindOfClass:NSDictionary.class] && rule_matches(r, req)) return r;
+	return nil;
+}
+
+static NSError* mock_error(NSString* kind, NSURL* url) {
+	NSDictionary* codes = @{
+		@"offline": @[ @(NSURLErrorNotConnectedToInternet), @"The Internet connection appears to be offline." ],
+		@"timeout": @[ @(NSURLErrorTimedOut), @"The request timed out." ],
+		@"dns": @[ @(NSURLErrorCannotFindHost), @"A server with the specified hostname could not be found." ],
+		@"refused": @[ @(NSURLErrorCannotConnectToHost), @"Could not connect to the server." ],
+		@"reset": @[ @(NSURLErrorNetworkConnectionLost), @"The network connection was lost." ],
+	};
+	NSArray* c = codes[kind] ?: codes[@"offline"];
+	NSMutableDictionary* info = [@{ NSLocalizedDescriptionKey: c[1] } mutableCopy];
+	if (url) {
+		info[NSURLErrorFailingURLErrorKey] = url;
+		info[NSURLErrorFailingURLStringErrorKey] = url.absoluteString ?: @"";
+	}
+	return [NSError errorWithDomain:NSURLErrorDomain code:[c[0] integerValue] userInfo:info];
 }
 
 // ---- bodies
@@ -189,6 +276,7 @@ static NSDictionary* timing_of(NSURLSessionTaskMetrics* m, double t0) {
 @property (assign) double t0;
 @property (assign) BOOL done;
 @property (assign) BOOL stopped;
+@property (copy) NSString* mockId;
 @end
 
 @implementation X86NetProtocol
@@ -293,6 +381,20 @@ static NSData* task_body(NSURLSessionTask* t) {
 	self.sent = r;
 	write_record(@{ @"k": @"start", @"n": @(self.n), @"ts": @(self.t0), @"method": r.HTTPMethod ?: @"GET", @"url": r.URL.absoluteString ?: @"" });
 
+	NSDictionary* rule = mock_for(self.request);
+	if (rule) {
+		self.mockId = [rule[@"id"] description] ?: @"?";
+		double latency = [rule[@"latency_ms"] doubleValue] / 1000.0;
+		BOOL answers = rule[@"status"] != nil || [rule[@"fail"] isKindOfClass:NSString.class];
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(latency * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+			[self onClient:^{
+				if (self.stopped) return;
+				if (answers) [self answerMock:rule];
+				else [self load];  // latency only: then the network
+			}];
+		});
+		return;
+	}
 	[self load];
 }
 
@@ -304,6 +406,39 @@ static NSData* task_body(NSURLSessionTask* t) {
 	}
 	self.inner = t;
 	[t resume];
+}
+
+- (void)answerMock:(NSDictionary*)rule {
+	NSURL* url = self.request.URL;
+	if ([rule[@"fail"] isKindOfClass:NSString.class]) {
+		NSError* e = mock_error(rule[@"fail"], url);
+		[self.client URLProtocol:self didFailWithError:e];
+		[self finishWithError:e];
+		return;
+	}
+	NSData* body = nil;
+	if ([rule[@"body_b64"] isKindOfClass:NSString.class]) body = [[NSData alloc] initWithBase64EncodedString:rule[@"body_b64"] options:0];
+	else if ([rule[@"body"] isKindOfClass:NSString.class]) body = [rule[@"body"] dataUsingEncoding:NSUTF8StringEncoding];
+	else if (rule[@"body"] && ![rule[@"body"] isKindOfClass:NSNull.class]) body = [NSJSONSerialization dataWithJSONObject:rule[@"body"] options:0 error:nil];
+	NSMutableDictionary* h = [NSMutableDictionary dictionary];
+	if ([rule[@"headers"] isKindOfClass:NSDictionary.class])
+		for (id k in rule[@"headers"]) h[[k description]] = [rule[@"headers"][k] description];
+	if (body && ![h objectForKey:@"Content-Type"] && ![h objectForKey:@"content-type"]) {
+		id j = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
+		h[@"Content-Type"] = j ? @"application/json" : @"text/plain; charset=utf-8";
+	}
+	h[@"Content-Length"] = [NSString stringWithFormat:@"%lu", (unsigned long)body.length];
+	NSHTTPURLResponse* resp = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:[rule[@"status"] integerValue] ?: 200
+		HTTPVersion:@"HTTP/1.1" headerFields:h];
+	self.response = resp;
+	[self.client URLProtocol:self didReceiveResponse:resp cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+	if (body.length) {
+		self.body = [body mutableCopy];
+		self.received = (long)body.length;
+		[self.client URLProtocol:self didLoadData:body];
+	}
+	[self.client URLProtocolDidFinishLoading:self];
+	[self finishWithError:nil];
 }
 
 - (void)stopLoading {
@@ -346,6 +481,7 @@ static NSData* task_body(NSURLSessionTask* t) {
 	}
 	timing[@"total"] = @(round((t1 - self.t0) * 10000) / 10);
 	o[@"timing"] = timing;
+	if (self.mockId) o[@"mock"] = self.mockId;
 	if (e) {
 		o[@"error"] = @{ @"domain": e.domain ?: @"", @"code": @(e.code), @"text": e.localizedDescription ?: @"" };
 		if (e.code == NSURLErrorCancelled && [e.domain isEqualToString:NSURLErrorDomain]) o[@"cancelled"] = @YES;
@@ -566,6 +702,7 @@ __attribute__((visibility("default"))) void simnet_start(const char* capfile, co
 		@autoreleasepool {
 			g_capfile = @(capfile);
 			g_logpath = @(logpath);
+			g_mockpath = @(mockpath);
 			g_bundle = @(bundle);
 			g_wq = dispatch_queue_create("com.x86sim.net.write", DISPATCH_QUEUE_SERIAL);
 			capture_on();

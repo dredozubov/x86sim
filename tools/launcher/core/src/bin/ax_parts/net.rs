@@ -1,5 +1,6 @@
 //! x86sim-ax net: the CLI of the network capture (x86sim_core::net; the MCP tools net_* in mcp_parts/net.rs).
 use anyhow::{bail, Result};
+use serde_json::{json, Value};
 use std::time::Duration;
 use x86sim_core::{instance::Instance, net};
 
@@ -10,7 +11,9 @@ pub const USAGE: &str = "  net capture APP on|off [--relaunch] [--limit BYTES] |
                                        one line per request: #id METHOD status URL duration size
   net show ID                          one request: headers, bodies, timings, error
   net clear [APP]                      empty the log
-";
+  net mock add URL [--method M] [--status N] [--header K:V]... [--body TEXT|--body-file F] [--latency MS]
+                   [--fail offline|timeout|dns|refused|reset]
+  net mock list | remove ID | clear    answer requests without a server (apps with capture on)";
 
 fn take(args: &mut Vec<String>, name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -104,7 +107,50 @@ pub fn run(inst: &Instance, mut args: Vec<String>) -> Result<()> {
             let n = net::clear_log(inst, args.first().map(String::as_str))?;
             println!("cleared {n} log file(s)");
         }
-        x => bail!("net {x}: capture, log, show, clear\n{USAGE}"),
+        "mock" | "mocks" => {
+            let what = if args.is_empty() { "list".to_string() } else { args.remove(0) };
+            match what.as_str() {
+                "list" => {
+                    let r = net::mocks(inst);
+                    if r.is_empty() {
+                        println!("no mock rules");
+                    }
+                    for x in r {
+                        println!("{}", net::mock_line(&x));
+                    }
+                }
+                "clear" => println!("removed {} rule(s)", net::remove_mock(inst, None)?),
+                "remove" | "rm" => {
+                    let id = args.first().ok_or_else(|| anyhow::anyhow!("net mock remove ID"))?;
+                    net::remove_mock(inst, Some(id))?;
+                    println!("removed {id}");
+                }
+                "add" => {
+                    let mut headers = serde_json::Map::new();
+                    while let Some(h) = take(&mut args, "--header") {
+                        let (k, v) = h.split_once(':').ok_or_else(|| anyhow::anyhow!("--header NAME:VALUE"))?;
+                        headers.insert(k.trim().into(), json!(v.trim()));
+                    }
+                    let mut a = json!({
+                        "method": take(&mut args, "--method"),
+                        "status": take(&mut args, "--status").map(|s| s.parse::<u64>()).transpose()?,
+                        "body_file": take(&mut args, "--body-file"),
+                        "latency_ms": take(&mut args, "--latency").map(|s| s.parse::<u64>()).transpose()?,
+                        "fail": take(&mut args, "--fail"),
+                    });
+                    if let Some(b) = take(&mut args, "--body") {
+                        a["body"] = Value::String(b);
+                    }
+                    if !headers.is_empty() {
+                        a["headers"] = Value::Object(headers);
+                    }
+                    a["url"] = json!(args.first().ok_or_else(|| anyhow::anyhow!("net mock add URL ..."))?);
+                    println!("added {}", net::mock_line(&net::add_mock(inst, &a)?));
+                }
+                x => bail!("net mock add|list|remove|clear, not {x}"),
+            }
+        }
+        x => bail!("net {x}: capture, log, show, clear, mock\n{USAGE}"),
     }
     Ok(())
 }

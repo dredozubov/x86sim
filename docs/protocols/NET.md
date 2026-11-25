@@ -2,7 +2,7 @@
 
 An app's network traffic, seen from inside its process: no proxy, no certificate, HTTPS in the clear. Guest side
 `host/simnet/simnet.m` (`libsimnet.dylib`) and `host/simshim/compat/simshim_net.c` (part of libsimshim); host side
-`tools/launcher/core/src/net.rs`, used by the MCP tools `net_capture`, `net_log`, `net_request`
+`tools/launcher/core/src/net.rs`, used by the MCP tools `net_capture`, `net_log`, `net_request`, `net_mock`
 (`bin/mcp_parts/net.rs`), `x86sim net` (`bin/ax_parts/net.rs`), the browser page and the launcher.
 
 Everything goes through files in the device's data folder, `<device>/data/x86sim-net/` (the guest's
@@ -13,6 +13,7 @@ capture/<bundle id>            capture is on for that app: {"body_limit": <bytes
 log/<bundle id>-<pid>.jsonl    requests of one process (written by libsimnet)
 log/<bundle id>-<pid>.conn.jsonl
                                connections of one process (written by libsimshim)
+mocks.json                     {"rules": [...]}: mock rules, newest first
 ```
 
 ## Loading
@@ -66,6 +67,7 @@ One JSON object per line. `k` is the kind; `n` numbers requests within the proce
 | `protocol`, `reused`, `remote`, `tls_version`, `cache` | from the same metrics |
 | `error` | `{domain, code, text}`; `cancelled: true` for a cancellation |
 | `redirect_to` | the redirect this request was answered with |
+| `mock` | the rule that answered (or delayed) it |
 
 ## Connections (libsimshim)
 
@@ -80,3 +82,19 @@ fds) for the bytes sent and received, and writes
 
 The host's id is `<pid>.c<n>`. No content. URLSession's own connections show up too when Network.framework connects
 with `connect`. UDP is not recorded.
+
+## Mocks
+
+`mocks.json` holds rules; the newest that matches a request wins. libsimnet re-reads it when it changes (checked at
+most every 300 ms), so rules apply to running apps with capture on.
+
+| field | |
+|---|---|
+| `id` | `m<n>`, given by the host |
+| `url` | a part of the URL; with `*` / `?` a glob over the whole URL; `re:<pattern>` an `NSRegularExpression` |
+| `method` | absent or `*`: any |
+| `status`, `headers`, `body` / `body_b64` | an answer (a JSON value in `body` is sent as JSON; `Content-Type` and `Content-Length` are added when absent) |
+| `fail` | `offline` (-1009), `timeout` (-1001), `dns` (-1003), `refused` (-1004), `reset` (-1005): the `NSURLErrorDomain` error a device gives |
+| `latency_ms` | the answer (or failure) waits this long; alone, it delays the real request |
+
+A mocked request never reaches the network and is recorded like any other, with `mock`.
