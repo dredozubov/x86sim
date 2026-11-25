@@ -48,6 +48,10 @@ loop mode the load started on:
 - an upload's body: a stream (`HTTPBodyStream`) is read whole first, so it can be recorded and sent;
 - errors and cancellation (`stopLoading` cancels the inner task).
 
+What differs while capture is on: an upload's progress (`urlSession(_:task:didSendBodyData:...)`) is not reported
+to the app, because a URL protocol has no way to pass it on (x86netcap's upload saw `sent=0` with capture on, 4096
+without); a body stream is read whole before the request is sent. Turn capture off to check progress UI.
+
 ### Records
 
 One JSON object per line. `k` is the kind; `n` numbers requests within the process; the host's id is `<pid>.<n>`.
