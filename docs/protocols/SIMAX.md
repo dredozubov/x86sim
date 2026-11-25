@@ -162,6 +162,19 @@ that way is not listed twice): role `node`, `label` the node's name, `class` the
 - `key` is `sk:<name>#<n>` / `scn:<name>#<n>`, the n-th node of that name in the tree, so a moving node keeps its ref,
   and `tap "Player"`, `wait_for "Enemy" gone=true` work on games built with names.
 
+
+### Flutter: the screen reader it waits for
+
+Flutter builds its accessibility tree (the `SemanticsObject`s under a `FlutterView`) only while it believes an assistive
+technology runs. Flutter's own simulator builds turn semantics on anyway; a device build, as an installed
+`.ipa` converted for the simulator runs, does not. At the first `tree` request of a process (none for `noax`), simax
+looks for Flutter's image, `Flutter.framework`. There the pointers its calls to
+`UIAccessibilityIsVoiceOverRunning` go through (`__got`, `__auth_got`, `__la_symbol_ptr`) are rebound to a function
+that answers yes, and `UIAccessibilityVoiceOverStatusDidChangeNotification` is posted, so the engine looks again and
+builds its tree. Nothing else in the process sees VoiceOver on: UIKit, the app's own code and other frameworks still get
+no. A process without Flutter is not touched. Flutter's `Semantics(identifier:)` is the element's `id`
+(`tap id:...`). `X86SIM_AX_LOG=1` logs `engines: screen reader on for flutter:<pointers rebound>`.
+
 ## Host
 
 `ax.rs` asks every `.fg` process in parallel and merges the answers into one `Snapshot`. It assigns layers:

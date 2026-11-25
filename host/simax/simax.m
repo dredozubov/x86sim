@@ -69,6 +69,7 @@ void simax_log(const char* fmt, ...) {
 	va_end(ap);
 	fprintf(stderr, "simax[%d]: %s\n", getpid(), b);
 }
+void simax_engines_screen_reader(void);
 int simax_engine_view(UIView* v);
 NSArray* simax_engine_elements(UIView* v);
 
@@ -1245,6 +1246,7 @@ static void tree(NSDictionary* req, void (^reply)(NSDictionary*)) {
 		return;
 	}
 	if (![req[@"noax"] boolValue] && load_ax()) d[@"ax_fresh"] = @YES;
+	if (![req[@"noax"] boolValue]) simax_engines_screen_reader();
 	if (!UIApplication.sharedApplication) {
 		reply(d);
 		return;

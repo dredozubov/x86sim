@@ -1,6 +1,11 @@
 // x86Sim: simax's readers for content UIKit's accessibility does not describe (game engines, SpriteKit, SceneKit),
 // hooked from simax.m (protocol: docs/protocols/SIMAX.md, "Engines").
 //
+//   simax_engines_screen_reader()  once, at a process's first tree: Flutter builds its accessibility tree only while
+//                                  a screen reader runs. In Flutter's image
+//                                  UIAccessibilityIsVoiceOverRunning answers yes (their bound pointers to it are
+//                                  rebound), and the "VoiceOver status changed" notification makes them look again.
+//                                  Nothing else in the process sees VoiceOver on.
 //   simax_engine_view(v)           whether v is a view whose content an engine reader describes: SKView, SCNView
 //                                  (1: always, less the nodes their own accessibility lists)
 //   simax_engine_elements(v)       that content: SpriteKit / SceneKit named nodes (role node)
@@ -17,8 +22,78 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <string.h>
 
 void simax_log(const char* fmt, ...);
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The screen-reader switch
+
+static BOOL vo_yes(void) { return YES; }
+
+// Rebinds every pointer to `from` in an image's symbol pointer sections (__got, __auth_got, __la_symbol_ptr: what its
+// calls to an imported function load) to `to`. Answers how many it changed. The image's own code is not touched.
+static int rebind_image(const struct mach_header_64* mh, intptr_t slide, void* from, void* to) {
+	int n = 0;
+	const uint8_t* p = (const uint8_t*)(mh + 1);
+	long page = sysconf(_SC_PAGESIZE);
+	for (uint32_t i = 0; i < mh->ncmds; i++) {
+		const struct load_command* lc = (const void*)p;
+		if (lc->cmd == LC_SEGMENT_64) {
+			const struct segment_command_64* sg = (const void*)lc;
+			const struct section_64* s = (const void*)(sg + 1);
+			for (uint32_t j = 0; j < sg->nsects; j++, s++) {
+				uint32_t type = s->flags & SECTION_TYPE;
+				if (type != S_NON_LAZY_SYMBOL_POINTERS && type != S_LAZY_SYMBOL_POINTERS && strncmp(s->sectname, "__got", 16) &&
+				    strncmp(s->sectname, "__auth_got", 16) && strncmp(s->sectname, "__la_symbol_ptr", 16))
+					continue;
+				void** v = (void**)(s->addr + slide);
+				size_t count = s->size / sizeof(void*);
+				for (size_t k = 0; k < count; k++) {
+					if (v[k] != from) continue;
+					uintptr_t a = (uintptr_t)&v[k] & ~(uintptr_t)(page - 1);
+					// __DATA_CONST is read-only once dyld bound it: writable for the store, read-only again after
+					BOOL ro = mprotect((void*)a, page, PROT_READ | PROT_WRITE) == 0;
+					v[k] = to;
+					if (ro && !strncmp(sg->segname, "__DATA_CONST", 16)) mprotect((void*)a, page, PROT_READ);
+					n++;
+				}
+			}
+		}
+		p += lc->cmdsize;
+	}
+	return n;
+}
+
+void simax_engines_screen_reader(void) {
+	static BOOL done;
+	if (done) return;
+	done = YES;
+	void* vo = dlsym(RTLD_DEFAULT, "UIAccessibilityIsVoiceOverRunning");
+	if (!vo) return;
+	NSMutableArray* which = [NSMutableArray array];
+	int total = 0;
+	for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) {
+		const struct mach_header* mh = _dyld_get_image_header(i);
+		const char* path = _dyld_get_image_name(i);
+		NSString* eng = nil;
+		if (path && strstr(path, "/Flutter.framework/Flutter")) eng = @"flutter";
+		if (!eng || mh->magic != MH_MAGIC_64) continue;
+		int k = rebind_image((const struct mach_header_64*)mh, _dyld_get_image_vmaddr_slide(i), vo, (void*)vo_yes);
+		total += k;
+		[which addObject:[NSString stringWithFormat:@"%@:%d", eng, k]];
+	}
+	if (!which.count) return;
+	simax_log("engines: screen reader on for %s", [which componentsJoinedByString:@" "].UTF8String);
+	if (!total) return;
+	// what UIKit posts when VoiceOver turns on: the engines re-read the setting and build their trees
+	[NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityVoiceOverStatusDidChangeNotification object:nil];
+	[NSNotificationCenter.defaultCenter postNotificationName:@"UIAccessibilityVoiceOverStatusChanged" object:nil];
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // SpriteKit and SceneKit: named nodes. Called by name (no link to either framework: a process without them pays nothing)

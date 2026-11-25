@@ -12,6 +12,7 @@ and appends it to `Documents/x86test-results.txt` in the app's data container.
 | x86webinspect | two WKWebViews for Web Inspector (`x86sim inspect`, MCP `web_*`): `isInspectable = true` (listed: console logs, a fetch, `window.appValue`) and one without (not listed) |
 | x86input | agent tools (`tests/ax/mcp_e2e.py` type / picker / sheet): a UIKit text field (Return counted), a SwiftUI TextField (onSubmit), a multi-line text view, SFSafariViewController, PHPickerViewController; no X86TEST `done` (driven from the host) |
 | x86games | agent tools (`tests/ax/games_e2e.py` sprite / scene): a SpriteKit scene and a SceneKit scene with named nodes, some moving, some hidden, covered or behind the camera; taps counted per node and shown as text; no X86TEST `done` |
+| x86vo | the engines' screen-reader switch (`tests/ax/games_e2e.py` vo; build with `tests/apps/x86vo/build-vo.sh`): a stand-in engine as `Frameworks/Flutter.framework` shows whether it sees VoiceOver and was told, and whether the app's own code does |
 
     tests/apps/build.sh [app...]                 build on the Mac (X86SIM_MAC) into $X86SIM_SCRATCH/apps/
     tests/apps/run.sh <phone> [--no-build] [app...]

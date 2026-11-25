@@ -6,9 +6,16 @@ simax_unity.m; docs/protocols/SIMAX.md "Engines"), driven through x86sim-mcp ove
            not; a moving node keeps its ref; tap reaches a node; wait_for gone sees a removed one
   scene    SceneKit (the same app): named nodes with geometry are elements; covered, behind-the-camera and
            geometry-less (camera, light) nodes are not; a moving node keeps its ref; tap reaches a node
+  vo       the screen-reader switch (tests/apps/x86vo: a stand-in engine as Frameworks/Flutter.framework): once the
+           snapshot read the app, the engine's UIAccessibilityIsVoiceOverRunning() says yes and it was notified; the
+           app's own code still sees VoiceOver off
+  flutter  a Flutter app (--flutter-app PATH --flutter-bundle ID; a device build goes through app_install's
+           conversion): its semantics tree shows (buttons, text fields); --flutter-tap LABEL is tapped and
+           --flutter-field LABEL typed into
 
-Usage: tests/ax/games_e2e.py --phone NAME [--mcp PATH] [--only sprite,scene] [--out DIR] [--games-app PATH]  (tests/apps/build.sh x86games)
-Exit status: failed checks. Use a phone of your own.
+Usage: tests/ax/games_e2e.py --phone NAME [--mcp PATH] [--only sprite,scene,vo,...] [--out DIR] [--games-app PATH]
+       [--vo-app PATH]  (tests/apps/build.sh x86games; tests/apps/x86vo/build-vo.sh)
+flutter runs only when its app is given. Exit status: failed checks. Use a phone of your own.
 """
 import argparse
 import os
@@ -19,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_e2e import ROOT, Mcp, Run, els  # noqa: E402
 
 GAMES = "com.x86sim.test.x86games"
+VO = "com.x86sim.test.x86vo"
 
 
 class Games(Run):
@@ -90,6 +98,33 @@ class Games(Run):
         self.m.call("tap", target="Crate", after="none")
         self.check("scene: tap Crate reaches it", not self.m.call("wait_for", target="scene taps: Crate=1", timeout=10)[2])
 
+    def vo(self, app):
+        if not self.launch(app, VO, "engine voiceover:"):
+            self.check("vo: app up", False)
+            return
+        ok = not self.m.call("wait_for", target="engine voiceover: on", timeout=15)[2]
+        s, _ = self.m.snap()
+        line = (els(s, id="^vo-line$") or [{}])[0].get("label") or ""
+        self.check("vo: the engine sees VoiceOver on after the first snapshot", ok, line)
+        self.check("vo: the engine was told (status notification)", "notified: 0" not in line and "notified:" in line, line)
+        self.check("vo: the app's own code still sees it off", "app voiceover: off" in line, line)
+
+    def engine_app(self, name, app, bundle, tap, field):
+        if not self.launch(app, bundle, None):
+            return
+        s, _ = self.m.snap()
+        mine = [e for e in s["elements"] if e.get("app") == bundle]
+        roles = sorted({e.get("role") for e in mine})
+        self.check("%s: elements from the app" % name, len(mine) >= 2, "%d elements, roles %s" % (len(mine), roles))
+        if tap:
+            text, _, err, _ = self.m.call("tap", target=tap)
+            self.check("%s: tap %r" % (name, tap), not err, text[:200])
+        if field:
+            self.m.call("tap", target=field, after="none")
+            time.sleep(1.5)
+            text, _, err, _ = self.m.call("type", text="x86sim")
+            self.check("%s: type into %r" % (name, field), not err and "x86sim" in text, text[:300])
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -99,6 +134,12 @@ def main():
     ap.add_argument("--out", default=os.path.expanduser("~/scratch/x86sim/ax-e2e"))
     sc = os.environ.get("X86SIM_SCRATCH", os.path.expanduser("~/scratch/x86sim"))
     ap.add_argument("--games-app", default=os.path.join(sc, "apps/x86games.app"))
+    ap.add_argument("--vo-app", default=os.path.join(sc, "apps/x86vo.app"))
+    for e in ("flutter",):
+        ap.add_argument("--%s-app" % e)
+        ap.add_argument("--%s-bundle" % e)
+        ap.add_argument("--%s-tap" % e)
+        ap.add_argument("--%s-field" % e)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     m = Mcp(a.mcp, a.phone, open(os.path.join(a.out, "games-%s.log" % a.phone), "w"))
@@ -110,6 +151,10 @@ def main():
             r.sprite(a.games_app)
         if want("scene"):
             r.scene(a.games_app)
+        if want("vo"):
+            r.vo(a.vo_app)
+        if want("flutter") and a.flutter_bundle:
+            r.engine_app("flutter", a.flutter_app, a.flutter_bundle, a.flutter_tap, a.flutter_field)
     finally:
         m.close()
     print("%d failed: %s" % (len(r.fails), ", ".join(r.fails)))
