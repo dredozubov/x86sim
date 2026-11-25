@@ -755,7 +755,7 @@ above work. These are the known gaps:
   build-for-testing`); only Swift package tests build on Linux.
 - **Maps** shows no map tiles: the map data comes from a Mac and is not part of a release.
 - **Audio** is not played on the host unless `X86SIM_AUDIO=1` sends it to PipeWire (which also records the host's
-  microphone); the browser view plays it either way. Apps always see audio devices.
+  microphone; PipeWire before 1.4 needs `pacat`/`parec`, from pulseaudio-utils); the browser view plays it either way. Apps always see audio devices.
 - **Sensors and accessories**: no accelerometer, Apple Pencil, external displays or CarPlay.
 - **Pairing** an Apple Watch with an iPhone is not supported.
 - **Networking**: ordinary DNS and sockets work; Bonjour works between apps on one device but not with the network
