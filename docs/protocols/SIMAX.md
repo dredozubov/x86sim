@@ -84,8 +84,8 @@ plain view provides its subviews. Hidden views and `accessibilityElementsHidden`
 `accessibilityViewIsModal` hides its siblings. Off-screen elements are dropped unless `all` is set.
 
 Roles: `textfield`, `searchfield`, `switch`, `adjustable`, `key`, `tabbar`, `link`, `button`, `heading`,
-`image`, `text`, `icon` (SpringBoard), `element` (anything else with a label, value or identifier), and the web
-roles below.
+`image`, `text`, `icon` (SpringBoard), `node` (a game's object: Engines below), `element` (anything else with a label,
+value or identifier), and the web roles below.
 
 ### The inspector (`tree` with `full`)
 
@@ -136,6 +136,80 @@ the content box and clipped to it. Elements of a hidden iframe, or of one that c
 
 Web content gets about 80% of the request's `timeout`. Frames that have not answered by then are left out and
 counted in `web_pending`, so a busy WebContent process does not cost the whole snapshot.
+
+## Engines
+
+Content UIKit's accessibility does not describe: game views and engines that draw everything themselves. Their readers
+are `host/simax/simax_engines.m` (and one file per engine), hooked into the walk: a game view's elements are added where
+the view is, in the view's window, with frames in screen points as any other.
+
+### Game views: SpriteKit and SceneKit nodes
+
+`host/simax/simax_engines.m`. A game draws its world in one view, so UIKit's accessibility sees one view and nothing in
+it unless the developer gave nodes accessibility. In an `SKView` or `SCNView`, every *named* node that shows becomes an
+element besides what the view's own accessibility lists (SpriteKit lists label nodes' text by itself; a node listed
+that way is not listed twice): role `node`, `label` the node's name, `class` the node's class, `oid` the node.
+
+- SpriteKit: the presented scene's tree. Hidden nodes, nodes with alpha under 0.01 and their subtrees are skipped. The
+  frame is `calculateAccumulatedFrame` (the node with its children) taken from its parent's coordinates through the
+  scene to the view (`convertPoint:toNode:`, `convertPointToView:`), clipped to the view; a node outside the view is not
+  listed.
+- SceneKit: the root node's tree, by presentation node (where actions and animations put it now). A node's bounding box
+  (its subtree's) is projected corner by corner (`projectPoint:`); corners behind the camera are dropped and a node with
+  none in front is not listed, nor is one without geometry (a camera, a light). A node is covered, and not listed, when
+  a hit test through its center (`SCNHitTestSearchModeAll`, hidden nodes ignored) meets another node first and it only
+  later.
+- `key` is `sk:<name>#<n>` / `scn:<name>#<n>`, the n-th node of that name in the tree, so a moving node keeps its ref,
+  and `tap "Player"`, `wait_for "Enemy" gone=true` work on games built with names.
+
+
+### Engines that wait for a screen reader
+
+Flutter builds its accessibility tree (the `SemanticsObject`s under a `FlutterView`) only while it believes an assistive
+technology runs; so do Unity 2023.2+ (`AccessibilityHierarchy`, `AssistiveSupport`), Unreal's Slate accessibility and
+Godot 4.5+ (AccessKit). Flutter's own simulator builds turn semantics on anyway. A device build converted for the
+simulator (tests/apps/flutter_demo, Flutter stable with Dart 3.14) turned out to show its tree in x86Sim without the
+switch too, since accessibility automation is on in the process; the switch is there for engine versions and engines that
+ask only whether VoiceOver runs. At the first `tree` request of a process (none for `noax`), simax
+looks for those engines' images: `Flutter.framework`, `UnityFramework.framework`, and the image that defines Unreal's
+`FIOSView` or Godot's `GDTView` / `GodotView` (both link into the app's executable). In each, the pointers its calls to
+`UIAccessibilityIsVoiceOverRunning` go through (`__got`, `__auth_got`, `__la_symbol_ptr`) are rebound to a function
+that answers yes, and `UIAccessibilityVoiceOverStatusDidChangeNotification` is posted, so the engine looks again and
+builds its tree. Nothing else in the process sees VoiceOver on: UIKit, the app's own code and other frameworks still get
+no. A process without those engines is not touched. Flutter's `Semantics(identifier:)` is the element's `id`
+(`tap id:...`). `X86SIM_AX_LOG=1` logs `engines: screen reader on for flutter:<pointers rebound>`.
+
+
+### Unity (IL2CPP)
+
+`host/simax/simax_unity.m`. A `UnityView` that lists no accessibility elements of its own (a game without an
+accessibility plugin or `AccessibilityHierarchy`) is read through IL2CPP's reflection API, which `UnityFramework`
+exports (`il2cpp_*`), on the main thread, where Unity's player loop runs:
+
+- uGUI and TextMeshPro: active `Button` (role `button`, label: its first `Text` / `TMP_Text` child), `Toggle` (`switch`,
+  value `1` / `0`), `Slider` (`adjustable`, value, `min`, `max`), `InputField` / `TMP_InputField` (`textfield`: the
+  placeholder's text as label, the text as value, `focused` from `isFocused`), and `Text` / `TMP_Text` (`text`) that is
+  not part of a control. `enabled` false when `IsInteractable()` is false. The frame is the `RectTransform`'s world
+  corners through its root canvas: a screen space overlay canvas draws in screen pixels; a camera or world space one
+  goes through its camera (`WorldToScreenPoint`; world space without one: `Camera.main`). Unity's screen pixels (origin
+  bottom left, `Screen.width` / `height`) are scaled to the `UnityView`'s points.
+- UI Toolkit: each `UIDocument`'s visual tree: `Button`, `Toggle`, `Slider` / `SliderInt`, `TextField`, `Label`, their
+  `worldBound` from the panel to the screen through `RuntimePanelUtils.ScreenToPanel`. A control's insides are part of
+  it.
+- Game objects: active ones with a name and an enabled renderer that a camera sees (`isVisible`) or an enabled
+  collider (3D or 2D) are `node` elements, as SpriteKit's and SceneKit's: their `bounds` projected with `Camera.main`,
+  corners behind it dropped.
+- Objects are found with `Object.FindObjectsByType` (2023.1+) or `FindObjectsOfType`. When code stripping removed both,
+  the loaded scenes' root objects are walked down their transforms (`SceneManager.GetSceneAt`,
+  `Scene.GetRootGameObjects`, `GetComponents`).
+- `key` is `unity:<instance id>` (`GetInstanceID`: the object's for its life), `uitk:<document id>/<child indexes>` for
+  UI Toolkit; `oid` is the component (the game object for a node).
+
+`type` goes to Unity first: a focused `InputField` / `TMP_InputField` gets the text through its `text` setter (which
+fires `onValueChanged`; `clear` replaces, else it appends), the field's `TouchScreenKeyboard`, when it has one up, the
+same text (the field reads it back every frame), and then `onEndEdit` is invoked. A focused UI Toolkit `TextField` gets
+its `value` set (a `ChangeEvent`). `insertText:` reaches neither. Without a focused Unity field, `type` goes on as for
+any app. Engines without exported reflection (Unreal, Godot, cocos2d) have no reader of their own.
 
 ## Host
 

@@ -59,6 +59,21 @@ static void alog(const char* fmt, ...) {
 	fprintf(stderr, "simax[%d]: %s\n", getpid(), b);
 }
 
+// the engine readers (simax_engines.m, simax_unity.m)
+void simax_log(const char* fmt, ...) {
+	if (!getenv("X86SIM_AX_LOG")) return;
+	va_list ap;
+	va_start(ap, fmt);
+	char b[1024];
+	vsnprintf(b, sizeof(b), fmt, ap);
+	va_end(ap);
+	fprintf(stderr, "simax[%d]: %s\n", getpid(), b);
+}
+void simax_engines_screen_reader(void);
+int simax_engine_view(UIView* v);
+NSArray* simax_engine_elements(UIView* v);
+NSDictionary* simax_unity_type(NSDictionary* req);
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Accessibility bundles. Without them UIKit answers only for its own controls: SpringBoard's icons, SwiftUI views and
 // most system UI have no labels. UIKit loads them at launch when accessibility automation is on (what XCUITest turns
@@ -311,7 +326,38 @@ static void emit(Walk* w, id e, int depth, NSString* container) {
 	[w->out addObject:d];
 }
 
+// What an engine reader found in a view (SpriteKit / SceneKit nodes, Unity), less the objects its own accessibility
+// already listed (from index n0 of the output on); its frames are in the view's points
+static void emit_engine(Walk* w, UIView* v, NSUInteger n0, int depth, NSString* container) {
+	NSMutableSet* had = [NSMutableSet set];
+	for (NSUInteger i = n0; i < w->out.count; i++) [had addObject:w->out[i][@"oid"] ?: @""];
+	for (NSDictionary* e in simax_engine_elements(v)) {
+		if ([had containsObject:e[@"oid"]]) continue;
+		CGRect f = place(w, to_screen(v, [e[@"rect"] CGRectValue]));
+		BOOL on = CGRectIntersectsRect(f, w->clip);
+		if (!on && !w->all) continue;
+		NSMutableDictionary* d = [e mutableCopy];
+		[d removeObjectForKey:@"rect"];
+		d[@"frame"] = @[ @(round(f.origin.x * 10) / 10), @(round(f.origin.y * 10) / 10), @(round(f.size.width * 10) / 10), @(round(f.size.height * 10) / 10) ];
+		if (!on) d[@"offscreen"] = @YES;
+		d[@"win"] = @(w->win);
+		d[@"depth"] = @(depth + 1);
+		if (container) d[@"in"] = container;
+		[w->out addObject:d];
+	}
+}
+
+static void walk_in(Walk* w, id o, int depth, NSString* container);
 static void walk(Walk* w, id o, int depth, NSString* container) {
+	// a game view: SpriteKit / SceneKit add their named nodes (SpriteKit lists label nodes' text by itself); Unity's
+	// reader runs when the view gave no elements of its own (no accessibility plugin)
+	NSUInteger n0 = w->out.count;
+	int eng = [o isKindOfClass:[UIView class]] && !view_hidden(o) && ![w->seen containsObject:[NSValue valueWithPointer:(__bridge void*)o]] ? simax_engine_view(o) : 0;
+	walk_in(w, o, depth, container);
+	if (eng == 1 || (eng == 2 && w->out.count == n0)) emit_engine(w, o, n0, depth, container);
+}
+
+static void walk_in(Walk* w, id o, int depth, NSString* container) {
 	if (!o || depth > 80 || --w->budget < 0) return;
 	if ([w->seen containsObject:[NSValue valueWithPointer:(__bridge void*)o]]) return;
 	[w->seen addObject:[NSValue valueWithPointer:(__bridge void*)o]];
@@ -1202,6 +1248,7 @@ static void tree(NSDictionary* req, void (^reply)(NSDictionary*)) {
 		return;
 	}
 	if (![req[@"noax"] boolValue] && load_ax()) d[@"ax_fresh"] = @YES;
+	if (![req[@"noax"] boolValue]) simax_engines_screen_reader();
 	if (!UIApplication.sharedApplication) {
 		reply(d);
 		return;
@@ -1307,6 +1354,9 @@ static id find_oid(NSString* oid) {
 }
 
 static NSDictionary* type_text(NSDictionary* req) {
+	// a Unity input field with the focus: through the component (insertText: does not reach it)
+	NSDictionary* u = simax_unity_type(req);
+	if (u) return u;
 	UIResponder* r = first_responder();
 	if (!r || ![r conformsToProtocol:@protocol(UIKeyInput)]) return @{ @"error": @"no focused text field (tap one first)" };
 	id<UIKeyInput> k = (id<UIKeyInput>)r;

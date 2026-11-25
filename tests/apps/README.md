@@ -12,6 +12,10 @@ and appends it to `Documents/x86test-results.txt` in the app's data container.
 | x86webinspect | two WKWebViews for Web Inspector (`x86sim inspect`, MCP `web_*`): `isInspectable = true` (listed: console logs, a fetch, `window.appValue`) and one without (not listed) |
 | x86input | agent tools (`tests/ax/mcp_e2e.py` type / picker / sheet): a UIKit text field (Return counted), a SwiftUI TextField (onSubmit), a multi-line text view, SFSafariViewController, PHPickerViewController; no X86TEST `done` (driven from the host) |
 | x86netcap | network capture tools (`tests/ax/net_e2e.py`): GET / POST JSON, a PNG, a redirect, HTTPS, a refused connection, an upload task, an ephemeral session, a raw TCP socket against `tests/ax/netserve.py`, again at every Run press; no X86TEST `done` (driven from the host) |
+| x86games | agent tools (`tests/ax/games_e2e.py` sprite / scene): a SpriteKit scene and a SceneKit scene with named nodes, some moving, some hidden, covered or behind the camera; taps counted per node and shown as text; no X86TEST `done` |
+| x86vo | the engines' screen-reader switch (`tests/ax/games_e2e.py` vo; build with `tests/apps/x86vo/build-vo.sh`): a stand-in engine as `Frameworks/Flutter.framework` shows whether it sees VoiceOver and was told, and whether the app's own code does |
+| x86unity | simax's Unity reader (`tests/ax/games_e2e.py` unityfake; build with `tests/apps/x86unity/build-unity.sh`): a stand-in `UnityFramework.framework` (`fakeunity.m`, not Unity) exports IL2CPP's API over a small uGUI scene and a game object; `X86UNITY_STRIPPED=1` drops the object lookups (the reader's scene walk) |
+| flutter_demo | a Flutter app (`tests/ax/games_e2e.py` flutter): a button, a text field with `Semantics(identifier:)`, a switch and a list. `flutter_demo/build.sh` builds it on Linux as a device `.ipa` with the dev toolchain's Flutter scripts (FLUTTER, after `flutter/setup.sh`); `app_install` converts it |
 
     tests/apps/build.sh [app...]                 build on the Mac (X86SIM_MAC) into $X86SIM_SCRATCH/apps/
     tests/apps/run.sh <phone> [--no-build] [app...]
