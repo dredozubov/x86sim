@@ -700,7 +700,8 @@ pub fn xtool_status() -> Option<(String, String, String)> {
     if !t.contains("Logged in") {
         return None;
     }
-    let get = |k: &str| t.lines().find_map(|l| l.trim().trim_start_matches("- ").strip_prefix(k).map(|v| v.trim().to_string())).unwrap_or_default();
+    // its dates carry a narrow no-break space ("1:07\u{202f}AM"), which the launcher's font has no glyph for
+    let get = |k: &str| t.lines().find_map(|l| l.trim().trim_start_matches("- ").strip_prefix(k).map(|v| v.trim().replace(['\u{202f}', '\u{a0}'], " "))).unwrap_or_default();
     Some((get("Apple ID:"), get("Team ID:"), get("Token expiry:")))
 }
 
