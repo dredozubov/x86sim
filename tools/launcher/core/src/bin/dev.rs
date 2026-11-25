@@ -13,7 +13,8 @@ Toolchain (omarchy-apple-dev: Swift, xtool, the iOS SDK; nothing needs root)
                        ~/.local/share/x86sim-dev), toolchain (xtool, rcodesign, ipsw, pymobiledevice3; the SDK too with
                        --xip), sdk --xip PATH, repair (after a Swift swap), verify (build a new app end to end),
                        lldb (the Swift toolchain's lldb for x86sim debug: a private libpython, about 75 MB; also
-                       done on the first x86sim debug).
+                       done on the first x86sim debug), xcode [VERSION] [--dir D] [--delete-xip] (download Xcode.xip
+                       with the Apple Account sign-in, then the SDK from it: x86sim account download-xcode).
                        --bg runs it in the background (the launcher's Develop page and MCP dev_status show it)
   job [--follow|--cancel]
                        the background setup job: its step and log
@@ -185,13 +186,26 @@ fn run(cmd: &str, mut args: Vec<String>) -> anyhow::Result<ExitCode> {
                     rc
                 }
                 "repair" => dev::run_installer(mode.as_deref(), xip.as_deref(), true, &mut say)?,
+                // Download Xcode with the Apple Account sign-in (x86sim account download-xcode; the launcher's Develop page)
+                "xcode" => {
+                    let o = x86sim_core::account::GetXcode {
+                        dir: take_opt(&mut args, "--dir").map(PathBuf::from),
+                        setup_sdk: !take_flag(&mut args, "--no-setup"),
+                        devicetypes: !take_flag(&mut args, "--no-devicetypes"),
+                        update_devicetypes: take_flag(&mut args, "--update-devicetypes"),
+                        delete_xip: take_flag(&mut args, "--delete-xip"),
+                        version: args.first().filter(|a| !a.starts_with('-')).cloned(),
+                    };
+                    x86sim_core::account::get_xcode(&o, &mut say)?;
+                    0
+                }
                 "lldb" => dev::setup_lldb(&mut say)?,
                 "verify" => {
                     let app = dev::verify(&mut say)?;
                     println!("== verified: {}", app.display());
                     0
                 }
-                k => anyhow::bail!("unknown step {k}: swift, toolchain, sdk, repair, verify, lldb or all"),
+                k => anyhow::bail!("unknown step {k}: swift, toolchain, sdk, repair, verify, lldb, xcode or all"),
             };
             ExitCode::from(rc.clamp(0, 255) as u8)
         }

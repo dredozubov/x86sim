@@ -8,6 +8,11 @@
 //! browser" one that skips two-factor for a while) goes into the Secret Service keyring (secret-tool, libsecret's CLI,
 //! org.freedesktop.secrets), else a 0600 file under ~/.config/x86sim. HTTP goes through curl, as everywhere in the
 //! launcher (no HTTP or TLS crates); cookies live in a 0600 jar in the runtime dir only while a request runs.
+//!
+//! Downloads: developer.apple.com's download list (listDownloads.action), the ADCDownloadAuth cookie from
+//! devcenter/download.action, then download.developer.apple.com with curl (resumable: a .part file). The .xip is
+//! checked before use: its size, the xar table of contents' checksum, Apple's signature on it (the certificate chain
+//! in the file up to Apple Root CA, pinned by fingerprint; openssl), and the archived checksum of its content.
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
 use num_bigint::BigUint;
@@ -17,15 +22,19 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 const IDMSA: &str = "https://idmsa.apple.com/appleauth/auth";
 const OLYMPUS: &str = "https://appstoreconnect.apple.com/olympus/v1";
 const LIST_DOWNLOADS: &str = "https://developer.apple.com/services-account/QH65B2/downloadws/listDownloads.action";
+const DOWNLOAD_AUTH: &str = "https://developer.apple.com/devcenter/download.action?path=";
+const DOWNLOAD_HOST: &str = "https://download.developer.apple.com";
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) x86Sim";
 /// the keyring item's attributes (secret-tool)
 const SECRET_ATTRS: [&str; 2] = ["service", "x86sim-apple-account"];
+/// Apple Root CA (the root of the certificate chain that signs Xcode.xip), SHA-256 of its DER
+const APPLE_ROOT_CA_SHA256: &str = "b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024";
 /// How long a two-factor prompt waits for the code
 pub const CODE_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -761,4 +770,412 @@ fn agreement_hint(code: i64, msg: &str) -> String {
         "developer.apple.com refused the download list ({code}{}): accept the Apple Developer Agreement once at https://developer.apple.com/account (any Apple ID, free), then try again",
         if msg.is_empty() { String::new() } else { format!(": {msg}") }
     )
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Xcode downloads
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Release {
+    pub name: String,
+    pub version: String,
+    /// /Developer_Tools/Xcode_27.2/Xcode_27.2.xip
+    pub path: String,
+    pub size: u64,
+    pub prerelease: bool,
+}
+
+fn version_key(v: &str) -> Vec<u32> {
+    v.split('.').map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+/// The Xcode major the dev toolchain's Swift matches (dev.rs: 6.4 = Xcode 27, 6.3 = Xcode 26)
+pub fn pinned_xcode_major() -> u32 {
+    match crate::dev::SWIFT_VERSION.get(..3) {
+        Some("6.3") => 26,
+        _ => 27,
+    }
+}
+
+fn session_http() -> Result<(Session, Http)> {
+    let s = load_session().context("not signed in to an Apple Account: x86sim account login")?;
+    let h = Http::new(&s.cookies)?;
+    Ok((s, h))
+}
+
+fn list_with(http: &Http) -> Result<Vec<Release>> {
+    let r = http.req("POST", LIST_DOWNLOADS, &[("Accept", "application/json"), ("Content-Type", "application/json")], Some(b"{}"))?;
+    if r.status == 401 || r.status == 403 {
+        bail!("the Apple Account session has expired: x86sim account login");
+    }
+    let v = r.json();
+    match v.get("resultCode").and_then(|x| x.as_i64()) {
+        Some(0) => {}
+        Some(c) => bail!("{}", agreement_hint(c, &r.apple_message())),
+        None => bail!("unexpected answer from developer.apple.com (HTTP {})", r.status),
+    }
+    let mut out = vec![];
+    for d in v.get("downloads").and_then(|x| x.as_array()).into_iter().flatten() {
+        let name = d.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        let Some(rest) = name.strip_prefix("Xcode ") else { continue };
+        let version = rest.split_whitespace().next().unwrap_or("").to_string();
+        if !version.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let lower = name.to_lowercase();
+        let prerelease = lower.contains("beta") || lower.contains("release candidate") || lower.contains(" rc");
+        // the .xip (one per release; the first if there are several)
+        let file = d.get("files").and_then(|x| x.as_array()).into_iter().flatten().find(|f| f.get("remotePath").and_then(|x| x.as_str()).is_some_and(|p| p.ends_with(".xip")));
+        if let Some(f) = file {
+            if !out.iter().any(|r: &Release| r.name == name) {
+                let path = f.get("remotePath").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let size = f.get("fileSize").and_then(|x| x.as_u64()).unwrap_or(0);
+                out.push(Release { name: name.to_string(), version, path, size, prerelease });
+            }
+        }
+    }
+    out.sort_by(|a, b| version_key(&b.version).cmp(&version_key(&a.version)).then(a.prerelease.cmp(&b.prerelease)));
+    Ok(out)
+}
+
+/// The Xcode releases the account can download, newest first
+pub fn list_xcodes() -> Result<Vec<Release>> {
+    let (_, http) = session_http()?;
+    list_with(&http)
+}
+
+/// The release a VERSION (or the pinned major's newest final release) means
+pub fn pick_release(all: &[Release], version: Option<&str>) -> Result<Release> {
+    if let Some(v) = version.map(str::trim).filter(|v| !v.is_empty()) {
+        let v = v.trim_start_matches("Xcode").trim().trim_start_matches('_');
+        let want = v.to_lowercase().replace('_', " ");
+        if let Some(r) = all.iter().find(|r| r.name.to_lowercase() == format!("xcode {want}")) {
+            return Ok(r.clone());
+        }
+        if let Some(r) = all.iter().find(|r| r.version == v && !r.prerelease) {
+            return Ok(r.clone());
+        }
+        // a major or major.minor: its newest final release
+        if let Some(r) = all.iter().find(|r| !r.prerelease && (r.version.starts_with(&format!("{v}.")) || r.version == v)) {
+            return Ok(r.clone());
+        }
+        bail!("no Xcode {v} in the downloads this Apple Account sees (x86sim account download-xcode --list)");
+    }
+    let major = pinned_xcode_major();
+    all.iter()
+        .find(|r| !r.prerelease && version_key(&r.version).first() == Some(&major))
+        .or_else(|| all.iter().find(|r| !r.prerelease))
+        .cloned()
+        .context("no Xcode release in the downloads this Apple Account sees")
+}
+
+fn gb(b: u64) -> String {
+    format!("{:.2} GB", b as f64 / 1e9)
+}
+
+/// Downloads the release into DIR (resuming a .part left there), checks it and returns the .xip's path
+pub fn download_xcode(version: Option<&str>, dir: &Path, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
+    let (s, http) = session_http()?;
+    say("== xcode: sign-in");
+    let all = list_with(&http)?;
+    let rel = pick_release(&all, version)?;
+    let file = rel.path.rsplit('/').next().unwrap_or("Xcode.xip").to_string();
+    std::fs::create_dir_all(dir)?;
+    let out = dir.join(&file);
+    say(&format!("{} ({}) from {DOWNLOAD_HOST}{}", rel.name, gb(rel.size), rel.path));
+    if out.exists() && (rel.size == 0 || std::fs::metadata(&out)?.len() == rel.size) {
+        say(&format!("{} is already there: checking it", out.display()));
+    } else {
+        let free = Some((crate::host::disk(dir).free_gb * 1e9) as u64).filter(|f| *f > 0);
+        let part = out.with_extension("xip.part");
+        let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        if let Some(f) = free {
+            anyhow::ensure!(f + have > rel.size + (1 << 30), "{} free in {}, the download needs {}", gb(f), dir.display(), gb(rel.size - have.min(rel.size)));
+        }
+        // the download cookie (ADCDownloadAuth) for this file
+        let a = http.req("GET", &format!("{DOWNLOAD_AUTH}{}", rel.path), &[], None)?;
+        if a.status >= 400 {
+            bail!("developer.apple.com refused the download (HTTP {}): sign in again, or accept the agreement at https://developer.apple.com/account", a.status);
+        }
+        say("== xcode: download");
+        if have > 0 {
+            say(&format!("resuming at {}", gb(have)));
+        }
+        let mut c = Command::new("curl");
+        c.args(["-sS", "--fail", "-L", "--retry", "5", "--retry-delay", "5", "-C", "-", "-H"])
+            .arg(format!("User-Agent: {UA}"))
+            .arg("-b")
+            .arg(http.jar())
+            .arg("-o")
+            .arg(&part)
+            .arg(format!("{DOWNLOAD_HOST}{}", rel.path))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut ch = c.spawn().context("running curl")?;
+        let t0 = Instant::now();
+        let mut last = (Instant::now(), have);
+        loop {
+            if let Some(st) = ch.try_wait()? {
+                let mut e = String::new();
+                if let Some(mut er) = ch.stderr.take() {
+                    let _ = er.read_to_string(&mut e);
+                }
+                if !st.success() {
+                    bail!("the download stopped ({}): run it again to resume from {}", e.trim(), part.display());
+                }
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            let n = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+            let rate = (n.saturating_sub(last.1)) as f64 / last.0.elapsed().as_secs_f64().max(0.1);
+            last = (Instant::now(), n);
+            let pct = if rel.size > 0 { n as f64 * 100.0 / rel.size as f64 } else { 0.0 };
+            say(&format!("download: {pct:.1}% {} of {} {:.1} MB/s ({} s)", gb(n), gb(rel.size), rate / 1e6, t0.elapsed().as_secs()));
+        }
+        let n = std::fs::metadata(&part)?.len();
+        anyhow::ensure!(rel.size == 0 || n == rel.size, "the download has {} of {}: run it again to resume", gb(n), gb(rel.size));
+        std::fs::rename(&part, &out)?;
+    }
+    drop(http);
+    let _ = s;
+    say("== xcode: verify");
+    verify_xip(&out, say)?;
+    say(&format!("{} verified: signed by Apple", out.display()));
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// .xip checks: a xar archive whose table of contents is hashed and signed by Apple
+
+fn tag<'a>(xml: &'a str, start: usize, name: &str) -> Option<(usize, &'a str)> {
+    let open = format!("<{name}");
+    let i = start + xml[start..].find(&open)?;
+    let gt = i + xml[i..].find('>')?;
+    let close = format!("</{name}>");
+    let j = gt + xml[gt..].find(&close)?;
+    Some((j + close.len(), &xml[gt + 1..j]))
+}
+
+fn num(xml: &str, name: &str) -> Option<u64> {
+    tag(xml, 0, name).and_then(|(_, v)| v.trim().parse().ok())
+}
+
+/// Checks a downloaded Xcode .xip: xar header, the TOC checksum, Apple's signature over it (certificate chain up to the
+/// pinned Apple Root CA, with openssl) and the archived checksum of its Content. Fails with what is wrong.
+pub fn verify_xip(p: &Path, say: &mut dyn FnMut(&str)) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = std::fs::File::open(p).with_context(|| format!("opening {}", p.display()))?;
+    let mut h = [0u8; 28];
+    f.read_exact(&mut h)?;
+    anyhow::ensure!(&h[..4] == b"xar!", "{}: not a .xip (no xar header)", p.display());
+    let hsize = u16::from_be_bytes([h[4], h[5]]) as u64;
+    let toc_c = u64::from_be_bytes(h[8..16].try_into().unwrap());
+    let alg = u32::from_be_bytes(h[24..28].try_into().unwrap());
+    f.seek(SeekFrom::Start(hsize))?;
+    let mut tocz = vec![0u8; toc_c as usize];
+    f.read_exact(&mut tocz)?;
+    let mut toc = String::new();
+    flate2::read::ZlibDecoder::new(&tocz[..]).read_to_string(&mut toc).context("the .xip's table of contents doesn't decompress")?;
+    let heap = hsize + toc_c;
+    let read_heap = |f: &mut std::fs::File, off: u64, len: u64| -> Result<Vec<u8>> {
+        f.seek(SeekFrom::Start(heap + off))?;
+        let mut b = vec![0u8; len as usize];
+        f.read_exact(&mut b)?;
+        Ok(b)
+    };
+    // 1. the TOC's checksum
+    let (_, ck) = tag(&toc, 0, "checksum").context("no checksum in the .xip's table of contents")?;
+    let (off, len) = (num(ck, "offset").unwrap_or(0), num(ck, "size").unwrap_or(0));
+    let stored = read_heap(&mut f, off, len)?;
+    let (digest, md) = match alg {
+        1 => (sha1_smol::Sha1::from(&tocz).digest().bytes().to_vec(), "sha1"),
+        2 => (sha256(&[&tocz]).to_vec(), "sha256"),
+        _ => {
+            let mut hh = sha2::Sha512::new();
+            hh.update(&tocz);
+            (hh.finalize().to_vec(), "sha512")
+        }
+    };
+    anyhow::ensure!(stored == digest, "{}: the table of contents doesn't match its checksum (damaged download)", p.display());
+    say("table of contents: checksum ok");
+    // 2. Apple's signature over that checksum
+    let (_, sig) = tag(&toc, 0, "signature").context("the .xip isn't signed")?;
+    let sig_bytes = read_heap(&mut f, num(sig, "offset").unwrap_or(0), num(sig, "size").unwrap_or(0))?;
+    let mut certs = vec![];
+    let mut at = 0;
+    while let Some((next, c)) = tag(sig, at, "X509Certificate") {
+        certs.push(B64.decode(c.split_whitespace().collect::<String>())?);
+        at = next;
+    }
+    anyhow::ensure!(certs.len() >= 2, "the .xip's signature carries no certificate chain");
+    let root = certs.iter().position(|c| hex(&sha256(&[c])) == APPLE_ROOT_CA_SHA256).context("the .xip's signature doesn't chain to Apple Root CA: not Apple's file")?;
+    let tmp = std::env::temp_dir().join(format!("x86sim-xip-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
+    let pem = |d: &[u8]| format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n", B64.encode(d).as_bytes().chunks(64).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join("\n"));
+    std::fs::write(tmp.join("leaf.pem"), pem(&certs[0]))?;
+    std::fs::write(tmp.join("root.pem"), pem(&certs[root]))?;
+    std::fs::write(tmp.join("chain.pem"), certs.iter().enumerate().filter(|(i, _)| *i != 0 && *i != root).map(|(_, c)| pem(c)).collect::<String>())?;
+    std::fs::write(tmp.join("digest"), &digest)?;
+    std::fs::write(tmp.join("sig"), &sig_bytes)?;
+    let run = |args: &[&str]| -> Result<String> {
+        let o = Command::new("openssl").args(args).current_dir(&tmp).stdin(Stdio::null()).output().context("running openssl (needed to check Apple's signature)")?;
+        if !o.status.success() {
+            bail!("{}", String::from_utf8_lossy(&o.stdout).trim().to_string() + String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let r = (|| -> Result<()> {
+        // an old Xcode's leaf certificate may have expired since: the chain is checked without the time
+        run(&["verify", "-no_check_time", "-CAfile", "root.pem", "-untrusted", "chain.pem", "leaf.pem"]).context("the .xip's certificate chain doesn't check out")?;
+        run(&["x509", "-in", "leaf.pem", "-pubkey", "-noout", "-out", "leaf.pub"])?;
+        run(&["pkeyutl", "-verify", "-pubin", "-inkey", "leaf.pub", "-in", "digest", "-sigfile", "sig", "-pkeyopt", &format!("digest:{md}")]).context("Apple's signature over the .xip doesn't match")?;
+        let subj = run(&["x509", "-in", "leaf.pem", "-noout", "-subject"])?;
+        say(&format!("signature: ok ({})", subj.trim()));
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&tmp);
+    r?;
+    // 3. the content's archived checksum (the whole 3+ GB, read once)
+    let mut at = 0;
+    while let Some((next, file)) = tag(&toc, at, "file") {
+        at = next;
+        let name = tag(file, 0, "name").map(|x| x.1.trim().to_string()).unwrap_or_default();
+        let Some((_, data)) = tag(file, 0, "data") else { continue };
+        let Some((_, ack)) = tag(data, 0, "archived-checksum") else { continue };
+        let style = data.find("archived-checksum style=\"").map(|i| &data[i + 25..]).and_then(|s| s.split('"').next()).unwrap_or("sha1").to_string();
+        let (off, len) = (num(data, "offset").unwrap_or(0), num(data, "length").unwrap_or(0));
+        say(&format!("checking {name} ({})…", gb(len)));
+        f.seek(SeekFrom::Start(heap + off))?;
+        let mut left = len;
+        let mut buf = vec![0u8; 4 << 20];
+        let mut s1 = sha1_smol::Sha1::new();
+        let mut s2 = Sha256::new();
+        while left > 0 {
+            let n = left.min(buf.len() as u64) as usize;
+            f.read_exact(&mut buf[..n])?;
+            if style == "sha256" {
+                s2.update(&buf[..n]);
+            } else {
+                s1.update(&buf[..n]);
+            }
+            left -= n as u64;
+        }
+        let got = if style == "sha256" { hex(&s2.finalize_reset()) } else { s1.digest().to_string() };
+        anyhow::ensure!(got.eq_ignore_ascii_case(ack.trim()), "{}: {name} doesn't match its checksum (damaged download: delete it and download again)", p.display());
+        say(&format!("{name}: checksum ok"));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// after the download: the SDK and the device types
+
+/// Where downloads go unless told: XDG's download directory (xdg-user-dir DOWNLOAD), else ~/Downloads
+pub fn default_download_dir() -> PathBuf {
+    if let Ok(o) = Command::new("xdg-user-dir").arg("DOWNLOAD").output() {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if o.status.success() && !s.is_empty() && s != home().to_string_lossy() {
+            return PathBuf::from(s);
+        }
+    }
+    home().join("Downloads")
+}
+
+/// Runs tools/devicetypes/extract-devicetypes.py on the .xip into OUT and compares it with x86Sim's committed
+/// cli/lib/devicetype*.json. Returns the names of files that differ (empty: the same). With `update`, writes cli/lib.
+pub fn check_devicetypes(xip: &Path, out: &Path, update: bool, say: &mut dyn FnMut(&str)) -> Result<Vec<String>> {
+    let root = crate::aot::repo_root();
+    let script = root.join("tools/devicetypes/extract-devicetypes.py");
+    anyhow::ensure!(script.exists(), "{} is missing", script.display());
+    let _ = std::fs::remove_dir_all(out);
+    std::fs::create_dir_all(out)?;
+    let mut c = Command::new("python3");
+    c.arg("-I").arg(&script).arg(xip).arg("--include-unsupported").arg("--out").arg(out);
+    let rc = crate::dev::stream(c, say)?;
+    anyhow::ensure!(rc == 0, "extract-devicetypes.py failed (exit {rc})");
+    let lib = root.join("cli/lib");
+    let mut diff = vec![];
+    let mut names: Vec<String> = std::fs::read_dir(out)?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("devicetype") && n.ends_with(".json")).collect();
+    for e in std::fs::read_dir(&lib)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with("devicetype") && n.ends_with(".json") && !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    names.sort();
+    for n in &names {
+        if std::fs::read(out.join(n)).ok() != std::fs::read(lib.join(n)).ok() {
+            diff.push(n.clone());
+        }
+    }
+    if update {
+        for n in &diff {
+            match std::fs::read(out.join(n)) {
+                Ok(b) => std::fs::write(lib.join(n), b)?,
+                Err(_) => say(&format!("{n}: only in cli/lib (left as is)")),
+            }
+        }
+    }
+    Ok(diff)
+}
+
+/// What "Download Xcode" does after the sign-in: options (the launcher's Develop page, `x86sim account download-xcode`)
+#[derive(Clone, Debug, Default)]
+pub struct GetXcode {
+    /// "27.2", "27", "Xcode 27.3 beta 2"; None: the dev toolchain's Xcode (its newest final release)
+    pub version: Option<String>,
+    /// where the .xip goes (default: the download directory)
+    pub dir: Option<PathBuf>,
+    /// build the dev toolchain's SDK from it (x86sim dev setup sdk --xip)
+    pub setup_sdk: bool,
+    /// compare the device types in it with x86Sim's (tools/devicetypes/extract-devicetypes.py)
+    pub devicetypes: bool,
+    /// ... and write the new ones into cli/lib (a checkout)
+    pub update_devicetypes: bool,
+    /// delete the .xip at the end (else kept)
+    pub delete_xip: bool,
+}
+
+/// Download, check, then the SDK and the device types; the .xip kept or deleted as asked. Returns the .xip's path.
+pub fn get_xcode(o: &GetXcode, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
+    let dir = o.dir.clone().unwrap_or_else(default_download_dir);
+    let xip = download_xcode(o.version.as_deref(), &dir, say)?;
+    let mut failed = vec![];
+    if o.setup_sdk {
+        say("== xcode: sdk (x86sim dev setup sdk --xip)");
+        let rc = crate::dev::run_installer(None, Some(&xip), false, say)?;
+        if rc != 0 {
+            failed.push(format!("the SDK build failed (exit {rc}); retry: x86sim dev setup sdk --xip {}", xip.display()));
+        } else {
+            let mut s = crate::dev::load_settings();
+            s.xip = xip.to_string_lossy().into_owned();
+            let _ = crate::dev::save_settings(&s);
+        }
+    }
+    if o.devicetypes {
+        say("== xcode: device types (extract-devicetypes.py)");
+        let out = crate::dev::work_dir().join("devicetypes");
+        match check_devicetypes(&xip, &out, o.update_devicetypes, say) {
+            Ok(d) if d.is_empty() => say("device types: the same as x86Sim's cli/lib/devicetype*.json"),
+            Ok(d) => say(&format!(
+                "device types: {} file(s) differ from x86Sim's ({}){}",
+                d.len(),
+                d.join(", "),
+                if o.update_devicetypes { ": cli/lib updated".to_string() } else { format!("; the new ones are in {}", out.display()) }
+            )),
+            Err(e) => failed.push(format!("device types: {e:#}")),
+        }
+    }
+    if o.delete_xip && failed.is_empty() {
+        std::fs::remove_file(&xip)?;
+        say(&format!("deleted {} (as asked)", xip.display()));
+    } else {
+        say(&format!("kept {}", xip.display()));
+    }
+    if !failed.is_empty() {
+        bail!("{}", failed.join("; "));
+    }
+    say("== xcode: done");
+    Ok(xip)
 }

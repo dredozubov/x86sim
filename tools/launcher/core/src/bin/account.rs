@@ -1,6 +1,7 @@
 //! x86sim-account (`x86sim account ...`): the Apple Account sign-in for Xcode downloads and signing. No MCP tool:
 //! agents never get the user's credentials. The logic is x86sim_core::account, shared with the launcher's Settings.
 use std::io::{BufRead, IsTerminal, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use x86sim_core::account::{self, Ask, CodeAnswer, CodePrompt};
 
@@ -15,7 +16,13 @@ const USAGE: &str = "usage: x86sim account <command> [args]
                        Service keyring (else a 0600 file in ~/.config/x86sim).
                        Two-factor codes are read from the terminal, or from stdin when it is not one.
   logout               forget the session
-";
+  download-xcode [VERSION] [--list] [--dir DIR] [--no-setup] [--no-devicetypes] [--update-devicetypes] [--delete-xip]
+                       download Xcode.xip (default: the dev toolchain's Xcode, its newest release; VERSION: 27.2,
+                       27, \"27.3 beta 2\") into DIR (default: your download folder; resumes a .part), check Apple's
+                       signature and checksums, then build the dev SDK from it (x86sim dev setup sdk --xip) and
+                       compare its device types with x86Sim's (--update-devicetypes writes cli/lib). The .xip is kept
+                       unless --delete-xip. --list: the Xcode releases this account can download.
+  verify-xip FILE      check a .xip's signature (Apple's certificate chain) and checksums";
 
 fn take_opt(args: &mut Vec<String>, name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -178,6 +185,32 @@ fn run(cmd: &str, mut args: Vec<String>) -> anyhow::Result<ExitCode> {
         "logout" => {
             let had = account::logout()?;
             println!("{}", if had { "signed out" } else { "was not signed in" });
+            Ok(ExitCode::SUCCESS)
+        }
+        "download-xcode" | "xcode" => {
+            if take_flag(&mut args, "--list") {
+                for r in account::list_xcodes()? {
+                    println!("{:<34} {:>8.2} GB  {}", r.name, r.size as f64 / 1e9, r.path);
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            let o = account::GetXcode {
+                dir: take_opt(&mut args, "--dir").map(PathBuf::from),
+                setup_sdk: !take_flag(&mut args, "--no-setup"),
+                devicetypes: !take_flag(&mut args, "--no-devicetypes"),
+                update_devicetypes: take_flag(&mut args, "--update-devicetypes"),
+                delete_xip: take_flag(&mut args, "--delete-xip"),
+                version: args.first().filter(|a| !a.starts_with('-')).cloned(),
+            };
+            let mut say = |l: &str| println!("{l}");
+            let x = account::get_xcode(&o, &mut say)?;
+            println!("{}", x.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        "verify-xip" => {
+            let f = args.first().ok_or_else(|| anyhow::anyhow!("verify-xip FILE"))?;
+            account::verify_xip(std::path::Path::new(f), &mut |l: &str| println!("{l}"))?;
+            println!("ok: signed by Apple, checksums match");
             Ok(ExitCode::SUCCESS)
         }
         _ => {

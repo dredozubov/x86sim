@@ -8,6 +8,8 @@ the user's credentials, so this drives the CLI).
 - login with a made-up Apple ID (example.com) and password: Apple's SRP sign-in runs to the end and fails with
   "wrong Apple ID or password" (needs the network; --offline skips it). It runs with XDG_CONFIG_HOME in a temporary
   directory, so a real session in the keyring is neither used nor touched (the keyring item is only written on success).
+- verify-xip: with X86SIM_XIP=Xcode.xip, Apple's signature and checksums check out; a copy with one byte of its
+  content changed is refused (the copy goes next to the .xip: about 3 GB for a moment)
 """
 import json
 import os
@@ -53,6 +55,23 @@ def main():
         rc, out = run(["login", "nobody.x86sim.test@example.com", "--password-file", pw], env=env, stdin="")
         check("wrong password is reported", rc == 1 and "wrong Apple ID or password" in out, out.strip().splitlines()[-1] if out.strip() else "")
         check("nothing kept after a failed sign-in", not os.path.exists(os.path.join(d, "x86sim/apple-account.json")))
+    xip = os.environ.get("X86SIM_XIP")
+    if xip:
+        rc, out = run(["verify-xip", xip])
+        check("verify-xip: Apple's signature", rc == 0 and "signature: ok" in out, out.strip().splitlines()[-1])
+        bad = xip + ".damaged-test"
+        try:
+            subprocess.run(["cp", "--reflink=auto", xip, bad], check=True)
+            with open(bad, "r+b") as f:
+                f.seek(os.path.getsize(bad) // 2)
+                b = f.read(1)
+                f.seek(-1, 1)
+                f.write(bytes([b[0] ^ 0xFF]))
+            rc, out = run(["verify-xip", bad])
+            check("verify-xip: a damaged copy is refused", rc != 0 and "doesn't match its checksum" in out, out.strip().splitlines()[-1])
+        finally:
+            if os.path.exists(bad):
+                os.remove(bad)
 
 
 main()

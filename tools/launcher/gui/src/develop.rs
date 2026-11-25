@@ -34,6 +34,8 @@ pub struct Develop {
     pub phone: String,
     pub task: Arc<Mutex<Task>>,
     pub show_job_log: bool,
+    /// Download Xcode: keep the .xip afterwards
+    pub keep_xip: bool,
     loaded: bool,
 }
 
@@ -127,6 +129,7 @@ impl App {
             let s = dev::load_settings();
             self.develop.xip = s.xip;
             self.develop.phone = s.phone;
+            self.develop.keep_xip = true;
         }
         // status: at once, then every 1.5 s while a setup job runs (else every 20 s)
         let job_running = self.develop.status.lock().unwrap().as_ref().and_then(|s| s.job.as_ref()).is_some_and(|j| j.running);
@@ -158,7 +161,22 @@ impl App {
         let job = st.job.clone();
         let busy_job = job.as_ref().is_some_and(|j| j.running);
         let mut start: Option<(&'static str, Vec<String>)> = None;
+        // Download Xcode with the Apple Account (Settings > Apple Account): the .xip, then the SDK from it
+        let signed_in = x86sim_core::account::load_meta().is_some();
         section(ui, "Toolchain", |ui| {
+            let tip = if signed_in {
+                format!("Xcode {} (its newest release) from developer.apple.com with your Apple Account: Apple's signature checked, then the SDK built from it", x86sim_core::account::pinned_xcode_major())
+            } else {
+                "Sign in first: Settings > Apple Account".to_string()
+            };
+            if ui.add_enabled(!busy_job && signed_in, Btn::ghost("Download Xcode").icon(icon::DOWNLOAD_SIMPLE).small()).on_hover_text(&tip).on_disabled_hover_text(&tip).clicked() {
+                let mut a = vec![];
+                if !self.develop.keep_xip {
+                    a.push("--delete-xip".to_string());
+                }
+                start = Some(("xcode", a));
+            }
+            ui.checkbox(&mut self.develop.keep_xip, muted("keep the .xip"));
             if ui.add_enabled(!busy_job && st.ready_sim, Btn::ghost("Verify").icon(icon::CHECK_CIRCLE).small()).on_hover_text("Build a new app end to end").clicked() {
                 start = Some(("verify", vec![]));
             }
@@ -198,7 +216,7 @@ impl App {
                 });
                 if p.id == "sdk" && p.state != "ok" {
                     egui::Frame::new().inner_margin(egui::Margin { left: 60, right: 16, top: 0, bottom: 12 }).show(ui, |ui| {
-                        ui.label(muted("Download Xcode 27 (.xip) from developer.apple.com/download/all with a free Apple ID, then build the SDK from it (about 3 GB used):"));
+                        ui.label(muted("Download Xcode 27 (.xip) from developer.apple.com/download/all with a free Apple ID (or sign in under Settings > Apple Account and press Download Xcode above), then build the SDK from it (about 3 GB used):"));
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut self.develop.xip).hint_text("/path/to/Xcode_27.xip").desired_width(420.0));
                             let ok = std::path::Path::new(self.develop.xip.trim()).is_file();

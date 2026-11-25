@@ -363,6 +363,8 @@ fn job_steps(kind: &str) -> &'static [&'static str] {
         "verify" => &["== verify: new project", "== verify: build"],
         "lldb" => &["== swift lldb: /", "== swift lldb: download", "== swift lldb: unpack", "== swift lldb: toolchain view"],
         "repair" => &["== repair", "Installed actool", "Building OpenAppleMacrosServer"],
+        // Download Xcode (account.rs get_xcode)
+        "xcode" => &["== xcode: sign-in", "== xcode: download", "== xcode: verify", "== xcode: sdk", "== xcode: device types", "== xcode: done"],
         _ => &["== swift", "== 1", "== 3.", "== 4.", "== 5.", "== 6.", "Installed actool", "Building OpenAppleMacrosServer", "== 7."],
     }
 }
@@ -389,7 +391,13 @@ pub fn job() -> Option<Job> {
     }
     let last = text.lines().rev().map(|l| l.rsplit('\r').find(|s| !s.trim().is_empty()).unwrap_or("").trim().to_string()).find(|l| !l.is_empty()).unwrap_or_default();
     let running = rc.is_none() && alive(pid);
-    let progress = if rc == Some(0) { 1.0 } else { seen as f32 / (steps.len() as f32 + 1.0) };
+    let mut progress = if rc == Some(0) { 1.0 } else { seen as f32 / (steps.len() as f32 + 1.0) };
+    // Download Xcode: the download's own percentage within its step ("download: 41.2% ...")
+    if kind == "xcode" && rc.is_none() && seen == 2 {
+        if let Some(p) = last.strip_prefix("download: ").and_then(|r| r.split('%').next()).and_then(|p| p.trim().parse::<f32>().ok()) {
+            progress = (1.0 + p / 100.0) / (steps.len() as f32 + 1.0);
+        }
+    }
     Some(Job { kind, pid, running, rc: rc.or(if running { None } else { Some(-1) }), log, step, last, progress, started })
 }
 
@@ -416,7 +424,7 @@ pub fn start_job(kind: &str, args: &[String]) -> Result<Job> {
     if let Some(j) = job().filter(|j| j.running) {
         bail!("a setup job is already running ({}, pid {}): wait for it or cancel it", j.kind, j.pid);
     }
-    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "all"), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb or all");
+    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "all" | "xcode"), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb, xcode or all");
     let d = work_dir();
     std::fs::create_dir_all(&d)?;
     for f in ["job.rc", "job.log"] {

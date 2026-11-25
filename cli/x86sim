@@ -191,8 +191,11 @@ Develop apps (omarchy-apple-dev, external/omarchy-apple-dev; `x86sim dev help` f
                        real iPhones (device-run.sh), App Store / TestFlight (ship.sh), Xcode project conversion
 Apple Account (x86sim-account; `x86sim account help`; the launcher's Settings > Apple Account)
   account login|logout|status
-                       one Apple ID sign-in (password + two-factor; the session in the keyring) for developer
+                       one Apple ID sign-in (password + two-factor; the session in the keyring) for Xcode
                        downloads
+  account download-xcode [VERSION]
+                       Xcode.xip from developer.apple.com (resumable, Apple's signature checked), then the dev SDK
+                       and the device types from it
 
 Pool (devices kept booted for agents / CI; x86sim-pool, see `x86sim pool help`)
   pool up N [--model M] [--preset lean]   clone and boot N devices (memory permitting)

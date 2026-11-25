@@ -3273,6 +3273,7 @@ dependencies = [
  "anyhow",
  "audiopus_sys",
  "base64",
+ "flate2",
  "jpeg-encoder",
  "libc",
  "memmap2",
