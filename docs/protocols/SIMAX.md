@@ -177,6 +177,38 @@ builds its tree. Nothing else in the process sees VoiceOver on: UIKit, the app's
 no. A process without those engines is not touched. Flutter's `Semantics(identifier:)` is the element's `id`
 (`tap id:...`). `X86SIM_AX_LOG=1` logs `engines: screen reader on for flutter:<pointers rebound>`.
 
+
+### Unity (IL2CPP)
+
+`host/simax/simax_unity.m`. A `UnityView` that lists no accessibility elements of its own (a game without an
+accessibility plugin or `AccessibilityHierarchy`) is read through IL2CPP's reflection API, which `UnityFramework`
+exports (`il2cpp_*`), on the main thread, where Unity's player loop runs:
+
+- uGUI and TextMeshPro: active `Button` (role `button`, label: its first `Text` / `TMP_Text` child), `Toggle` (`switch`,
+  value `1` / `0`), `Slider` (`adjustable`, value, `min`, `max`), `InputField` / `TMP_InputField` (`textfield`: the
+  placeholder's text as label, the text as value, `focused` from `isFocused`), and `Text` / `TMP_Text` (`text`) that is
+  not part of a control. `enabled` false when `IsInteractable()` is false. The frame is the `RectTransform`'s world
+  corners through its root canvas: a screen space overlay canvas draws in screen pixels; a camera or world space one
+  goes through its camera (`WorldToScreenPoint`; world space without one: `Camera.main`). Unity's screen pixels (origin
+  bottom left, `Screen.width` / `height`) are scaled to the `UnityView`'s points.
+- UI Toolkit: each `UIDocument`'s visual tree: `Button`, `Toggle`, `Slider` / `SliderInt`, `TextField`, `Label`, their
+  `worldBound` from the panel to the screen through `RuntimePanelUtils.ScreenToPanel`. A control's insides are part of
+  it.
+- Game objects: active ones with a name and an enabled renderer that a camera sees (`isVisible`) or an enabled
+  collider (3D or 2D) are `node` elements, as SpriteKit's and SceneKit's: their `bounds` projected with `Camera.main`,
+  corners behind it dropped.
+- Objects are found with `Object.FindObjectsByType` (2023.1+) or `FindObjectsOfType`. When code stripping removed both,
+  the loaded scenes' root objects are walked down their transforms (`SceneManager.GetSceneAt`,
+  `Scene.GetRootGameObjects`, `GetComponents`).
+- `key` is `unity:<instance id>` (`GetInstanceID`: the object's for its life), `uitk:<document id>/<child indexes>` for
+  UI Toolkit; `oid` is the component (the game object for a node).
+
+`type` goes to Unity first: a focused `InputField` / `TMP_InputField` gets the text through its `text` setter (which
+fires `onValueChanged`; `clear` replaces, else it appends), the field's `TouchScreenKeyboard`, when it has one up, the
+same text (the field reads it back every frame), and then `onEndEdit` is invoked. A focused UI Toolkit `TextField` gets
+its `value` set (a `ChangeEvent`). `insertText:` reaches neither. Without a focused Unity field, `type` goes on as for
+any app. Engines without exported reflection (Unreal, Godot, cocos2d) have no reader of their own.
+
 ## Host
 
 `ax.rs` asks every `.fg` process in parallel and merges the answers into one `Snapshot`. It assigns layers:

@@ -59,7 +59,7 @@ static void alog(const char* fmt, ...) {
 	fprintf(stderr, "simax[%d]: %s\n", getpid(), b);
 }
 
-// the engine readers (simax_engines.m)
+// the engine readers (simax_engines.m, simax_unity.m)
 void simax_log(const char* fmt, ...) {
 	if (!getenv("X86SIM_AX_LOG")) return;
 	va_list ap;
@@ -72,6 +72,7 @@ void simax_log(const char* fmt, ...) {
 void simax_engines_screen_reader(void);
 int simax_engine_view(UIView* v);
 NSArray* simax_engine_elements(UIView* v);
+NSDictionary* simax_unity_type(NSDictionary* req);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Accessibility bundles. Without them UIKit answers only for its own controls: SpringBoard's icons, SwiftUI views and
@@ -325,7 +326,7 @@ static void emit(Walk* w, id e, int depth, NSString* container) {
 	[w->out addObject:d];
 }
 
-// What an engine reader found in a view (SpriteKit / SceneKit nodes), less the objects its own accessibility
+// What an engine reader found in a view (SpriteKit / SceneKit nodes, Unity), less the objects its own accessibility
 // already listed (from index n0 of the output on); its frames are in the view's points
 static void emit_engine(Walk* w, UIView* v, NSUInteger n0, int depth, NSString* container) {
 	NSMutableSet* had = [NSMutableSet set];
@@ -348,7 +349,8 @@ static void emit_engine(Walk* w, UIView* v, NSUInteger n0, int depth, NSString* 
 
 static void walk_in(Walk* w, id o, int depth, NSString* container);
 static void walk(Walk* w, id o, int depth, NSString* container) {
-	// a game view: SpriteKit / SceneKit add their named nodes (SpriteKit lists label nodes' text by itself)
+	// a game view: SpriteKit / SceneKit add their named nodes (SpriteKit lists label nodes' text by itself); Unity's
+	// reader runs when the view gave no elements of its own (no accessibility plugin)
 	NSUInteger n0 = w->out.count;
 	int eng = [o isKindOfClass:[UIView class]] && !view_hidden(o) && ![w->seen containsObject:[NSValue valueWithPointer:(__bridge void*)o]] ? simax_engine_view(o) : 0;
 	walk_in(w, o, depth, container);
@@ -1352,6 +1354,9 @@ static id find_oid(NSString* oid) {
 }
 
 static NSDictionary* type_text(NSDictionary* req) {
+	// a Unity input field with the focus: through the component (insertText: does not reach it)
+	NSDictionary* u = simax_unity_type(req);
+	if (u) return u;
 	UIResponder* r = first_responder();
 	if (!r || ![r conformsToProtocol:@protocol(UIKeyInput)]) return @{ @"error": @"no focused text field (tap one first)" };
 	id<UIKeyInput> k = (id<UIKeyInput>)r;

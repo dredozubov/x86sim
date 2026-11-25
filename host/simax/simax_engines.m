@@ -8,8 +8,10 @@
 //                                  rebound), and the "VoiceOver status changed" notification makes them look again.
 //                                  Nothing else in the process sees VoiceOver on.
 //   simax_engine_view(v)           whether v is a view whose content an engine reader describes: SKView, SCNView
-//                                  (1: always, less the nodes their own accessibility lists)
-//   simax_engine_elements(v)       that content: SpriteKit / SceneKit named nodes (role node)
+//                                  (1: always, less the nodes their own accessibility lists), Unity's UnityView (2: when
+//                                  it gave no accessibility elements of its own)
+//   simax_engine_elements(v)       that content: SpriteKit / SceneKit named nodes (role node), Unity's UI and game
+//                                  objects through IL2CPP's exported reflection API (simax_unity.m)
 //
 // Frames are in the view's own points; simax.m turns them into screen points as it does for any element.
 #include <TargetConditionals.h>
@@ -30,6 +32,7 @@
 #include <string.h>
 
 void simax_log(const char* fmt, ...);
+NSArray* simax_unity_elements(UIView* v);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The screen-reader switch
@@ -262,16 +265,18 @@ static Class cls(const char* n) {
 	return objc_getClass(n);
 }
 
-// 1: SpriteKit / SceneKit (their named nodes, besides what their own accessibility lists), 0: neither. Looked up each
-// time: a framework, and with it its class, can load later.
+// 1: SpriteKit / SceneKit (their named nodes, besides what their own accessibility lists), 2: Unity (its reader, when
+// the view lists nothing itself), 0: neither. Looked up each time: a framework, and with it its class, can load later.
 int simax_engine_view(UIView* v) {
-	Class sk = cls("SKView"), scn = cls("SCNView");
-	return (sk && [v isKindOfClass:sk]) || (scn && [v isKindOfClass:scn]) ? 1 : 0;
+	Class sk = cls("SKView"), scn = cls("SCNView"), unity = cls("UnityView");
+	if ((sk && [v isKindOfClass:sk]) || (scn && [v isKindOfClass:scn])) return 1;
+	return unity && [v isKindOfClass:unity] ? 2 : 0;
 }
 
 NSArray* simax_engine_elements(UIView* v) {
-	Class sk = cls("SKView"), scn = cls("SCNView");
+	Class sk = cls("SKView"), scn = cls("SCNView"), unity = cls("UnityView");
 	if (sk && [v isKindOfClass:sk]) return sk_elements(v);
 	if (scn && [v isKindOfClass:scn]) return scn_elements(v);
+	if (unity && [v isKindOfClass:unity]) return simax_unity_elements(v) ?: @[];
 	return @[];
 }

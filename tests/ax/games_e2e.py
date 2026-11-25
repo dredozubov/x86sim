@@ -9,12 +9,17 @@ simax_unity.m; docs/protocols/SIMAX.md "Engines"), driven through x86sim-mcp ove
   vo       the screen-reader switch (tests/apps/x86vo: a stand-in engine as Frameworks/Flutter.framework): once the
            snapshot read the app, the engine's UIAccessibilityIsVoiceOverRunning() says yes and it was notified; the
            app's own code still sees VoiceOver off
+  unityfake  the Unity reader against tests/apps/x86unity (a stand-in UnityFramework exporting IL2CPP's API over a small
+           uGUI scene, not Unity): button, toggle, slider, input field, text and a game object are listed with keys;
+           tap reaches a button; type goes into the focused input field through the component (onValueChanged,
+           onEndEdit); the same with the object lookups stripped (X86UNITY_STRIPPED=1: the scene walk)
   flutter  a Flutter app (--flutter-app PATH --flutter-bundle ID; a device build goes through app_install's
            conversion): its semantics tree shows (buttons, text fields); --flutter-tap LABEL is tapped and
            --flutter-field LABEL typed into
 
-Usage: tests/ax/games_e2e.py --phone NAME [--mcp PATH] [--only sprite,scene,vo,...] [--out DIR] [--games-app PATH]
-       [--vo-app PATH]  (tests/apps/build.sh x86games; tests/apps/x86vo/build-vo.sh)
+Usage: tests/ax/games_e2e.py --phone NAME [--mcp PATH] [--only sprite,scene,vo,unityfake,...] [--out DIR] [--games-app PATH]
+       [--vo-app PATH] [--unityfake-app PATH]
+       (tests/apps/build.sh x86games; tests/apps/x86vo/build-vo.sh; tests/apps/x86unity/build-unity.sh)
 flutter runs only when its app is given. Exit status: failed checks. Use a phone of your own.
 """
 import argparse
@@ -27,10 +32,11 @@ from mcp_e2e import ROOT, Mcp, Run, els  # noqa: E402
 
 GAMES = "com.x86sim.test.x86games"
 VO = "com.x86sim.test.x86vo"
+UNITY = "com.x86sim.test.x86unity"
 
 
 class Games(Run):
-    def launch(self, path, bundle, wait):
+    def launch(self, path, bundle, wait, env=None):
         if path and not getattr(self, "_inst_" + bundle.replace(".", "_"), False):
             text, _, err, _ = self.m.call("app_install", path=path)
             self.check("%s installed" % bundle, not err, text[:200])
@@ -38,7 +44,7 @@ class Games(Run):
                 return False
             setattr(self, "_inst_" + bundle.replace(".", "_"), True)
         self.m.call("app_terminate", bundle_id=bundle, after="none")
-        self.m.call("app_launch", bundle_id=bundle, after="none")
+        self.m.call("app_launch", bundle_id=bundle, env=env or {}, after="none")
         if wait:
             return not self.m.call("wait_for", target=wait, timeout=90)[2]
         time.sleep(8)
@@ -109,6 +115,32 @@ class Games(Run):
         self.check("vo: the engine was told (status notification)", "notified: 0" not in line and "notified:" in line, line)
         self.check("vo: the app's own code still sees it off", "app voiceover: off" in line, line)
 
+    def unityfake(self, app, stripped):
+        tag = "unityfake%s" % (" stripped" if stripped else "")
+        if not self.launch(app, UNITY, "Score: 0", {"X86UNITY_STRIPPED": "1"} if stripped else None):
+            self.check("%s: app up (the reader lists Score: 0)" % tag, False)
+            return
+        s, _ = self.m.snap()
+        mine = [e for e in s["elements"] if e.get("app") == UNITY]
+        got = {(e.get("role"), e.get("label"), e.get("value")) for e in mine}
+        want = {("button", "Play", None), ("switch", "Sound", "1"), ("adjustable", "Volume", "0.25"),
+                ("textfield", "Your name", None), ("text", "Score: 0", None), ("node", "Player", None)}
+        self.check("%s: uGUI controls, text and game objects listed" % tag, want <= got, sorted(map(str, got)))
+        self.check("%s: inactive objects and controls' own text left out" % tag,
+                   not any(l in ("Ghost", "Play") and r in ("node", "text") for r, l, _ in got), sorted(map(str, got)))
+        self.check("%s: keys are instance ids" % tag, all((e.get("key") or "").startswith("unity:") for e in mine),
+                   [e.get("key") for e in mine][:8])
+        self.m.call("tap", target="Play", after="none")
+        self.check("%s: tap Play reaches the button" % tag, not self.m.call("wait_for", target="Score: 1", timeout=10)[2])
+        self.m.call("tap", target="Your name", after="none")
+        time.sleep(1)
+        text, _, err, _ = self.m.call("type", text="Ada", after="none")
+        ok = not err and not self.m.call("wait_for", target="Name: Ada ended 1", timeout=10)[2]
+        self.check("%s: type into the focused input field (set_text, onEndEdit)" % tag, ok, text[:200])
+        s, _ = self.m.snap()
+        f = [e for e in s["elements"] if e.get("app") == UNITY and e.get("role") == "textfield"]
+        self.check("%s: the field's value" % tag, bool(f) and f[0].get("value") == "Ada", f and str(f[0]))
+
     def engine_app(self, name, app, bundle, tap, field):
         if not self.launch(app, bundle, None):
             return
@@ -135,6 +167,7 @@ def main():
     sc = os.environ.get("X86SIM_SCRATCH", os.path.expanduser("~/scratch/x86sim"))
     ap.add_argument("--games-app", default=os.path.join(sc, "apps/x86games.app"))
     ap.add_argument("--vo-app", default=os.path.join(sc, "apps/x86vo.app"))
+    ap.add_argument("--unityfake-app", default=os.path.join(sc, "apps/x86unity.app"))
     for e in ("flutter",):
         ap.add_argument("--%s-app" % e)
         ap.add_argument("--%s-bundle" % e)
@@ -153,6 +186,9 @@ def main():
             r.scene(a.games_app)
         if want("vo"):
             r.vo(a.vo_app)
+        if want("unityfake"):
+            r.unityfake(a.unityfake_app, False)
+            r.unityfake(a.unityfake_app, True)
         if want("flutter") and a.flutter_bundle:
             r.engine_app("flutter", a.flutter_app, a.flutter_bundle, a.flutter_tap, a.flutter_field)
     finally:
