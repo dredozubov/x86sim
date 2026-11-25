@@ -17,8 +17,10 @@
     model runs only on a Mac with Apple Intelligence, so the relay forwards the guest's requests there.
   - `tests/apps/XCTestDemo/build.sh` runs `xcodebuild` on the Mac on purpose: the fixture checks that bundles made by
     Xcode itself run in `x86sim test` (comparison). Linux-built tests are covered by `x86sim test --spm`.
-  - Still Mac-made, with a Linux path not done yet: sdkcov's `res/*.mov` / `res/sdkcovGK.sks` (their generators can
-    run as guest programs on a phone) and `cli/lib/devicetype-*.json` (Xcode's device type plists, inside Xcode.xip).
+  - Fixtures only an Apple framework can write are made by guest programs built here and run on a phone (sdkcov's
+    `res/*.mov` / `res/sdkcovGK.sks`: `tests/apps/sdkcov/res/sdkcovRes.sh`).
+  - Still Mac-made, with a Linux path not done yet: `cli/lib/devicetype-*.json` (Xcode's device type plists, inside
+    Xcode.xip).
 
 ## Stopping processes
 

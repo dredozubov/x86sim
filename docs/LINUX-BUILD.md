@@ -24,8 +24,8 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 | `tests/apps/sdkcov/res/sdkcovCI-{ios,tvos,xros}.metallib` | **Mac** (`res/sdkcovCI.sh`, ssh) | yes (F3): rebuilt byte-identical to the Mac's | done: `sdkcovCI.sh` runs here (the visionOS substitute SDK needed CoreImage.metallib: `build/sdk/sim-sdk.py` now copies framework Metal libraries from the runtime) |
 | `build/metal-research/{mac,work}/*` (AIR/metallib from the research into running the toolchain under Darling) | `mac/`: **Mac**; `work/`: Darling | n/a (research outputs) | done: removed; the shim it proved is `build/metal-shim.c` |
 | `tests/metal/shaders/captured/*.wire.metallib` | x86Sim on Linux (what the guest's MTLSimImplementation hands metalhostd, `docs/METAL.md`) | yes (captured from a phone) | none |
-| `tests/apps/sdkcov/res/sdkcovChapters.mov`, `sdkcovStall.mov` | **Mac** (`res/sdkcovMovies.swift` run as a macOS program) | not yet | the generator is portable AVFoundation code: run it as a guest program on a phone (see "Open" below) |
-| `tests/apps/sdkcov/res/sdkcovGK.sks` | **Mac** (`res/sdkcovGK.swift`, macOS program) | not yet | same: a guest program on a phone (see "Open") |
+| `tests/apps/sdkcov/res/sdkcovChapters.mov`, `sdkcovStall.mov` | **Mac** (`res/sdkcovMovies.swift` run as a macOS program) | yes | done: `res/sdkcovRes.sh PHONE` builds the generator with the Linux toolchain and runs it on a booted iPhone (`x86sim spawn`; AVAssetWriter needs the phone's iosurfaced, plain Darling has no IOSurface). Equivalent, not byte-identical: the same atoms (header first in the stall movie), tracks, frame counts, durations and chapters; the H.264 data differs (the simulator's software encoder, not the Mac's), so the files are about twice the size. `func:AVFoundation.chapters-bundled-movie` and `player-stalled-http-loopback` answer as with the Mac's files |
+| `tests/apps/sdkcov/res/sdkcovGK.sks` | **Mac** (`res/sdkcovGK.swift`, macOS program) | yes | done: the same script (it also runs under plain Darling, `tests/arm64/run.sh`, with the same output). Equivalent: the same 58 archived objects, classes and keys; the iOS build archives SKNode's superclass as UIResponder (macOS: NSResponder), a newer SpriteKit version number and the gravity as a float. `func:GameplayKit.gkscene-from-sks` answers as before |
 | `cli/lib/devicetype-*.json`, `cli/lib/devicetypes-a64.json` (data from Xcode's device type plists) | **Mac** (`tools/devicetypes/extract-devicetypes.py` over ssh) | not yet | read the same plists out of an Xcode .xip on Linux (see "Open") |
 | `cli/libexec/arm64/training-*.x86t` (pre-translate training) | Linux (x86sim-aot) | yes | none |
 | `build/sdk/xros-versionmap.json` | Apple's public SDK data, written by hand | n/a | none |
@@ -44,7 +44,7 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 | `cli/libexec/arm64/fetch-macos-host.sh` | copying `/System/Library/GeoServicesData` (Maps' seed resource manifest) | done (F2): no download needed. The seed only names a tile group; geod then fetches Apple's manifest and every resource (the region / territory / time zone archives included) itself. boot-a64.sh writes it; Maps draws tiles on a phone with no geod state |
 | `tests/apps/build-ipa.sh` | building the DeviceHello device `.ipa` fixture with Xcode | done (F4): Swift 6.4 + the Darwin SDK made from Xcode.xip on Linux (what `x86sim dev device` uses), clang + ld64.lld, rcodesign; `x86sim-devapp inspect` reads it as the Mac-built one, and it installs and runs on a phone |
 | `tools/devicetypes/extract-devicetypes.py` | reading Xcode's device type plists | Open |
-| `tests/apps/sdkcov/res/sdkcovMovies.swift`, `sdkcovGK.swift` | running macOS programs that write fixtures | Open |
+| `tests/apps/sdkcov/res/sdkcovMovies.swift`, `sdkcovGK.swift` | running macOS programs that write fixtures | done: iOS simulator programs run on a phone by `res/sdkcovRes.sh` |
 | `linux/fmrelay/fmrelay.py`, `boot-a64.sh` (`X86SIM_FM_RELAY`) | a runtime service, not a build: Apple's on-device FoundationModels model runs only on a Mac with Apple Intelligence, so the optional relay forwards the guest's model requests there (off by default) | cannot move: documented in AGENTS.md |
 | `tests/apps/sdkcov/ref-mac.sh`, `tests/web/webcov/run.sh --ref-mac` | comparison with Apple's simulator | allowed (validation) |
 
@@ -52,8 +52,5 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 
 Items not moved in this round (listed in AGENTS.md), each with its Linux path:
 
-- sdkcov's `.mov` / `.sks` fixtures: the generators use AVAssetWriter / SpriteKit / GameplayKit, all in the iOS
-  simulator runtime; built with `tests/apps/build.sh`'s Linux toolchain and run on a phone, they can write the files
-  into the phone's data directory.
 - Device types: Xcode's `Contents/Developer/Platforms/*.platform/Library/Developer/CoreSimulator/Profiles/DeviceTypes`
   are inside Xcode.xip, which the Darwin SDK setup already streams on Linux.

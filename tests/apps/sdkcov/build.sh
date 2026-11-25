@@ -244,9 +244,10 @@ PL
 		test -x \$APP/sdkcov
 		cp sdkcov/manifest-$p.json \$APP/manifest.json
 		cp gen/app.plist \$APP/Info.plist
-		# bundle resources (res/): sdkcovGK.sks, a SpriteKit scene with a GameplayKit GKScene (res/sdkcovGK.swift made it on
-		# the Mac, the archive Xcode's scene editor writes: root + _gkScene) for func:GameplayKit.gkscene-from-sks;
-		# sdkcovChapters.mov / sdkcovStall.mov (res/sdkcovMovies.swift on the Mac) for checks/P22_Gaps.swift's watchOS-capable AVFoundation checks
+		# bundle resources (res/, made by res/sdkcovRes.sh: its generators built here and run on a phone): sdkcovGK.sks, a
+		# SpriteKit scene with a GameplayKit GKScene (res/sdkcovGK.swift, the archive Xcode's scene editor writes: root +
+		# _gkScene) for func:GameplayKit.gkscene-from-sks; sdkcovChapters.mov / sdkcovStall.mov (res/sdkcovMovies.swift)
+		# for checks/P22_Gaps.swift's watchOS-capable AVFoundation checks
 		cp sdkcov/res/*.sks sdkcov/res/*.mov \$APP/
 		# sdkcovCI.metallib: the platform's stitchable Core Image kernels (res/sdkcovCI.sh: Apple's Metal toolchain under Darling)
 		# sdkcovHLS.url: a YouTube HLS master playlist URL for func:AVFoundation.hls-remote-youtube (signed, expires: not in git)
