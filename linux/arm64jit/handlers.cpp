@@ -562,6 +562,17 @@ static void h_vm_allocate(GuestThread &t, u32 i) {
     u64 ints[16]; load_regs(t, ints);
     vm_map_like(t, i, ints, 1, 2, -1, 3);
 }
+// Darwin has no commit accounting: an anonymous private mapping costs nothing until it is touched, and programs
+// reserve large regions that way (WebKit's web content process maps its 16 GB Gigacage read-write at startup). Linux
+// charges a writable private mapping against overcommit at mmap time unless MAP_NORESERVE, and its default heuristic
+// refuses any single mapping larger than RAM + swap: on a machine with less than ~16 GB of both, the Gigacage mmap
+// failed ("Could not allocate gigacage memory") and every web page crashed (a report against x86Sim 0.5.3). Darling
+// drops Darwin's MAP_NORESERVE, so such mappings are made here with Linux's. Returns MAP_FAILED to fall back.
+static void *anon_noreserve(u64 at, u64 len, u64 prot, u64 flags) {
+    constexpr u64 kShared = 0x1, kFixed = 0x10, kAnon = 0x1000, kKnown = 0x2 | kFixed | 0x40 /* NORESERVE */ | 0x200 /* HASSEMAPHORE */ | 0x0400 /* NOCACHE */ | 0x0800 /* JIT */ | kAnon;
+    if (!(flags & kAnon) || (flags & kShared) || (flags & ~kKnown) || (prot & ~7ull) || !len) return MAP_FAILED;
+    return mmap((void *)at, len, (int)prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | ((flags & kFixed) ? MAP_FIXED : 0), -1, 0);
+}
 // mmap(addr, len, prot, flags, fd, off): non-fixed maps 16K-aligned
 static void h_mmap(GuestThread &t, u32 i) {
     u64 ints[16]; load_regs(t, ints);
@@ -570,6 +581,7 @@ static void h_mmap(GuestThread &t, u32 i) {
     if (!(ints[3] & kFixed) && ints[1]) {
         const u64 len4 = (ints[1] + 0xfff) & ~0xfffull;
         if (u64 a = reserve_aligned_span(ints[1], 0, len4)) {
+            if (anon_noreserve(a, len4, ints[2], ints[3] | kFixed) == (void *)a) { t.set_x(0, a); return; }
             u64 save0 = ints[0], save3 = ints[3];
             ints[0] = a; ints[3] |= kFixed;
             a64_ncall(g_thunks[i].native, ints, fps, &r);
@@ -577,6 +589,11 @@ static void h_mmap(GuestThread &t, u32 i) {
             munmap((void *)a, len4);
             ints[0] = save0; ints[3] = save3;
         }
+    }
+    // a fixed anonymous request (bmalloc zeroes and purges ranges by mapping fresh pages over them)
+    if ((ints[3] & kFixed) && ints[1] && !(ints[0] & 0xfff)) {
+        const u64 len4 = (ints[1] + 0xfff) & ~0xfffull;
+        if (anon_noreserve(ints[0], len4, ints[2], ints[3]) == (void *)ints[0]) { t.set_x(0, ints[0]); return; }
     }
     a64_ncall(g_thunks[i].native, ints, fps, &r);
     t.set_x(0, r.rax);
