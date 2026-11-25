@@ -3,6 +3,7 @@
 # no Xcode project — and copy the .app bundles to $X86SIM_SCRATCH/apps/. Usage: tests/apps/build.sh [name...]
 # On Linux (X86SIM_BUILD=linux, build/mac-env.sh: the default when sdks/iPhoneSimulator.sdk exists) the same commands
 # run here: build/linux-bin's xcrun/codesign map to build/linux-swiftc.sh + ld64.lld.
+# An app's own Info.plist keys (usage descriptions...): tests/apps/<name>/Info.keys, plist XML pasted into the dict.
 # X86SIM_PLATFORM=tvos|watchos|xros: for that simulator, into <name>-<platform>.app (tests/apps/platform.sh).
 set -eo pipefail
 X86SIM_ROOT=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
@@ -25,6 +26,7 @@ for n in $names; do
 <key>CFBundleExecutable</key><string>$n</string><key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string><key>CFBundleVersion</key><string>1</string>
 $PKEYS
+\$( [ ! -f $n/Info.keys ] || cat $n/Info.keys )
 <key>MinimumOSVersion</key><string>27.0</string><key>UILaunchScreen</key><dict/>
 <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
