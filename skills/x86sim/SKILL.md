@@ -71,6 +71,7 @@ x86sim --phone qa tap "General"               # by label: exact, then prefix, th
 x86sim --phone qa tap id:com.apple.settings.general
 x86sim --phone qa find "Wi"                   # what a target would match, best first (no action)
 x86sim --phone qa type "me@example.com" --submit      # into the focused field; --clear empties it first
+x86sim --phone qa type "me@example.com" --into "Email"   # tap the field, wait until it has the focus, type
 x86sim --phone qa key cmd+a                   # return tab escape delete up down ... or combos
 x86sim --phone qa scroll down 1 --at @e5      # precise, in screens; scroll-to TARGET scrolls until it shows
 x86sim --phone qa swipe back                  # up/down/left/right, home, notifications, controlcenter, back
@@ -94,7 +95,10 @@ x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappe
 - An element the app has loaded but scrolled out of view is scrolled in before a tap. `snapshot --all` lists those.
 - Prefer `id:` targets for your own app (set `accessibilityIdentifier`), labels for system UI.
 - `type` inserts text as the software keyboard does (any characters, no layout issues). `--keys` sends hardware key
-  presses instead (US layout), for games and key handlers. Tap the field first (or it types into the focused one).
+  presses instead (US layout), for games and key handlers. `--into TARGET` (MCP `target`) taps the field and waits
+  (on frames) until it has the focus before typing: no sleep between tap and type. Typing where the text would land
+  in another field is an error, and the answer names the field that got the text and its value (a secure field's
+  as dots).
 
 ### Accessibility checks
 

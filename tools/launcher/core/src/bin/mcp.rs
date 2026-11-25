@@ -85,7 +85,7 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "hold_ms": {"type": "integer"}, "after": after}}},
         {"name": "long_press", "description": "Touch and hold an element (target as tap) or a point, ms (default 800): context menus, icon editing.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
-        {"name": "type", "description": "Type text into the focused field (tap the field first, or pass target to tap it first), as the software keyboard does: any characters. clear: empty the field first; submit: press the Return key after. A newline in text is a Return key press too (it submits a single-line field or web form, and is a new line in a multi-line text view). keys=true: hardware key presses instead (US layout; for games / key handlers).",
+        {"name": "type", "description": "Type text into the focused field (or pass target: it is tapped, then the text waits up to 2 s for that field to have the focus; it is an error when the focus is elsewhere), as the software keyboard does: any characters. The answer names the field that got the text and its value now. clear: empty the field first; submit: press the Return key after. A newline in text is a Return key press too (it submits a single-line field or web form, and is a new line in a multi-line text view). keys=true: hardware key presses instead (US layout; for games / key handlers).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "text": {"type": "string"}, "target": {"type": "string"}, "clear": {"type": "boolean"}, "submit": {"type": "boolean"}, "keys": {"type": "boolean"}, "after": after}, "required": ["text"]}},
         {"name": "key", "description": "Press a key on the hardware keyboard: return, tab, escape, delete, space, up, down, left, right, home, end, pageup, pagedown, a character, or a combination such as cmd+a, shift+tab.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "key": {"type": "string"}, "after": after}, "required": ["key"]}},
@@ -438,11 +438,8 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             return Ok(ax_answer(ax::tap(&inst, &target, hold, after)?));
         }
         "type" => {
-            if let Some(t) = a["target"].as_str() {
-                ax::tap(&inst, t, 80, ax::After::None)?;
-                ax::settle(&inst, std::time::Duration::from_millis(250), std::time::Duration::from_millis(2000));
-            }
-            let o = ax::type_text(&inst, a["text"].as_str().unwrap_or(""), a["clear"].as_bool().unwrap_or(false), a["submit"].as_bool().unwrap_or(false), a["keys"].as_bool().unwrap_or(false), after)?;
+            // a target is tapped, then the text waits for it to have the focus (x86sim_core::axact)
+            let o = x86sim_core::axact::type_into(&inst, a["target"].as_str(), a["text"].as_str().unwrap_or(""), a["clear"].as_bool().unwrap_or(false), a["submit"].as_bool().unwrap_or(false), a["keys"].as_bool().unwrap_or(false), after)?;
             return Ok(ax_answer(o));
         }
         "key" => return Ok(ax_answer(ax::key(&inst, a["key"].as_str().unwrap_or(""), after)?)),

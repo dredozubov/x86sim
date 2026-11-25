@@ -12,9 +12,10 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
   find TARGET                          the elements a target matches, best first
   tap TARGET                           TARGET: @e3 | id:IDENTIFIER | \"label text\" | X Y (points)
   long-press TARGET [--ms N]           (default 800 ms)
-  type TEXT [--clear] [--submit] [--keys]
+  type TEXT [--into TARGET] [--clear] [--submit] [--keys]
                                        into the focused field (as the software keyboard: any text); --submit and a newline in TEXT
-                                       press the Return key; --keys: key presses
+                                       press the Return key; --keys: key presses; --into: tap TARGET first and wait (up to 2 s) until it
+                                       has the focus (an error when the text would land elsewhere)
   key COMBO                            return | tab | escape | delete | up ... | cmd+a | shift+tab
   scroll up|down|left|right [AMOUNT] [--at TARGET]
                                        precise scroll (no fling), AMOUNT in screens (default 0.5)
@@ -100,6 +101,7 @@ fn run() -> Result<()> {
     let scale = opt("--scale");
     let rules = opt("--rules");
     let aname = opt("--name");
+    let into = opt("--into");
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
         println!("{USAGE}");
         return Ok(());
@@ -199,7 +201,7 @@ fn run() -> Result<()> {
             need("a target")?;
             print(ax::tap(&inst, &rest, ms.and_then(|m| m.parse().ok()).unwrap_or(800), after)?)
         }
-        "type" => print(ax::type_text(&inst, &rest, clear, submit, keys, after)?),
+        "type" => print(x86sim_core::axact::type_into(&inst, into.as_deref(), &rest, clear, submit, keys, after)?),
         "key" => {
             need("a key")?;
             print(ax::key(&inst, &rest, after)?)

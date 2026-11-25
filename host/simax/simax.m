@@ -21,6 +21,7 @@
 //                                views VoiceOver cannot reach), for the audit (host: core/src/axaudit.rs)
 //   action oid name [dir|custom] perform an accessibility action: activate, increment, decrement, scroll, escape,
 //                                magic_tap, custom (by name)
+//   focus / control / setvalue   simax_actions.m
 #include <TargetConditionals.h>
 #if TARGET_OS_WATCH
 // watchOS's headers mark UIKit unavailable (apps use SwiftUI / WatchKit), but UIKitCore runs every watch app
@@ -1306,6 +1307,12 @@ static id find_oid(NSString* oid) {
 	return nil;
 }
 
+// for simax_actions.m
+id simax_find_oid(NSString* oid) { return find_oid(oid); }
+UIResponder* simax_first_responder(void) { return first_responder(); }
+NSString* simax_hex(id o) { return hex(o); }
+BOOL simax_actions_handle(NSString* op, NSDictionary* req, void (^reply)(NSDictionary*));
+
 static NSDictionary* type_text(NSDictionary* req) {
 	UIResponder* r = first_responder();
 	if (!r || ![r conformsToProtocol:@protocol(UIKeyInput)]) return @{ @"error": @"no focused text field (tap one first)" };
@@ -1324,7 +1331,7 @@ static NSDictionary* type_text(NSDictionary* req) {
 	NSString* t = req[@"text"] ?: @"";
 	if (t.length) [k insertText:t];
 	if ([req[@"submit"] boolValue]) [k insertText:@"\n"];
-	NSMutableDictionary* d = [NSMutableDictionary dictionaryWithDictionary:@{ @"typed": @(t.length), @"field": NSStringFromClass([r class]) }];
+	NSMutableDictionary* d = [NSMutableDictionary dictionaryWithDictionary:@{ @"typed": @(t.length), @"field": NSStringFromClass([r class]), @"oid": hex(r) }];
 	if (is(r, @"UITextField") && [r valueForKey:@"text"]) d[@"value"] = [r valueForKey:@"text"];
 	return d;
 }
@@ -1614,6 +1621,7 @@ static void handle(NSDictionary* req, void (^reply)(NSDictionary*)) {
 	if ([op isEqualToString:@"ax"]) { load_ax(); reply(@{ @"ax": @YES }); return; }
 	if ([op isEqualToString:@"type"]) { reply(type_text(req)); return; }
 	if ([op isEqualToString:@"action"]) { reply(perform_action(req)); return; }
+	if (simax_actions_handle(op, req, reply)) return;   // focus, control, setvalue (simax_actions.m)
 	if ([op isEqualToString:@"scrollby"]) {
 		// scroll the largest visible scroll view by a part of its height / width (visionOS: no touches reach a window
 		// from the host; the content moves as a scroll gesture would move it, without momentum)

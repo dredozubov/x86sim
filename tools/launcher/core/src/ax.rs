@@ -151,7 +151,7 @@ impl El {
     }
 }
 
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     let t: String = s.chars().take(160).collect();
     let t = t.replace('\n', " ").replace('"', "\\\"");
     if s.chars().count() > 160 {
@@ -457,7 +457,7 @@ pub fn ask_pid(inst: &Instance, pid: u32, req: &Value, timeout: Duration) -> Res
     ask(&sock, req, timeout)?.ok_or_else(|| anyhow!("process {pid} did not answer"))
 }
 
-fn pid_of_sock(p: &Path) -> u32 {
+pub(crate) fn pid_of_sock(p: &Path) -> u32 {
     p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.rsplit('-').next()).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 

@@ -57,7 +57,8 @@ says whether that screen is `UIScreen.mainScreen` and `display` gives its displa
 |---|---|---|
 | `info` | | the fields above; SpringBoard's also `locked` (`SBLockScreenManager isUILocked`) and `suspended` (pids FrontBoard suspended) |
 | `tree` | `fg` (only walk when on screen), `all` (include elements scrolled out of view), `noax`, `timeout` | plus `elements`, `focus` (oid of the first responder), `focus_item` (the focus engine's item: `oid`, `class`, `frame`, `label`; tvOS's remote focus), `animating`, `web_pending` |
-| `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `value` |
+| `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `oid` (the field), `value` |
+| `focus` | | the first responder (see below) |
 | `scroll` | `oid` | `ok` (`accessibilityScrollToVisible`, else `scrollRectToVisible` in the nearest scroll view) |
 | `activate` | `oid`, `tap` | `ok` (`accessibilityActivate`); with `tap`, when that answers NO, a tap made in the process at the element's activation point (a UITouch with an IOHIDEvent digitizer event through `sendEvent:`): `tapped`, `at` |
 | `scrollby` | `dir` (up down left right), `amount` (part of the view) | scrolls the largest visible scroll view that scrolls that way: `ok`, `moved`, `view` |
@@ -86,6 +87,16 @@ plain view provides its subviews. Hidden views and `accessibilityElementsHidden`
 Roles: `textfield`, `searchfield`, `switch`, `adjustable`, `key`, `tabbar`, `link`, `button`, `heading`,
 `image`, `text`, `icon` (SpringBoard), `element` (anything else with a label, value or identifier), and the web
 roles below.
+
+### `focus`: who has the keyboard
+
+`focus` (simax_actions.m) answers the process's first responder without a walk: `focused` (false: none, nothing
+else), `oid`, `class`, `text_input` (it takes typed text: `UIKeyInput`), `kind` (`textfield`, `securefield`,
+`searchfield`, `textview`, `web` (WebKit's content view: the page's `document.activeElement` is the field),
+`keyinput`, `other`), `frame` (screen points), `inside` (the oids of the views it is in, nearest first, up to 40),
+and for a native field `value` (a secure field's as dots), `placeholder`, `label`, `id`. The host's `type` with a
+target (core/src/axact.rs) taps the element, then asks this on every new frame until the field is the element, inside
+it, or under its centre (a SwiftUI node over its UITextField); a web field: until the DOM's focus is on it.
 
 ### The inspector (`tree` with `full`)
 
