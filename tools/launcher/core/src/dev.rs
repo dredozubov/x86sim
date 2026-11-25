@@ -190,11 +190,11 @@ pub fn packages_command() -> String {
     let (id, like, _) = linux_id();
     let fam = format!("{id} {like}");
     if fam.contains("arch") {
-        "sudo pacman -S --needed usbmuxd zip base-devel git libimobiledevice openssl poppler libheif".into()
+        "sudo pacman -S --needed usbmuxd zip base-devel git libimobiledevice openssl poppler libheif ninja rsync".into()
     } else if fam.contains("debian") || fam.contains("ubuntu") {
-        "sudo apt install build-essential git zip unzip curl pkg-config libimobiledevice-dev libssl-dev libcurl4-openssl-dev libxml2-dev libncurses6 python3 python3-venv usbmuxd poppler-utils libheif-examples (Ubuntu 24.04's libimobiledevice is too old for xtool: see external/omarchy-apple-dev/docs/DISTROS.md)".into()
+        "sudo apt install build-essential git zip unzip curl pkg-config libimobiledevice-dev libssl-dev libcurl4-openssl-dev libxml2-dev libncurses6 python3 python3-venv usbmuxd poppler-utils libheif-examples ninja-build rsync (Ubuntu 24.04's libimobiledevice is too old for xtool: see external/omarchy-apple-dev/docs/DISTROS.md)".into()
     } else if fam.contains("fedora") || fam.contains("rhel") {
-        "sudo dnf install gcc gcc-c++ make git zip unzip curl pkgconf libimobiledevice-devel openssl-devel libcurl-devel libxml2-devel ncurses-libs python3 usbmuxd poppler-utils libheif-tools".into()
+        "sudo dnf install gcc gcc-c++ make git zip unzip curl pkgconf libimobiledevice-devel openssl-devel libcurl-devel libxml2-devel ncurses-libs python3 usbmuxd poppler-utils libheif-tools ninja-build rsync".into()
     } else {
         "install: a C compiler, git, zip, curl, pkg-config, libimobiledevice (development files), openssl (development files), python3 with venv, usbmuxd (external/omarchy-apple-dev/docs/DISTROS.md)".into()
     }
@@ -684,7 +684,8 @@ pub fn remember(dir: &Path, phone: Option<&str>) {
 pub struct Project {
     pub dir: PathBuf,
     pub name: String,
-    /// xtool (Package.swift + xtool.yml: builds here), flutter, swiftpm (no xtool.yml), xcodeproj (convert it first)
+    /// xtool (Package.swift + xtool.yml: builds here), flutter, expo / reactnative (package.json: CocoaPods workspace
+    /// built by the fork's xcbuild.py), swiftpm (no xtool.yml), xcodeproj (convert it first)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
@@ -704,6 +705,8 @@ pub fn project(dir: &Path) -> Result<Project> {
         "xtool"
     } else if dir.join("pubspec.yaml").exists() {
         "flutter"
+    } else if let Some(k) = crate::devpods::js_kind(&dir) {
+        k
     } else if dir.join("Package.swift").exists() {
         "swiftpm"
     } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj")) {
@@ -713,7 +716,11 @@ pub fn project(dir: &Path) -> Result<Project> {
     };
     let y = yml.unwrap_or_default();
     let name = yml_value(&y, "product").unwrap_or(base);
-    let app = std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"));
+    let app = if matches!(kind, "expo" | "reactnative") {
+        crate::devpods::last_app(&dir)
+    } else {
+        std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"))
+    };
     Ok(Project { name, kind: kind.into(), bundle_id: yml_value(&y, "bundleID").unwrap_or_default(), app, dir })
 }
 
@@ -788,6 +795,22 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
     let p = project(dir)?;
     match p.kind.as_str() {
         "xtool" => {}
+        "expo" | "reactnative" => {
+            anyhow::ensure!(o.platform == "ios", "React Native and Expo apps build for iPhone and iPad devices here (not {})", o.platform);
+            let _lock = BuildLock::take(say)?;
+            let log_path = work_dir().join(format!("build-{}.log", p.name));
+            let mut log = std::fs::File::create(&log_path).ok();
+            let r = crate::devpods::build(&p.dir, &p.kind, "iphonesimulator", o.release, &mut |l: &str| {
+                if let Some(f) = log.as_mut() {
+                    let _ = writeln!(f, "{l}");
+                }
+                say(l);
+            });
+            let app = r.with_context(|| format!("log: {}", log_path.display()))?;
+            remember(&p.dir, None);
+            say(&format!("app: {}", app.display()));
+            return Ok(app);
+        }
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
         "xcodeproj" => bail!("{}: an Xcode project: convert it first (x86sim dev convert {}/<App>.xcodeproj)", p.dir.display(), p.dir.display()),
         _ => bail!("{}: a SwiftPM package without xtool.yml (add one: `version: 1` and `bundleID: com.you.App`)", p.dir.display()),
@@ -890,6 +913,10 @@ pub fn run(dir: &Path, inst: &Instance, o: &RunOpts, say: &mut dyn FnMut(&str)) 
         build(&p.dir, &BuildOpts { platform: inst.platform.clone(), release: o.release }, say)?
     };
     let bundle_id = crate::apps::bundle_id(&app).unwrap_or(p.bundle_id.clone());
+    // a Debug React Native / Expo build loads its JavaScript from Metro
+    if matches!(p.kind.as_str(), "expo" | "reactnative") && !o.release {
+        crate::devpods::start_metro(&p.dir, &p.kind, say)?;
+    }
     let (state, _) = phone_state(inst);
     if state == "off" {
         anyhow::ensure!(o.start, "{} is off: start it (launcher, MCP sim_start) or pass --start", inst.name);
@@ -971,6 +998,14 @@ pub fn passthrough(verb: &str, dir: &Path, args: &[String]) -> Result<Command> {
     let f = fork_dir();
     let kind = project(dir).map(|p| p.kind).unwrap_or_default();
     let mut c = match verb {
+        "device" if matches!(kind.as_str(), "expo" | "reactnative") => {
+            // a Release device build (its JavaScript bundled by the build), then xtool signs it with the Apple ID
+            // and installs it, as flutter/build.sh --install does
+            let me = std::env::current_exe().unwrap_or_else(|_| dev_exe());
+            let mut c = command(me);
+            c.arg("rn-device");
+            c
+        }
         "device" => {
             let mut c = command("bash");
             c.arg(f.join("device-run.sh"));
@@ -1036,7 +1071,7 @@ pub fn pick_phone(key: Option<&str>) -> Result<Instance> {
 pub fn mcp_tools() -> Vec<serde_json::Value> {
     use serde_json::json;
     let phone = json!({"type": "string", "description": "the device: its name, folder (device-a64-qa) or path. Default: the only running device, else the one the last run used"});
-    let project = json!({"type": "string", "description": "the project directory (an xtool project: Package.swift + xtool.yml)"});
+    let project = json!({"type": "string", "description": "the project directory: an xtool project (Package.swift + xtool.yml), or a React Native / Expo app (package.json; pods, build and Metro are handled)"});
     let args = json!({"type": "array", "items": {"type": "string"}});
     vec![
         json!({"name": "dev_status", "description": "Develop (omarchy-apple-dev): the app toolchain's state: Swift, xtool, the iOS SDK (and its simulator platforms), device tools; ready_sim says whether simulator builds work. Includes the running / last setup job with its step and log tail, and the recent projects.",
@@ -1057,6 +1092,8 @@ pub fn mcp_tools() -> Vec<serde_json::Value> {
                "inputSchema": {"type": "object", "properties": {"project": project, "args": args}, "required": ["project"]}}),
         json!({"name": "dev_ship", "description": "omarchy-apple-dev ship.sh in the project (flutter/ship.sh for a Flutter app): an App Store .ipa, signed and validated offline; args [\"--upload\"] uploads to TestFlight (needs ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH in the environment), [\"--device\", TEAMID], [\"--xcarchive\"]. ship_mac=true runs ship-mac.sh. Returns the output's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "args": args, "ship_mac": {"type": "boolean"}}, "required": ["project"]}}),
+        json!({"name": "dev_reload", "description": "Reload the JavaScript of the React Native / Expo apps connected to Metro (what pressing r in Metro does; edits already arrive by Fast Refresh). dev_run starts Metro for a Debug build.",
+               "inputSchema": {"type": "object", "properties": {}}}),
         json!({"name": "dev_convert", "description": "Convert an Xcode project to an xtool project (omarchy-apple-dev tools/xcodeproj2xtool.py). args: its options (--out DIR, --target NAME, ...).",
                "inputSchema": {"type": "object", "properties": {"xcodeproj": {"type": "string"}, "args": args}, "required": ["xcodeproj"]}}),
     ]
@@ -1163,6 +1200,10 @@ pub fn mcp_call(name: &str, a: &serde_json::Value) -> Result<serde_json::Value> 
             let verb = if name == "dev_device" { "device" } else if a["ship_mac"].as_bool().unwrap_or(false) { "ship-mac" } else { "ship" };
             let (rc, out) = captured(passthrough(verb, Path::new(&s("project")), &strs("args"))?, 1800)?;
             json!({"exit": rc, "ok": rc == 0, "output_tail": last_lines(&out, 60)})
+        }
+        "dev_reload" => {
+            crate::devpods::reload()?;
+            json!({"reloaded": true})
         }
         "dev_convert" => {
             let mut args = vec![s("xcodeproj")];

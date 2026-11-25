@@ -25,7 +25,9 @@ Projects (DIR defaults to the current directory)
   new NAME [PARENT]    a new SwiftUI app (xtool new), for every platform x86Sim runs
   projects [--json]    recent projects
   build [DIR] [--phone P | --platform ios|tvos|watchos|xros] [--release]
-                       simulator build (ship.sh --simulator); the .app's path is the last line
+                       simulator build (ship.sh --simulator; for a React Native / Expo app: npm install, expo
+                       prebuild, pod install and the CocoaPods workspace, built on Linux); the .app's path is the
+                       last line
   run [DIR] [--phone P] [--start] [--release] [--no-build] [-- APP ARGS]
                        build for the phone's platform, install and launch it (--start: boot the phone if off)
   test [DIR] [--phone P] [--start] [--secs N] [--shot OUT.png]
@@ -43,6 +45,9 @@ Real devices and publishing (pass-throughs to omarchy-apple-dev, run in DIR)
                        tools/xcodeproj2xtool.py: an Xcode project as an xtool project
   xtool ARGS           xtool itself, with the toolchain's PATH
   pod [DIR] ARGS       CocoaPods (x86sim dev setup cocoapods) in DIR, e.g. x86sim dev pod ios install
+  metro [DIR] [--stop] Metro for a React Native / Expo app (run starts it for Debug builds; it serves edits by
+                       Fast Refresh until stopped)
+  reload               reload the JavaScript of the apps connected to Metro (r in Metro's terminal)
   path                 the omarchy-apple-dev directory";
 
 fn take_opt(args: &mut Vec<String>, name: &str) -> Option<String> {
@@ -304,6 +309,32 @@ fn run(cmd: &str, mut args: Vec<String>) -> anyhow::Result<ExitCode> {
             let dir = take_dir(&mut args);
             args.extend(app_args);
             exec(x86sim_core::devpods::pod_command(&dir, &args)?)
+        }
+        "metro" => {
+            let stop = take_flag(&mut args, "--stop");
+            let dir = take_dir(&mut args);
+            let p = dev::project(&dir)?;
+            anyhow::ensure!(matches!(p.kind.as_str(), "expo" | "reactnative"), "{}: not a React Native / Expo app", p.dir.display());
+            if stop {
+                println!("{}", if x86sim_core::devpods::stop_metro(&p.dir)? { "stopped" } else { "no Metro started by x86sim dev for this app" });
+            } else {
+                x86sim_core::devpods::start_metro(&p.dir, &p.kind, &mut |l| println!("{l}"))?;
+                println!("Metro: http://localhost:8081");
+            }
+            ExitCode::SUCCESS
+        }
+        "reload" => {
+            x86sim_core::devpods::reload()?;
+            println!("reloaded");
+            ExitCode::SUCCESS
+        }
+        "rn-device" => {
+            // x86sim dev device for a React Native / Expo app: device build, then xtool install (sign + install)
+            let p = dev::project(Path::new("."))?;
+            let app = x86sim_core::devpods::build(&p.dir, &p.kind, "iphoneos", true, &mut |l| println!("{l}"))?;
+            let mut c = dev::command(dev::which("xtool").unwrap_or_else(|| PathBuf::from("xtool")));
+            c.arg("install").arg(&app).args(&args).args(&app_args);
+            exec(c)
         }
         "path" => {
             println!("{}", dev::fork_dir().display());

@@ -699,7 +699,17 @@ x86sim dev test HelloApp              # the same, then check it still runs and t
 x86sim dev device | ship | ship-mac | convert | auth   # real iPhones, App Store / TestFlight, Xcode projects
 x86sim dev setup cocoapods            # a pinned Ruby and CocoaPods in your home directory, for Podfile projects
 x86sim dev pod ios install            # pod install on Linux (React Native, Expo, Flutter plugins with a Podfile)
+x86sim dev run MyExpoApp --phone QA   # React Native / Expo: npm install, expo prebuild, pod install, the build,
+                                      # install, launch, Metro on localhost:8081 (edits arrive by Fast Refresh)
+x86sim dev reload                     # reload the JavaScript (r in Metro); x86sim dev metro DIR --stop ends Metro
 ```
+
+- **React Native and Expo** apps build entirely on Linux: a pinned Ruby and CocoaPods run `pod install`, and the
+  fork's `tools/xcbuild.py` builds the CocoaPods workspace (Pods.xcodeproj and the app's project) with the Swift
+  toolchain, the way `xcodebuild` does, script phases (codegen, Expo's scripts) included. Debug builds load their
+  JavaScript from Metro on the host, which the phones reach as their own localhost. `x86sim dev device` makes a
+  Release device build and installs it with `xtool install`. `tests/dev/rn_e2e.py` checks a fresh Expo app and a
+  bare React Native app on a phone through MCP.
 
 - **Build** Swift, SwiftUI, Objective-C, C and C++ apps with Swift and xtool, along with Flutter and Kotlin
   Multiplatform, as simulator builds for x86Sim (`ship.sh --simulator`) or device builds for an iPhone. Linux versions
