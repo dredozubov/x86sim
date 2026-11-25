@@ -418,7 +418,8 @@ static NSDictionary* privacy(NSDictionary* q) {
 		@"photos": @"kTCCServicePhotos", @"photos-add": @"kTCCServicePhotosAdd", @"media-library": @"kTCCServiceMediaLibrary",
 		@"microphone": @"kTCCServiceMicrophone", @"motion": @"kTCCServiceMotion", @"reminders": @"kTCCServiceReminders",
 		@"siri": @"kTCCServiceSiri", @"camera": @"kTCCServiceCamera", @"homekit": @"kTCCServiceWillow" };
-	NSArray* svcs = [svc isEqual:@"all"] ? [@[ @"location" ] arrayByAddingObjectsFromArray:tcc.allKeys] : @[ svc ?: @"" ];
+	NSArray* svcs = [svc isEqual:@"all"] ? @[ @"location", @"calendar", @"contacts", @"photos", @"photos-add",
+		@"media-library", @"microphone", @"motion", @"reminders", @"siri", @"camera", @"homekit" ] : @[ svc ?: @"" ];
 	NSMutableArray* done = [NSMutableArray new];
 	for (NSString* s in svcs) {
 		if ([s isEqual:@"location"] || [s isEqual:@"location-always"]) {
@@ -432,11 +433,23 @@ static NSDictionary* privacy(NSDictionary* q) {
 		} else if (tcc[s]) {
 			void* h = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_NOW);
 			int (*setf)(CFStringRef, CFStringRef, Boolean) = h ? dlsym(h, "TCCAccessSetForBundleId") : NULL;
+			int (*setOpts)(CFStringRef, CFStringRef, Boolean, CFDictionaryRef) = h ? dlsym(h, "TCCAccessSetForBundleIdWithOptions") : NULL;
 			int (*resetf)(CFStringRef, CFStringRef) = h ? dlsym(h, "TCCAccessResetForBundleId") : NULL;
 			int (*resetAll)(CFStringRef) = h ? dlsym(h, "TCCAccessReset") : NULL;
-			if (!setf || !resetf || !resetAll) return @{ @"ok": @NO, @"error": @"no TCC SPI (TCCAccessSetForBundleId)" };
+			if ((!setf && !setOpts) || !resetf || !resetAll) return @{ @"ok": @NO, @"error": @"no TCC SPI (TCCAccessSetForBundleId)" };
 			CFStringRef k = (__bridge CFStringRef)tcc[s];
-			int ok = reset ? (bid ? resetf(k, (__bridge CFStringRef)bid) : resetAll(k)) : setf(k, (__bridge CFStringRef)bid, grant);
+			int ok;
+			if (reset) {
+				ok = bid ? resetf(k, (__bridge CFStringRef)bid) : resetAll(k);
+			} else if (setOpts) {
+				// auth_value: 0 denied, 2 allowed (full access), 3 limited (contacts-limited). Passing auth_value
+				// through TCCAccessSetForBundleIdWithOptions uses TCC's v2 SPI so versioned services (Photos,
+				// Calendar, AddressBook) record auth_version=2, which PHPhotoLibrary/EKEventStore require on iOS 14+.
+				int val = !grant ? 0 : [s isEqual:@"contacts-limited"] ? 3 : 2;
+				ok = setOpts(k, (__bridge CFStringRef)bid, grant, (__bridge CFDictionaryRef)@{ @"auth_value": @(val) });
+			} else {
+				ok = setf(k, (__bridge CFStringRef)bid, grant);
+			}
 			if (!ok && !reset) return @{ @"ok": @NO, @"error": [NSString stringWithFormat:@"TCC refused %@ for %@", tcc[s], bid] };
 		} else {
 			return @{ @"ok": @NO, @"error": [NSString stringWithFormat:@"unknown service %@", s] };
