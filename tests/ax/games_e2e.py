@@ -73,13 +73,10 @@ class Games(Run):
         self.m.call("tap", target="Player", after="none")
         self.check("sprite: tap Player reaches it", not self.m.call("wait_for", target="sprite taps: Player=1", timeout=10)[2])
         if e2:
-            # (it moves about 90 pt/s: a touch that comes late can miss it at a turn; up to three tries)
-            for tries in range(1, 4):
-                self.m.call("tap", target="@" + e2["ref"], after="none")
-                ok = not self.m.call("wait_for", target="Enemy=", timeout=5)[2]
-                if ok:
-                    break
-            self.check("sprite: tap the moving Enemy by ref", ok, "%d tries" % tries)
+            # (it moves about 90 pt/s: the ref's frame is looked up again at the tap)
+            self.m.call("tap", target="@" + e2["ref"], after="none")
+            ok = not self.m.call("wait_for", target="sprite taps: Enemy=1", timeout=10)[2]
+            self.check("sprite: tap the moving Enemy by ref", ok)
         self.m.call("tap", target="Coin", after="none")
         ok = not self.m.call("wait_for", target="Coin", gone=True, timeout=10)[2]
         self.check("sprite: wait_for Coin gone after it was taken", ok)
