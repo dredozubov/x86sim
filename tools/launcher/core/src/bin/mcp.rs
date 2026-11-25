@@ -178,6 +178,18 @@ enum Answer {
     Json(Value),
     Text(String, Option<Value>),
     Image(String, String),
+    /// MCP content parts as they are (batch)
+    Parts(Vec<Value>),
+}
+
+/// An answer as MCP content parts (batch's steps)
+fn parts_of(a: Answer) -> Vec<Value> {
+    match a {
+        Answer::Json(v) => vec![json!({"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default()})],
+        Answer::Text(t, _) => vec![json!({"type": "text", "text": t})],
+        Answer::Image(b64, caption) => vec![json!({"type": "image", "data": b64, "mimeType": "image/png"}), json!({"type": "text", "text": caption})],
+        Answer::Parts(p) => p,
+    }
 }
 
 fn ax_answer(o: ax::Outcome) -> Answer {
@@ -250,6 +262,9 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
     }
     if let Some(r) = mcp_services::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(Answer::Json);
+    }
+    if name == "batch" {
+        return mcp_actions::batch(a, &|n, args| call(n, args).map(parts_of), &|| phone_of(a, &cfg)).map(Answer::Parts);
     }
     if let Some(r) = mcp_actions::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(|t| Answer::Text(t, None));
@@ -543,6 +558,7 @@ fn main() {
                     Ok(Answer::Text(t, None)) => json!({"content": [{"type": "text", "text": t}]}),
                     Ok(Answer::Text(t, Some(v))) => json!({"content": [{"type": "text", "text": t}], "structuredContent": v}),
                     Ok(Answer::Image(b64, caption)) => json!({"content": [{"type": "image", "data": b64, "mimeType": "image/png"}, {"type": "text", "text": caption}]}),
+                    Ok(Answer::Parts(p)) => json!({"content": p}),
                     Err(e) => json!({"content": [{"type": "text", "text": format!("{e:#}")}], "isError": true}),
                 })
             }

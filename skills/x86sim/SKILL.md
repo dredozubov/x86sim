@@ -288,7 +288,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `wait_for`, `screenshot`,
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 
@@ -296,5 +296,9 @@ README.md lists them by group). Every tool takes `phone`.
 claude mcp add x86sim -- /path/to/x86sim-*.AppImage mcp       # AppImage
 claude mcp add x86sim -- /path/to/x86sim/tools/launcher/target/release/x86sim-mcp   # checkout
 ```
+
+`batch` runs a known flow in one call: `steps=[{"tool": "tap", "target": "Log In"}, {"tool": "fill", ...}, {"tool":
+"expect", "target": "Welcome", "timeout": 10}, {"tool": "screenshot"}]`: one line per step, the screen once at the
+end; it stops at the first failing step (an expect's FAIL too) unless `stop_on_error=false`.
 
 `phone_take` leases are held by the MCP server's process: they end with the session or at `ttl_s`.

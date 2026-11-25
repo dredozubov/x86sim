@@ -9,6 +9,8 @@ test app tests/apps/x86forms (tests/apps/build.sh x86forms):
   controls set_value on a slider (number, percentage), switch, stepper, segmented control, wheel picker, date and
            time pickers: the app's bindings see each value; a value a control does not take is an error naming them
   drag     a list row dragged by its reorder handle to another place; an item dragged (held to lift) onto a drop box
+  batch    a log-in-like flow in one call (relaunch, wait, type, expect, screenshot): one line per step, the image,
+           the screen once at the end; stop_on_error stops at a failing expect, and false runs on
   expect   pass / fail on label, value (a field found by the label beside it), contains, enabled, focused, count,
            gone; a failure names what is there or the nearest text; a timeout waits for the app; wait_for value=
 
@@ -186,6 +188,29 @@ class Run:
         text, _, err, _ = self.m.call("wait_for", target="id:submitted", contains="nobody", timeout=1.5)
         self.check("wait_for: a condition that never holds times out as an error", err and "FAIL" in text, text.split("\n")[0])
 
+    # -- batch
+    def batch(self):
+        if not self.launch():
+            return
+        steps = [{"tool": "app_terminate", "bundle_id": APP}, {"tool": "app_launch", "bundle_id": APP},
+                 {"tool": "wait_for", "target": "Sign up", "timeout": 60},
+                 {"tool": "type", "target": "Email", "text": "batch@example.com"},
+                 {"tool": "expect", "target": "Email", "value": "batch@example.com"},
+                 {"tool": "screenshot"}]
+        r = self.m.rpc("tools/call", {"name": "batch", "arguments": {"phone": self.m.phone, "steps": steps}})["result"]
+        text = "\n".join(c.get("text", "") for c in r.get("content", []) if c.get("type") == "text")
+        imgs = [c for c in r.get("content", []) if c.get("type") == "image"]
+        self.m.log.write("### batch\n%s\n\n" % text)
+        lines = [l for l in text.split("\n") if re.match(r"^\d+\. ", l)]
+        self.check("batch: six steps, no error", not r.get("isError") and len(lines) == 6 and "0 failed" in text, text.split("\n")[0])
+        self.check("batch: the screenshot step's image is in the answer", len(imgs) == 1, str(len(imgs)))
+        self.check("batch: the screen once, after the last step", text.count("device at2") <= 1 and "batch@example.com" in text.split("\n6. ")[-1], "")
+        steps2 = [{"tool": "expect", "target": "Email", "value": "nobody"}, {"tool": "type", "target": "Email", "text": "zzz"}]
+        text, _, err, _ = self.m.call("batch", steps=steps2)
+        self.check("batch: stop_on_error stops at a failing expect", err and "stopped" in text and "2. type" not in text, text.split("\n")[0])
+        text, _, err, _ = self.m.call("batch", steps=steps2, stop_on_error=False, after="none")
+        self.check("batch: stop_on_error=false runs on", not err and "2. type" in text and "1 failed" in text, text.split("\n")[0])
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -202,7 +227,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["focus", "fill", "controls", "drag", "expect"]:
+        for name in ["focus", "fill", "controls", "drag", "expect", "batch"]:
             if want(name):
                 getattr(r, name)()
     finally:

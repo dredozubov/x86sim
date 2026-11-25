@@ -1,4 +1,5 @@
-//! x86sim-mcp: the agent tools' actions of round 2 (x86sim_core::axact): fill, drag, set_value, expect; wait_for with expect's conditions. Kept apart from mcp.rs's own tools so
+//! x86sim-mcp: the agent tools' actions of round 2 (x86sim_core::axact): fill, drag, set_value, expect; wait_for with expect's conditions;
+//! batch (steps of the other tools, run through mcp.rs's dispatch). Kept apart from mcp.rs's own tools so
 //! the two merge easily; mcp.rs adds `tools()` to its list and asks `call()` first.
 use serde_json::{json, Value};
 use x86sim_core::{ax, axact, instance};
@@ -27,6 +28,9 @@ pub fn tools(phone: &Value) -> Vec<Value> {
                "inputSchema": {"type": "object", "properties": {"phone": phone, "from": {"type": "string"}, "to": {"type": "string"}, "hold_ms": {"type": "integer"}, "ms": {"type": "integer"}, "after": after}, "required": ["from", "to"]}}),
         json!({"name": "set_value", "description": "Set a control to a value, whatever control it is, the way the app hears a touch (its value-changed actions, a picker's delegate): slider (a number in its range or \"50%\"), switch (on / off, true / false), stepper (a number; stepped one step at a time), segmented control (a segment's title), wheel picker (a row's title; several wheels: a list or \"10, 30\", \"\" keeps a wheel), date picker (2026-05-01, 2026-05-01T14:30, or a time 14:30), anything else adjustable (incremented / decremented until its value reads so). An error says what the control is and which values it takes. target: @ref, id:..., label text. info=true only describes the control (range, segments, rows).",
                "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "value": {"type": ["string", "number", "boolean", "array"]}, "info": {"type": "boolean"}, "after": after}, "required": ["target"]}}),
+        json!({"name": "batch", "description": "Run several tools in one call, in order, without the screen in between: steps=[{\"tool\": \"tap\", \"target\": \"Log In\"}, {\"tool\": \"wait_for\", \"target\": \"Welcome\"}, ...]. Any tool but batch: actions (tap, type, fill, set_value, drag, swipe, scroll, key, press, open_url, app_launch, ...), wait_for, expect, snapshot (its text is kept), screenshot (its image is kept). Each step gets this call's phone unless it names one; actions answer nothing in between (after=none unless the step says otherwise). stop_on_error (default true): stop at the first step that fails (expect's FAIL too), and the batch fails, listing what ran. Answers one line per step and the screen after the last (after: full / diff / none).",
+               "inputSchema": {"type": "object", "properties": {"phone": phone, "steps": {"type": "array", "items": {"type": "object", "properties": {"tool": {"type": "string"}}, "required": ["tool"]}},
+                   "stop_on_error": {"type": "boolean"}, "after": after}, "required": ["steps"]}}),
         json!({"name": "expect", "description": "Check the screen: an element matching target (@ref, id:..., label text: exact, id / value, prefix) is there (exists, default true; false: none is) and meets every condition given: label (equals), value (equals), contains (in label or value), enabled, selected, focused, count (exactly that many match). A condition about a field (value, focused) also finds the field beside a matching label. Answers PASS with the element; FAIL (an error) with what was found instead: the matching elements and which condition each misses, or the elements nearest by text. timeout (seconds, default 0) waits on new frames for it to become true.",
                "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "exists": {"type": "boolean"}, "label": {"type": "string"}, "value": {"type": "string"}, "contains": {"type": "string"},
                    "enabled": {"type": "boolean"}, "selected": {"type": "boolean"}, "focused": {"type": "boolean"}, "count": {"type": "integer"}, "timeout": {"type": "number"}}, "required": ["target"]}}),
@@ -84,4 +88,68 @@ pub fn call(name: &str, a: &Value, phone: &dyn Fn() -> anyhow::Result<instance::
             _ => unreachable!(),
         }
     })())
+}
+
+/// `batch`: each step through `run` (mcp.rs's dispatch: the step's tool and arguments; answers MCP content parts),
+/// one line per step, then the screen once. Some(parts) answers it, Err a failed step under stop_on_error.
+pub fn batch(a: &Value, run: &dyn Fn(&str, &Value) -> anyhow::Result<Vec<Value>>, phone: &dyn Fn() -> anyhow::Result<instance::Instance>) -> anyhow::Result<Vec<Value>> {
+    let steps = a["steps"].as_array().ok_or_else(|| anyhow::anyhow!("steps: [{{\"tool\": ..., args...}}, ...]"))?;
+    anyhow::ensure!(!steps.is_empty() && steps.len() <= 100, "steps: 1 to 100 of them");
+    let stop = a["stop_on_error"].as_bool().unwrap_or(true);
+    let after = ax::After::parse(a["after"].as_str());
+    let inst = phone()?;
+    let before = ax::last(&inst);
+    let t0 = std::time::Instant::now();
+    let mut lines: Vec<String> = vec![];
+    let mut images: Vec<Value> = vec![];
+    let mut failed = 0;
+    let mut stopped = false;
+    for (i, st) in steps.iter().enumerate() {
+        let tool = st["tool"].as_str().unwrap_or("");
+        let mut args = st.clone();
+        if let Some(o) = args.as_object_mut() {
+            o.remove("tool");
+            if !o.contains_key("phone") && !o.contains_key("device") {
+                if let Some(p) = a.get("phone").or(a.get("device")) {
+                    o.insert("phone".into(), p.clone());
+                }
+            }
+            o.entry("after").or_insert(json!("none"));
+        }
+        let t = std::time::Instant::now();
+        let r = if tool.is_empty() || tool == "batch" { Err(anyhow::anyhow!("step {}: a tool other than batch", i + 1)) } else { run(tool, &args) };
+        let ms = t.elapsed().as_millis();
+        match r {
+            Ok(parts) => {
+                let text: Vec<&str> = parts.iter().filter(|p| p["type"] == "text").filter_map(|p| p["text"].as_str()).collect();
+                let text = text.join("\n");
+                // a snapshot asked for in the middle is kept whole; other steps by their first line
+                let shown = if tool == "snapshot" { text.trim_end().to_string() } else { text.lines().next().unwrap_or("ok").to_string() };
+                lines.push(format!("{}. {tool} ({ms} ms): {shown}", i + 1));
+                images.extend(parts.into_iter().filter(|p| p["type"] == "image"));
+            }
+            Err(e) => {
+                failed += 1;
+                lines.push(format!("{}. {tool} ({ms} ms): ERROR {}", i + 1, format!("{e:#}").lines().next().unwrap_or("")));
+                if stop {
+                    stopped = i + 1 < steps.len();
+                    break;
+                }
+            }
+        }
+    }
+    let head = format!(
+        "batch: {} of {} step(s) ran, {failed} failed{} ({:.1} s)",
+        lines.len(),
+        steps.len(),
+        if stopped { ", stopped at the failure" } else { "" },
+        t0.elapsed().as_secs_f64()
+    );
+    let o = ax::outcome(&inst, format!("{head}\n{}", lines.join("\n")), before, if failed > 0 && stop { ax::After::Diff } else { after });
+    if failed > 0 && stop {
+        anyhow::bail!("{}", o.text());
+    }
+    let mut out = vec![json!({"type": "text", "text": o.text()})];
+    out.extend(images);
+    Ok(out)
 }
