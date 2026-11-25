@@ -37,6 +37,17 @@ pub fn compositor_decorates() -> bool {
 }
 
 fn main() -> eframe::Result<()> {
+    // install-desktop / uninstall-desktop (AppRun's commands): the app menu entry, no window
+    if let Some(r) = std::env::args().nth(1).and_then(|a| x86sim_core::desktop::command(&a)) {
+        match r {
+            Ok(s) => println!("x86sim: {s}"),
+            Err(e) => {
+                eprintln!("x86sim: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]).with_min_inner_size([900.0, 600.0]).with_title("x86Sim").with_app_id("x86sim").with_decorations(compositor_decorates()),
         ..Default::default()

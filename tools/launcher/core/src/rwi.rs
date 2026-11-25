@@ -2,10 +2,11 @@
 //! Develop menu speaks to a simulator on a Mac.
 //!
 //! The phone side is the runtime's own `webinspectord` (job com.apple.webinspectord, the `webinspector` feature): on a
-//! Mac launchd_sim binds its debugger socket in a temporary directory, here libsimshim binds it at a short host path,
-//! `/run/user/<uid>/x86sim-rwi-<UDID>.sock` (mksimdevice.py, host/simshim). The job is on demand: when nobody listens
-//! there, an XPC message to com.apple.webinspector through host/openurl (`xpcping`) makes launchd_sim start it, and the
-//! web views of running apps connect to it once it posts its availability.
+//! Mac launchd_sim binds its debugger socket in a temporary directory, here libsimshim binds it at a short host path
+//! next to the phone's frame ring, `<ring dir>/x86sim-rwi-<UDID>.sock` (mksimdevice.py, host/simshim; rundir.rs). The
+//! job is on demand: when nobody listens there, an XPC message to com.apple.webinspector through host/openurl
+//! (`xpcping`) makes launchd_sim start it, and the web views of running apps connect to it once it posts its
+//! availability.
 //!
 //! Wire format: a 4-byte big-endian length, then a binary plist `{__selector, __argument}`. We send
 //! `_rpc_reportIdentifier:`, `_rpc_getConnectedApplications:`, `_rpc_forwardGetListing:` (pages of an app),
@@ -311,9 +312,9 @@ pub fn bplist_decode(b: &[u8]) -> Result<Pl> {
 // ---------------------------------------------------------------------------------------------------------------------
 // The connection to webinspectord
 
-/// webinspectord's debugger socket for a phone (mksimdevice.py's rwi_socket)
+/// webinspectord's debugger socket for a phone (mksimdevice.py's rwi_socket): next to its frame ring
 pub fn socket_path(inst: &Instance) -> PathBuf {
-    PathBuf::from(format!("/run/user/{}/x86sim-rwi-{}.sock", unsafe { libc::getuid() }, inst.udid))
+    inst.ring.parent().unwrap_or(crate::rundir::run_dir()).join(format!("x86sim-rwi-{}.sock", inst.udid))
 }
 
 /// One request to host/openurl (the com.x86sim.openurl job), as cli/libexec/simctl.py sends it: a line

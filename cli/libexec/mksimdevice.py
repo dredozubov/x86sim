@@ -122,10 +122,20 @@ def host_path(rel):
     return p if os.path.exists(p) else None
 
 
-def rwi_socket(udid, darling_side=False):
-    """x86Sim (Web Inspector): webinspectord's debugger socket for this device (host path, or as the guest sees it)."""
-    p = "/run/user/%d/x86sim-rwi-%s.sock" % (os.getuid(), udid)
-    return "/Volumes/SystemRoot" + p if darling_side else p
+def frame_ring(device):
+    """This device's frame ring as the guest sees it (sim.env SIMFB_RING): $SIMFB_RING, else in x86config.run_dir().
+    One ring per phone, named like the launcher's ring_for (instance.rs): device-a64 -> x86sim-a64-simfb.ring,
+    device-a64-<name> -> x86sim-a64-<name>-simfb.ring. A shared default let a second phone's boot recreate the main
+    phone's ring, freezing its screen while its apps ran on."""
+    return os.environ.get("SIMFB_RING") or DARLING_VIEW + os.path.join(
+        x86config.run_dir(), "x86sim-%s-simfb.ring" % os.path.basename(device.rstrip("/")).removeprefix("device-"))
+
+
+def rwi_socket(udid, device, darling_side=False):
+    """x86Sim (Web Inspector): webinspectord's debugger socket for this device (host path, or as the guest sees it),
+    next to its frame ring (the launcher's rwi.rs looks there)."""
+    p = os.path.join(os.path.dirname(frame_ring(device).removeprefix(DARLING_VIEW)), "x86sim-rwi-%s.sock" % udid)
+    return DARLING_VIEW + p if darling_side else p
 
 
 def darling(path):
@@ -408,7 +418,7 @@ def main():
         # through host/openurl (xpcping) when it finds nobody listening.
         if job == "com.apple.webinspectord":
             plist.pop("Sockets", None)
-            plist.setdefault("EnvironmentVariables", {})["X86SIM_RWI_SOCKET"] = rwi_socket(udid, darling_side=True)
+            plist.setdefault("EnvironmentVariables", {})["X86SIM_RWI_SOCKET"] = rwi_socket(udid, device, darling_side=True)
         # x86Sim: X86SIM_JOBENV="label:K=V;label:K=V": extra environment for runtime jobs (experiments)
         for kv in filter(None, os.environ.get("X86SIM_JOBENV", "").split(";")):
             lab, _, ev = kv.partition(":")
@@ -585,13 +595,9 @@ def main():
         # RAM 1: A64_GLIBC_TUNABLES_EXTRA appends tunables (e.g. glibc.mem.decorate_maps=1 names arenas/stacks in smaps)
         "GLIBC_TUNABLES": ":".join(filter(None, ["glibc.malloc.arena_max=2:glibc.malloc.trim_threshold=1048576",
                                                  os.environ.get("A64_GLIBC_TUNABLES_EXTRA", "")])),
-        # Speed 8: in /run/user/<uid> (the arm64 container's /dev/shm is private, X86SIM_PRIVATE_SHM); boot-a64.sh links
-        # /dev/shm/x86sim-a64-simfb.ring to it for the host's viewers
-        # one ring per phone, named like the launcher's ring_for (instance.rs): device-a64 -> x86sim-a64-simfb.ring,
-        # device-a64-<name> -> x86sim-a64-<name>-simfb.ring. A shared default let a second phone's boot recreate the
-        # main phone's ring, freezing its screen while its apps ran on.
-        "SIMFB_RING": os.environ.get("SIMFB_RING") or "/Volumes/SystemRoot/run/user/%d/x86sim-%s-simfb.ring" % (
-            os.getuid(), os.path.basename(device.rstrip("/")).removeprefix("device-")),
+        # Speed 8: on the host, in x86config.run_dir() (/run/user/<uid>; the arm64 container's /dev/shm is private,
+        # X86SIM_PRIVATE_SHM); boot-a64.sh links /dev/shm/<its name> to it for the host's viewers
+        "SIMFB_RING": frame_ring(device),
         # Speed 3: launchd jobs only see Bootstrap.Child, so the JIT flags must be copied here to reach backboardd and
         # SpringBoard. Speed 6: every X86SIM_A64_* flag (was a list that missed new ones, e.g. PERFMAP). X86SIM_SCRATCH: the
         # JIT's scratch dir (a64-penv, a64-slim-park, gbt, crash dumps); without it the JIT falls back to the home of its
@@ -685,7 +691,7 @@ def main():
         pass
     # the last boot's Web Inspector socket (launchd_sim binds it again; a stale file makes the bind fail)
     try:
-        os.unlink(rwi_socket(udid))
+        os.unlink(rwi_socket(udid, device))
     except OSError:
         pass
     # the last boot's accessibility-reader sockets (host/simax): their processes are gone
