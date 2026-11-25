@@ -585,13 +585,14 @@ else the configured one. Erase, clone and keychain reset need it.
 |---|---|
 | Devices | `phones_list` (`sim_status` is the same), `sim_devices`, `sim_add_device`, `sim_start`, `sim_stop`, `sim_restart`, `runtime_delete`, `aot_status` |
 | Feature sets | `features_list`, `feature_get`, `feature_set`, `features_preset` |
-| Apps | `app_install` (simulator or device builds), `app_uninstall`, `app_launch`, `app_terminate`, `app_list`, `app_logs` |
+| Apps | `app_install` (simulator or device builds), `app_uninstall`, `app_launch` (with `args` and `env`), `app_terminate`, `app_list`, `app_logs` |
 | Tests | `xctest_run` (XCTest / XCUITest: an `.xctestrun` or bundles; per-test results, see [Tests](#tests-xctest-xcuitest)) |
 | Debugging | `debug_start`, `debug_command`, `debug_stop` (an lldb session on an app, see [Debugging (LLDB)](#debugging-lldb)) |
 | Profiling | `profile_start`, `profile_stop` (CPU profile of an app, see [Profiling (CPU)](#profiling-cpu)) |
-| Screen as text and actions | `snapshot`, `tap`, `long_press`, `type`, `key`, `scroll`, `scroll_to`, `swipe`, `wait_for`, `press`, `open_url`, `screenshot` |
+| Screen as text and actions | `snapshot`, `tap`, `long_press`, `type`, `key`, `scroll`, `scroll_to`, `swipe`, `pinch`, `wait_for`, `press`, `open_url`, `screenshot` |
 | Accessibility Inspector | `ax_inspect`, `ax_audit`, `ax_action` |
 | Hardware | `sim_button`, `sim_crown`, `sim_fold`, `sim_shake`, `sim_orientation`, `sim_biometric`, `sim_gamepad`, `sim_pointer`, `sim_system`, `sim_keyboard`, `sim_memory_warning` |
+| Device services (as simctl) | `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia` |
 | Settings (as simctl) | `sim_ui`, `sim_status_bar`, `sim_pasteboard`, `sim_keychain_reset`, `sim_locale`, `sim_timezone`, `sim_fidelity`, `sim_erase`, `sim_clone` |
 | Capture | `sim_screenshot` (a PNG file), `sim_record_video` |
 | Pool | `pool_status`, `phone_take`, `phone_release` |
