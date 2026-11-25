@@ -155,6 +155,9 @@ Apps (as xcrun simctl install/uninstall/launch)
   profile [PHONE] BUNDLEID|PID [--secs N] [--out FILE] [--format speedscope|gecko|text] [--period-us N]
                        CPU profile of the app (as Instruments' Time Profiler): top functions by self / total time per
                        thread, and a speedscope or Firefox Profiler file (the translator's sampler, profile.rs)
+  net [PHONE] capture APP on|off [--relaunch] | log [APP] [--filter F] [--since S] [--follow S] | show ID | clear
+                       an app's network traffic (URLSession requests with headers, bodies, timings; other stacks as
+                       connections), without a proxy (host/simnet, docs/protocols/NET.md)
   spawn [--env K=V] [--timeout S] PROGRAM [args...]
                        run a simulator binary in the device (as simctl spawn): its output, its exit status
   io screenshot [out.png] | io recordVideo [--codec h264|hevc] [--secs N] OUT.mp4
@@ -282,6 +285,12 @@ case $c in
 		. "$X/cli/lib/pickdevice.sh"
 		if [ $# -ge 1 ] && case $1 in software|sw|hardware|hw|status) false ;; *) true ;; esac && pick_device "$1"; then shift; use_device; fi
 		ax keyboard "$@" ;;
+	net)
+		# network capture of native apps (x86sim-ax net, core net.rs); a leading <device> as for keyboard
+		. "$X/cli/lib/pickdevice.sh"
+		if [ $# -ge 1 ] && case $1 in capture|log|ls|show|request|clear|-*) false ;; *) true ;; esac && pick_device "$1"; then shift; use_device; fi
+		export X86SIM_DEVICE
+		ax net "$@" ;;
 	# type: into the focused field as the software keyboard (any text; --clear --submit; --keys: key presses)
 	type) ax type "$@" ;;
 	text) exec python3 "$L/simtouch.py" text "$*" ;;
