@@ -51,9 +51,11 @@ for d in cli host linux tools tests external; do
 	if [ -L "$DATA/$d" ] || [ ! -e "$DATA/$d" ]; then ln -sfn "app/$VER/$d" "$DATA/$d"; fi
 done
 # Darling: "system" = installed by the setup wizard into /opt/x86sim (bin/darling setuid root, one password prompt);
-# "userns" = no root at all, through an unprivileged user namespace (darling-userns.sh). X86SIM_DARLING_MODE picks one;
-# auto: system when this build is installed there, else userns when the kernel allows it, else system (the wizard
-# then asks to install).
+# "userns" = no root at all, through an unprivileged user namespace (darling-userns.sh); "nonroot" = no root and no
+# namespaces (darling-nonroot.sh: Darling's DARLING_NONROOT mode, each prefix a copy of the system image).
+# X86SIM_DARLING_MODE picks one; auto: system when this build is installed there, else userns when the kernel allows
+# it, else nonroot in a container or where nothing could install it as root (no pkexec, no sudo), else system (the
+# wizard then asks to install).
 DID=$(cat "$S/DARLING_ID")
 mode=${X86SIM_DARLING_MODE:-auto}
 if [ "$mode" = auto ]; then
@@ -61,25 +63,28 @@ if [ "$mode" = auto ]; then
 		mode=system
 	elif unshare -r -m true 2>/dev/null; then
 		mode=userns
+	elif [ -e /run/.containerenv ] || [ -e /.dockerenv ] || { ! command -v pkexec > /dev/null && ! command -v sudo > /dev/null; }; then
+		mode=nonroot
 	else
 		mode=system
 	fi
 fi
-if [ "$mode" = userns ]; then
+case $mode in system|userns|nonroot) ;; *) echo "x86sim: X86SIM_DARLING_MODE=$mode: use system, userns or nonroot" >&2; exit 1 ;; esac
+if [ "$mode" = userns ] || [ "$mode" = nonroot ]; then
 	if [ ! -f "$APP/darling/.x86sim-copied" ]; then
 		rm -rf "$APP/darling.tmp"
 		cp -a "$S/darling" "$APP/darling.tmp"
 		touch "$APP/darling.tmp/.x86sim-copied"
 		mv "$APP/darling.tmp" "$APP/darling"
 	fi
-	U=$APP/darling-userns
+	U=$APP/darling-$mode
 	mkdir -p "$U/bin"
-	cp "$S/darling-userns.sh" "$U/bin/darling"
+	cp "$S/darling-$mode.sh" "$U/bin/darling"
 	ln -sfn ../../darling/bin/darlingserver "$U/bin/darlingserver"
 	ln -sfn ../darling/libexec "$U/libexec"
 	echo "$DID" > "$U/.x86sim-complete"
-	: > "$U/.x86sim-userns"
-	target=app/$VER/darling-userns
+	: > "$U/.x86sim-$mode"
+	target=app/$VER/darling-$mode
 else
 	target=$(realpath -m --relative-to="$DATA" /opt/x86sim/darling)
 fi

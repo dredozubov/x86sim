@@ -116,6 +116,7 @@ impl App {
         list_card(ui, |ui| {
             let detail = match &ds {
                 DarlingState::Ready if setup::userns() => "Ready, without root: it runs in a user namespace of your own. Nothing to install.".into(),
+                DarlingState::Ready if setup::nonroot() => "Ready, without root or namespaces (this system allows neither): each device's prefix is a copy of the system. Nothing to install.".into(),
                 DarlingState::Ready => format!("Installed in {}", setup::OPT_DARLING),
                 DarlingState::Outdated { .. } => "This version of x86Sim brings a newer build.".into(),
                 _ => format!("Copied to {} once, owned by root: its launcher must be setuid root to set up each device's container.", setup::OPT_DARLING),
