@@ -50,7 +50,7 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 
 ## Open
 
-Items not moved in this round, each with its Linux path:
+Items not moved in this round (listed in AGENTS.md), each with its Linux path:
 
 - sdkcov's `.mov` / `.sks` fixtures: the generators use AVAssetWriter / SpriteKit / GameplayKit, all in the iOS
   simulator runtime; built with `tests/apps/build.sh`'s Linux toolchain and run on a phone, they can write the files
