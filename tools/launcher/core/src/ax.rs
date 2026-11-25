@@ -154,7 +154,7 @@ impl El {
     }
 }
 
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     let t: String = s.chars().take(160).collect();
     let t = t.replace('\n', " ").replace('"', "\\\"");
     if s.chars().count() > 160 {
@@ -466,7 +466,7 @@ pub fn ask_pid(inst: &Instance, pid: u32, req: &Value, timeout: Duration) -> Res
     ask(&sock, req, timeout)?.ok_or_else(|| anyhow!("process {pid} did not answer"))
 }
 
-fn pid_of_sock(p: &Path) -> u32 {
+pub(crate) fn pid_of_sock(p: &Path) -> u32 {
     p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.rsplit('-').next()).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
@@ -1206,7 +1206,7 @@ impl Snapshot {
 
 /// The touch / key channel to the phone for points in a space: the panel in use (an unfolded phone's inner screen)
 /// and the turn from the interface's picture to the panel
-fn hid_for(inst: &Instance, sp: Space) -> Hid {
+pub(crate) fn hid_for(inst: &Instance, sp: Space) -> Hid {
     let mut h = Hid::new(&inst.sock);
     match panel(inst).0 {
         Some((id, native)) => h.display = Some((id, (native + sp.rot) % 360)),
@@ -1651,7 +1651,7 @@ fn wait_front_change(inst: &Instance, front: Vec<String>, timeout: Duration) -> 
     false
 }
 
-fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
+pub(crate) fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
     let sock = sock_of_pid(inst, e.pid).ok_or_else(|| anyhow!("{} is gone", e.app))?;
     let r = ask(&sock, &json!({"op": "scroll", "oid": e.oid}), Duration::from_secs(3))?.ok_or_else(|| anyhow!("{} is gone", e.app))?;
     if let Some(err) = r["error"].as_str() {
@@ -2047,7 +2047,8 @@ pub fn scroll_to(inst: &Instance, target: &str, direction: &str, max_steps: u32,
     bail!("{target:?} not found after {max_steps} scrolls {direction}")
 }
 
-/// Waits until a target is on screen (or, `gone`, no longer is). Wakes on new frames, not on a timer.
+/// Waits until a target is on screen (or, `gone`, no longer is), matched as tap matches it (exact, prefix, substring).
+/// Wakes on new frames, not on a timer.
 pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) -> Result<Outcome> {
     let t0 = Instant::now();
     let t = parse_target(target);
@@ -2061,7 +2062,8 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
             snap = snapshot(inst, SnapOpts { ocr: true, ..Default::default() });
         }
         if let Ok(snap) = &snap {
-            let hit = find_all_q(snap, &t, 2).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
+            // tap's rules: exact, then prefix, then a part of the label (or value), best first
+            let hit = find_all(snap, &t).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
             if hit.is_some() != gone {
                 let ms = t0.elapsed().as_millis();
                 let did = match hit {
@@ -2127,7 +2129,8 @@ pub fn launch(inst: &Instance, bundle: &str, args: &[String], after: After) -> R
 /// `launch` with environment variables for the app (KEY, VALUE)
 pub fn launch_env(inst: &Instance, bundle: &str, args: &[String], env: &[(String, String)], after: After) -> Result<Outcome> {
     let before = last(inst);
-    let a = crate::apps::launch_env(inst, bundle, args, env)?;
+    // a launch that started nothing, or an app that died at once, is an error with why (appstate.rs)
+    let a = crate::appstate::launch_checked(inst, bundle, args, env)?;
     if after != After::None {
         wait_front_is(inst, bundle, Duration::from_secs(20));
     }

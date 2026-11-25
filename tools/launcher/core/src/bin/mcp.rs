@@ -31,6 +31,12 @@ mod mcp_services;
 // ---- network capture of native apps: net_capture, net_log, net_request, net_mock ----
 #[path = "mcp_parts/net.rs"]
 mod mcp_net;
+// ---- agent actions, round 2 (feat/agent-tools-2 C/D): fill, ... ----
+#[path = "mcp_parts/actions.rs"]
+mod mcp_actions;
+// ---- devices and apps, round 2 (feat/agent-tools-2 D): sim_delete, ... ----
+#[path = "mcp_parts/devices.rs"]
+mod mcp_devices;
 
 fn tools() -> Value {
     let phone = json!({"type": "string", "description": "the device: its name (as in the hub, e.g. \"QA\"), folder (device-a64-qa) or path. Default: the only running device, else the configured one"});
@@ -78,7 +84,7 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "path": {"type": "string", "description": "the .app directory on this machine"}}, "required": ["path"]}},
         {"name": "app_uninstall", "description": "Uninstall an app from a running device (simctl uninstall).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}}, "required": ["bundle_id"]}},
-        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app, env sets environment variables in its process (simctl's SIMCTL_CHILD_NAME, x86sim launch --env). Returns the pid.",
+        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app, env sets environment variables in its process (simctl's SIMCTL_CHILD_NAME, x86sim launch --env). Returns the pid; an error when no process started or it died within 3 s, with how it ended (exit code, signal).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "environment variables for the app, e.g. {\"API_URL\": \"http://localhost:8080\"}"}, "after": after}, "required": ["bundle_id"]}},
         {"name": "app_list", "description": "Installed apps on a running device (simctl listapps).", "inputSchema": {"type": "object", "properties": {"phone": phone}}},
         // agents: the screen as text and actions on its elements (x86sim_core::ax, host/simax)
@@ -88,7 +94,7 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "hold_ms": {"type": "integer"}, "after": after}}},
         {"name": "long_press", "description": "Touch and hold an element (target as tap) or a point, ms (default 800): context menus, icon editing.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
-        {"name": "type", "description": "Type text into the focused field (tap the field first, or pass target to tap it first), as the software keyboard does: any characters. clear: empty the field first; submit: press the Return key after. A newline in text is a Return key press too (it submits a single-line field or web form, and is a new line in a multi-line text view). keys=true: hardware key presses instead (US layout; for games / key handlers).",
+        {"name": "type", "description": "Type text into the focused field (or pass target: it is tapped, then the text waits up to 2 s for that field to have the focus; it is an error when the focus is elsewhere), as the software keyboard does: any characters. The answer names the field that got the text and its value now. clear: empty the field first; submit: press the Return key after. A newline in text is a Return key press too (it submits a single-line field or web form, and is a new line in a multi-line text view). keys=true: hardware key presses instead (US layout; for games / key handlers).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "text": {"type": "string"}, "target": {"type": "string"}, "clear": {"type": "boolean"}, "submit": {"type": "boolean"}, "keys": {"type": "boolean"}, "after": after}, "required": ["text"]}},
         {"name": "key", "description": "Press a key on the hardware keyboard: return, tab, escape, delete, space, up, down, left, right, home, end, pageup, pagedown, a character, or a combination such as cmd+a, shift+tab.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "key": {"type": "string"}, "after": after}, "required": ["key"]}},
@@ -100,7 +106,7 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "direction": {"type": "string", "enum": ["up", "down", "left", "right", "home", "notifications", "controlcenter", "back"]}, "x1": {"type": "number"}, "y1": {"type": "number"}, "x2": {"type": "number"}, "y2": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
         {"name": "pinch", "description": "A two-finger pinch (zoom a map, photo or web page): fingers on a line through the center (target as tap, or x and y in points; default the screen's middle), half their distance going from radius (default 60) to to_radius (larger zooms in, smaller zooms out; default radius*2.5) over ms (default 500). rotate: degrees the fingers turn (clockwise; a two-finger rotation, e.g. a map's heading; with to_radius = radius it only turns). iPhone and iPad.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "radius": {"type": "number"}, "to_radius": {"type": "number"}, "rotate": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
-        {"name": "wait_for", "description": "Wait until an element (target as tap: text, @ref, id:...) is on screen, or with gone=true until it is not; timeout seconds (default 20). Wakes on every new frame (no fixed polling). Answers with the screen.",
+        {"name": "wait_for", "description": "Wait until an element (target as tap: text matched exactly, then by prefix, then as a part of the label; @ref, id:...) is on screen, or with gone=true until it is not; timeout seconds (default 20). Wakes on every new frame (no fixed polling). Answers with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "gone": {"type": "boolean"}, "timeout": {"type": "number"}}, "required": ["target"]}},
         {"name": "press", "description": "Press a hardware button (home, lock, side, volup, voldown, siri, action, ...; as sim_button) and answer with the screen after it.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "button": {"type": "string"}, "ms": {"type": "integer"}, "after": after}, "required": ["button"]}},
@@ -152,6 +158,16 @@ fn tools() -> Value {
     if let Value::Array(v) = &mut t {
         v.extend(mcp_net::tools(&phone));
     }
+    // ---- agent actions, round 2 ----
+    if let Value::Array(v) = &mut t {
+        v.iter_mut().for_each(mcp_actions::extend_wait_for);
+        v.extend(mcp_actions::tools(&phone));
+    }
+    // ---- devices and apps, round 2 ----
+    if let Value::Array(v) = &mut t {
+        v.iter_mut().for_each(mcp_devices::extend_terminate);
+        v.extend(mcp_devices::tools(&phone));
+    }
     t
 }
 
@@ -177,6 +193,18 @@ enum Answer {
     Json(Value),
     Text(String, Option<Value>),
     Image(String, String),
+    /// MCP content parts as they are (batch)
+    Parts(Vec<Value>),
+}
+
+/// An answer as MCP content parts (batch's steps)
+fn parts_of(a: Answer) -> Vec<Value> {
+    match a {
+        Answer::Json(v) => vec![json!({"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default()})],
+        Answer::Text(t, _) => vec![json!({"type": "text", "text": t})],
+        Answer::Image(b64, caption) => vec![json!({"type": "image", "data": b64, "mimeType": "image/png"}), json!({"type": "text", "text": caption})],
+        Answer::Parts(p) => p,
+    }
 }
 
 fn ax_answer(o: ax::Outcome) -> Answer {
@@ -252,6 +280,15 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
     }
     if let Some(r) = mcp_net::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(|(t, v)| Answer::Text(t, v));
+    }
+    if let Some(r) = mcp_devices::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(Answer::Json);
+    }
+    if name == "batch" {
+        return mcp_actions::batch(a, &|n, args| call(n, args).map(parts_of), &|| phone_of(a, &cfg)).map(Answer::Parts);
+    }
+    if let Some(r) = mcp_actions::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(|t| Answer::Text(t, None));
     }
     if matches!(name, "phones_list" | "sim_status") {
         return Ok(Answer::Json(json!({"phones": instance::summaries(1000)})));
@@ -448,11 +485,8 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             return Ok(ax_answer(ax::tap(&inst, &target, hold, after)?));
         }
         "type" => {
-            if let Some(t) = a["target"].as_str() {
-                ax::tap(&inst, t, 80, ax::After::None)?;
-                ax::settle(&inst, std::time::Duration::from_millis(250), std::time::Duration::from_millis(2000));
-            }
-            let o = ax::type_text(&inst, a["text"].as_str().unwrap_or(""), a["clear"].as_bool().unwrap_or(false), a["submit"].as_bool().unwrap_or(false), a["keys"].as_bool().unwrap_or(false), after)?;
+            // a target is tapped, then the text waits for it to have the focus (x86sim_core::axact)
+            let o = x86sim_core::axact::type_into(&inst, a["target"].as_str(), a["text"].as_str().unwrap_or(""), a["clear"].as_bool().unwrap_or(false), a["submit"].as_bool().unwrap_or(false), a["keys"].as_bool().unwrap_or(false), after)?;
             return Ok(ax_answer(o));
         }
         "key" => return Ok(ax_answer(ax::key(&inst, a["key"].as_str().unwrap_or(""), after)?)),
@@ -558,6 +592,7 @@ fn main() {
                     Ok(Answer::Text(t, None)) => json!({"content": [{"type": "text", "text": t}]}),
                     Ok(Answer::Text(t, Some(v))) => json!({"content": [{"type": "text", "text": t}], "structuredContent": v}),
                     Ok(Answer::Image(b64, caption)) => json!({"content": [{"type": "image", "data": b64, "mimeType": "image/png"}, {"type": "text", "text": caption}]}),
+                    Ok(Answer::Parts(p)) => json!({"content": p}),
                     Err(e) => json!({"content": [{"type": "text", "text": format!("{e:#}")}], "isError": true}),
                 })
             }

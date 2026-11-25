@@ -3,14 +3,17 @@
 //! the egui launcher.
 pub mod aot;
 pub mod ax;
+pub mod axact;
 /// Accessibility Inspector: properties, element at a point, accessibility actions; the audit
 pub mod axaudit;
 pub mod axinspect;
 pub mod appcache;
 pub mod apps;
+pub mod appstate;
 pub mod desktop;
 pub mod dev;
 pub mod devapp;
+pub mod devdelete;
 pub mod discover;
 pub mod dyldcache;
 pub mod features;
@@ -25,6 +28,7 @@ pub mod keymap;
 pub mod logs;
 pub mod pool;
 pub mod profile;
+pub mod record;
 pub mod macho;
 /// Screenshots that point at elements: marks (outlines with refs), one element cropped
 pub mod marks;

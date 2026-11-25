@@ -480,6 +480,18 @@ static void h_helper_notify_get(GuestThread &t, u32 i) {
     t.set_x(0, 0);
 }
 
+// dyld_sim's halt (library not loaded, symbol not found, wrong platform, code signature): abort_with_payload(ns, code,
+// payload, size, reason, flags) through its syscall helpers, before libsystem (and its thunk's log line) is there. The
+// reason goes to this process's log first, as handlers.cpp h_abort_with does for libsystem's: the host shows it as why
+// the app died (tools/launcher/core/src/appstate.rs, app_logs).
+static void h_helper_abort(GuestThread &t, u32 i) {
+    const char *reason = (const char *)t.x(4);
+    logf("%s: namespace %lu code %#lx: %s (lr %#lx)", g_thunks[i].name.c_str(), (unsigned long)t.x(0), (unsigned long)t.x(1),
+         reason ? reason : "(null)", (unsigned long)t.x(30));
+    if (g_thunks[i].native) h_generic(t, i);
+    else abort();
+}
+
 static u64 build_syscall_helpers() {
     struct H { const char *native; Handler h; };
     static const H table[] = {
@@ -495,7 +507,7 @@ static u64 build_syscall_helpers() {
         {"opendir_fake", h_zero}, {"readdir_r", h_zero}, {"closedir", h_zero},  // version 3 (unused)
         {"cs_load_notifier", h_noop}, {"cs_unload_notifier", h_noop},
         {"proc_regionfilename", nullptr}, {"getpid", nullptr}, {"mach_port_insert_right", nullptr},
-        {"mach_port_allocate", nullptr}, {"mach_msg", nullptr}, {"abort_with_payload", nullptr},
+        {"mach_port_allocate", nullptr}, {"mach_msg", nullptr}, {"abort_with_payload", h_helper_abort},
         {"task_register_dyld_image_infos", nullptr}, {"task_unregister_dyld_image_infos", nullptr},
         {"task_get_dyld_image_infos", nullptr}, {"task_register_dyld_shared_cache_image_info", nullptr},
         {"task_register_dyld_set_dyld_state", nullptr}, {"task_register_dyld_get_process_state", nullptr},

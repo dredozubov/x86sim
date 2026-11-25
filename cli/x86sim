@@ -27,6 +27,10 @@ Devices
   device create --model "iPhone 17 Pro" [name]
                        new arm64 device of that model (var/device-a64-<name>); boot it with A64_DEVICE=<dir>. An Apple TV
                        or Apple Watch model takes the newest tvOS / watchOS runtime in runtimes/
+  device delete NAME [--stop] [--privileged]
+                       delete a device: its folder, state and run folders, prefix and overlay work folder, frame ring;
+                       --stop stops a running one first; --privileged removes the overlay's root-owned work folder
+                       through pkexec (else it is reported with the command; exit 3)
   runtime list [ios|tvos|watchos|all] | url B | fetch B
                        27.x simulator runtimes from Apple (no Mac / Apple ID): fetch downloads build B into runtimes/
   runtime delete B [--all] [--stop] [--yes] [--dry-run] [--json]
@@ -66,13 +70,28 @@ Agents (read the screen as text, act on elements; same core as the MCP server's 
   tap TARGET | long-press TARGET [--ms N]
                        touch an element (scrolled into view first if needed); answers with the screen after it settled
                        (--after diff|none). tap X Y with two numbers stays device pixels (below)
-  type TEXT [--clear] [--submit] [--keys]
+  type TEXT [--into TARGET] [--clear] [--submit] [--keys]
                        into the focused field as the software keyboard does (any characters); --submit and a newline in
-                       TEXT press the Return key (submits a field or web form, a new line in a text view); --keys: key presses
+                       TEXT press the Return key (submits a field or web form, a new line in a text view); --keys: key presses;
+                       --into: tap TARGET, wait until it has the focus, then type (an error if the text would land elsewhere)
+  fill TARGET=TEXT... [--submit | --submit-tap TARGET] [--append]
+                       a form in one call: each field (by its label, placeholder, the label beside it, @ref or id:) is
+                       scrolled into view, tapped, given the focus, emptied (not with --append) and typed into
+  drag FROM TO [--hold MS] [--ms MS]
+                       press FROM (a target or "X,Y" points), hold to lift (default 600 ms), move to TO, drop
+  set-value TARGET [VALUE]
+                       set a slider / switch / stepper / segmented control / picker wheel / date picker / adjustable
+                       to VALUE as a touch would (the app hears it); no VALUE: the control and the values it takes
   key NAME|COMBO       return tab escape delete up down ... or cmd+a, shift+tab (a number: a HID usage)
   scroll up|down|left|right [SCREENS] [--at TARGET] | scroll-to TARGET [--dir D] | swipe up|down|left|right|home|back
-  wait-for TARGET [--gone] [--timeout S]
-                       until it shows (or goes); wakes on new frames
+  wait-for TARGET [--gone] [--timeout S] [--value V ...]
+                       until it shows (or goes); wakes on new frames; with expect's conditions: until they hold
+  expect TARGET [--gone] [--label L] [--value V] [--contains T] [--enabled|--disabled] [--selected|--unselected]
+         [--focused|--unfocused] [--count N] [--timeout S]
+                       check the screen: PASS, or FAIL (exit 1) with what is there instead / the nearest by text
+  app-state [BUNDLEID]
+                       installed, running, pid(s), foreground / background / suspended, memory, CPU, uptime, last
+                       exit (launchd's line); no BUNDLEID: every running app
   press BUTTON | open URL
                        a hardware button / a URL, answering with the screen
   ax-inspect [TARGET | X Y] [--json]
@@ -263,7 +282,10 @@ num() { case $1 in ''|*[!0-9.-]*) return 1 ;; esac; }
 case $c in
 	help|-h|--help) usage ;;
 	wait) exec python3 "$L/framecheck.py" wait "${1:-home}" "${2:-300}" ;;
-	device) exec python3 "$L/arm64/device-a64.py" "$@" ;;
+	device)
+		# delete: core/src/devdelete.rs (shared with the MCP tool sim_delete)
+		if [ "${1:-}" = delete ]; then shift; ax device-delete "$@"; fi
+		exec python3 "$L/arm64/device-a64.py" "$@" ;;
 	runtime)
 		if [ "${1:-}" = delete ]; then
 			# core rtdelete.rs (shared with the launcher's Versions page and the MCP tool runtime_delete)
@@ -274,7 +296,7 @@ case $c in
 	view) cmd_view "$@" ;;
 	# marks / one element: the agent screenshot (x86sim-ax, points)
 	screenshot|shot) case " $* " in *" --marks"*|*" --target "*) ax screenshot "$@" ;; *) cmd_screenshot "$@" ;; esac ;;
-	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open) ax "$c" "$@" ;;
+	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill|drag|set-value|expect|app-state) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)
 		if [ $# -ge 1 ] && case $1 in -*) false ;; *) true ;; esac && [ "$c" = ax-audit ]; then

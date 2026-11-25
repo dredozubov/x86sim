@@ -34,11 +34,11 @@ build_exe() { build "$@" && chmod +x "$2"; }
 what=${*:-simshim simfb simhid}
 for w in $what; do case $w in
 simshim)
-	tar cf - -C "$X/host/simshim/compat" simshim.c simshim_net.c -C "$X/host/simshim/diag" oslogdiag.m diagpath.h |
+	tar cf - -C "$X/host/simshim/compat" simshim.c simshim_net.c simshim_abort.c -C "$X/host/simshim/diag" oslogdiag.m diagpath.h |
 	build a64sh "$X/host/simshim/arm64$SUF/compat/libsimshim.dylib" "
 		cc() { $CC -O1 -Wall -Wno-unused-variable -Wno-deprecated-declarations \"\$@\"; } &&
-		cc -c -o simshim.o simshim.c && cc -c -o simshim_net.o simshim_net.c && cc -c -DSIMSHIM_OSLOG -o oslog.o oslogdiag.m &&
-		cc -dynamiclib -framework IOKit -framework CoreFoundation -lobjc -lsqlite3 -Wl,-U,_BSPathExistsOnSystemPartition -o libsimshim.dylib simshim.o simshim_net.o oslog.o" ;;
+		cc -c -o simshim.o simshim.c && cc -c -o simshim_net.o simshim_net.c && cc -c -o abort.o simshim_abort.c && cc -c -DSIMSHIM_OSLOG -o oslog.o oslogdiag.m &&
+		cc -dynamiclib -framework IOKit -framework CoreFoundation -lobjc -lsqlite3 -Wl,-U,_BSPathExistsOnSystemPartition -o libsimshim.dylib simshim.o simshim_net.o oslog.o abort.o" ;;
 simnet)
 	# network capture for agents (net_capture / net_log / net_mock): libsimshim dlopens it only into third-party apps
 	# whose capture is on (docs/protocols/NET.md)
@@ -51,9 +51,9 @@ simax)
 	axsdk=; axweb="-framework WebKit"
 	case ${X86SIM_PLATFORM:-ios} in tvos) axweb= ;; watchos) axweb=; axsdk="SDK_WATCHOS=$X/sdks/WatchSimulator-xcode.sdk" ;;
 		xros) axsdk="SDK_XROS=$X/sdks/XRSimulator-xcode.sdk" ;; esac
-	tar cf - -C "$X/host/simax" simax.m simax_engines.m simax_unity.m simax_pixels.m | build a64ax "$X/host/simax/arm64$SUF/libsimax.dylib" "$axsdk $CC \
+	tar cf - -C "$X/host/simax" simax.m simax_engines.m simax_unity.m simax_pixels.m simax_actions.m simax_controls.m | build a64ax "$X/host/simax/arm64$SUF/libsimax.dylib" "$axsdk $CC \
 		-O1 -Wall -Wno-unused-function -Wno-deprecated-declarations -Wno-unguarded-availability-new -fobjc-arc -dynamiclib \
-		-framework Foundation -framework CoreGraphics -framework QuartzCore -framework UIKit $axweb -o libsimax.dylib simax.m simax_engines.m simax_unity.m simax_pixels.m" ;;
+		-framework Foundation -framework CoreGraphics -framework QuartzCore -framework UIKit $axweb -o libsimax.dylib simax.m simax_engines.m simax_unity.m simax_pixels.m simax_actions.m simax_controls.m" ;;
 simaudio)
 	# Speed 27: the audio devices (CoreAudio HAL stand-in, host/simaudio) for arm64 processes:
 	# flat namespace + dynamic lookup, CoreAudio references weak (inert in processes without CoreAudio)

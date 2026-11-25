@@ -57,7 +57,10 @@ says whether that screen is `UIScreen.mainScreen` and `display` gives its displa
 |---|---|---|
 | `info` | | the fields above; SpringBoard's also `locked` (`SBLockScreenManager isUILocked`) and `suspended` (pids FrontBoard suspended) |
 | `tree` | `fg` (only walk when on screen), `all` (include elements scrolled out of view), `noax`, `timeout` | plus `elements`, `focus` (oid of the first responder), `focus_item` (the focus engine's item: `oid`, `class`, `frame`, `label`; tvOS's remote focus), `animating`, `web_pending`, `pixels` (below) |
-| `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `value` |
+| `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `oid` (the field), `value` |
+| `focus` | | the first responder (see below) |
+| `control` | `oid` | what control the element is and the values it takes (see below) |
+| `setvalue` | `oid`, `value` (text, or a list: one per picker wheel), `quiet` | sets it as a touch would (see below) |
 | `scroll` | `oid` | `ok` (`accessibilityScrollToVisible`, else `scrollRectToVisible` in the nearest scroll view) |
 | `activate` | `oid`, `tap` | `ok` (`accessibilityActivate`); with `tap`, when that answers NO, a tap made in the process at the element's activation point (a UITouch with an IOHIDEvent digitizer event through `sendEvent:`): `tapped`, `at` |
 | `scrollby` | `dir` (up down left right), `amount` (part of the view) | scrolls the largest visible scroll view that scrolls that way: `ok`, `moved`, `view` |
@@ -86,6 +89,39 @@ plain view provides its subviews. Hidden views and `accessibilityElementsHidden`
 Roles: `textfield`, `searchfield`, `switch`, `adjustable`, `key`, `tabbar`, `link`, `button`, `heading`,
 `image`, `text`, `icon` (SpringBoard), `node` (a game's object: Engines below), `element` (anything else with a label,
 value or identifier), and the web roles below.
+
+### `focus`: who has the keyboard
+
+`focus` (simax_actions.m) answers the process's first responder without a walk: `focused` (false: none, nothing
+else), `oid`, `class`, `text_input` (it takes typed text: `UIKeyInput`), `kind` (`textfield`, `securefield`,
+`searchfield`, `textview`, `web` (WebKit's content view: the page's `document.activeElement` is the field),
+`keyinput`, `other`), `frame` (screen points), `inside` (the oids of the views it is in, nearest first, up to 40),
+and for a native field `value` (a secure field's as dots), `placeholder`, `label`, `id`. The host's `type` with a
+target (core/src/axact.rs) taps the element, then asks this on every new frame until the field is the element, inside
+it, or under its centre (a SwiftUI node over its UITextField); a web field: until the DOM's focus is on it.
+
+### `control` and `setvalue`: sliders, switches, pickers
+
+`control` (simax_controls.m) finds the UIKit control an element stands for: the element itself, a view it is inside
+(a segment of a UISegmentedControl; a date picker's own wheels stand for the UIDatePicker), or, for a SwiftUI node, the
+control under it (the same place, its centre on it, or inside it: a Toggle's node is its whole row). It answers
+`kind` (`slider`, `switch`, `stepper`, `segmented`, `picker`, `datepicker`, `adjustable` for any other element with
+the adjustable trait, `none`), `class` and the values: `min` / `max` / `value` (slider; a SwiftUI slider's UISlider
+runs 0 to 1 whatever the app's range), `min` / `max` / `step` / `value` (stepper), `values` and `value` (segment titles;
+switch on / off), `mode` / `value` / `min` / `max` (date picker: ISO dates, `HH:mm` for times), `components` (each
+wheel's row titles), `titles` (false: the rows draw no text simax can read, SwiftUI's wheels) and `value`.
+
+`setvalue` sets it the way a touch leaves it: the control's value, then its ValueChanged actions (a UIKit target, a
+SwiftUI binding), one step at a time for a stepper, and for a picker `selectRow:inComponent:` followed by the
+delegate's `pickerView:didSelectRow:inComponent:` (what the end of a scroll calls). Values: a number or a percentage
+of the range (`"50%"`) for a slider; `on` / `off` for a switch; a number, or `+N` / `-N` steps, for a stepper (SwiftUI's
+Stepper keeps its count in the app: absolute values answer an error with `swiftui`, and the host steps toward the
+number the stepper's label shows); a segment's title (or `#index`); per picker wheel a row's title, exact, prefix or
+part of it (`""` keeps a wheel); for a date picker `2026-05-01`, `2026-05-01T14:30` or `14:30`; for an adjustable
+element the value it should read (increments / decrements until it does). A picker without titles takes `#row` on the
+wheel the element is (`quiet`: the delegate is not told, while the host reads each row's text from the wheel's
+accessibility value); text answers an error with `titles: false`, `rows`, `row`, `component`. The answer is the
+control's `kind` and `value` afterwards and `was`, or an `error` naming what the control takes.
 
 ### The inspector (`tree` with `full`)
 

@@ -4,6 +4,7 @@
 # build/mac-env.sh: build/linux-bin's xcrun/codesign map to build/linux-swiftc.sh + ld64.lld and the SDKs in sdks/.
 # An app's own Info.plist keys (usage descriptions...): tests/apps/<name>/Info.keys, plist XML pasted into the dict.
 # X86SIM_PLATFORM=tvos|watchos|xros: for that simulator, into <name>-<platform>.app (tests/apps/platform.sh).
+# <name>/swiftc.flags: extra swiftc options for that app (x86dyldfail: an import no library exports).
 set -eo pipefail
 X86SIM_ROOT=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 . "$X86SIM_ROOT/build/mac-env.sh"
@@ -15,7 +16,7 @@ for n in $names; do
 	tar cf - -C "$A" common.swift "$n" | mac "set -e; W=\$(mktemp -d /tmp/x86app.XXXXXX); cd \$W; tar xf -
 		APP=$n$PSUF.app; mkdir -p \$APP
 		nice xcrun -sdk $PSDK swiftc -target ${PTRIPLE}27.0-simulator -Onone \$( [ -f $n/main.swift ] || echo -parse-as-library ) \
-			-o \$APP/$n common.swift $n/*.swift >&2
+			\$(cat $n/swiftc.flags 2>/dev/null) -o \$APP/$n common.swift $n/*.swift >&2
 		cat > \$APP/Info.plist <<PL
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
