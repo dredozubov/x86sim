@@ -61,6 +61,9 @@ pub fn start(inst: &Instance, path: &Path, max_secs: f64, codec: &str) -> Result
     let out = std::fs::File::create(&log)?;
     let mut cmd = Command::new(repo_root().join("cli/x86sim"));
     cmd.arg("io").arg(&inst.dir).args(["recordVideo", "--codec", codec, "--secs", &max_secs.to_string()]).arg(&path);
+    // this device's frame ring, whatever the caller's environment says: an MCP server started from a shell that
+    // sourced cli/lib/config.sh inherits the configured device's SIMFB_RING_LINUX, and `x86sim io` keeps a given one
+    cmd.env("SIMFB_RING_LINUX", crate::ax::screen_ring(inst));
     cmd.current_dir(repo_root()).stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
     // its own session: an MCP server that exits does not take it along (it ends at max_secs, or at stop)
     use std::os::unix::process::CommandExt;

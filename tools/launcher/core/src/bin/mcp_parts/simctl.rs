@@ -47,6 +47,9 @@ fn x86sim(dev: &std::path::Path, cmd: &str, args: &[String]) -> anyhow::Result<S
         .arg(dev)
         .args(args)
         .current_dir(repo_root())
+        // the named device's frame ring (cli/x86sim picks it from `dev`), not one this server inherited from a shell
+        // that sourced cli/lib/config.sh (io screenshot / recordVideo read the configured device's then)
+        .env_remove("SIMFB_RING_LINUX")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
