@@ -175,6 +175,24 @@ speedscope / gecko file. Samples count CPU time only (an idle app gives no sampl
 Times are of translated x86-64 code: trust the ranking, not absolute numbers. `[translator...]` frames are the
 translator's own time, `[native] name` a library function run natively.
 
+## 6d. An app's network traffic
+
+```sh
+x86sim net qa capture com.example.myapp on --relaunch   # record from its launch (URLSession; other stacks: connections)
+x86sim net qa log --filter "status:4xx"                 # #id METHOD status URL duration size, one per request
+x86sim net qa show 4321.7                               # headers both ways, bodies, timings (dns/connect/tls/first byte)
+x86sim net qa mock add /api/login --method POST --status 500 --body '{"error":"down"}'
+x86sim net qa mock add /feed --fail offline             # or timeout, dns, refused, reset; --latency MS for slow
+x86sim net qa mock clear
+```
+
+MCP: `net_capture {app, relaunch: true}`, then `net_log {filter?, since?, follow_s?}`, `net_request {id}`,
+`net_mock {url, method?, status?, body?|body_file?, fail?, latency_ms?}` / `{action: "clear"}`. HTTPS is seen in the
+clear (the hook is a URLProtocol in the app, no proxy). Mocks apply at once to apps with capture on, so capture first.
+Third-party apps only; background-session transfers are not seen. Filters: words in the line, `status:5xx`,
+`method:POST`, `error`, `mock`, `kind:conn`, `-word` to exclude. `since` an id from the last `net_log` gives only
+newer requests.
+
 ## 7. Build, run, repeat (omarchy-apple-dev)
 
 ```sh
@@ -265,7 +283,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 ## MCP
 
 The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `wait_for`, `screenshot`,
-`app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
+`app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start`, `net_log` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 
 ```sh

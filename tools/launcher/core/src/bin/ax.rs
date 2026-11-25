@@ -4,6 +4,9 @@ use anyhow::{anyhow, bail, Result};
 use std::time::Duration;
 use x86sim_core::ax::{self, After, SnapOpts};
 use x86sim_core::instance;
+// ---- network capture (x86sim net): its own option parsing ----
+#[path = "ax_parts/net.rs"]
+mod ax_net;
 
 const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
   snapshot [--json] [--all] [--diff]   the screen as text: one element per line with a ref (@e3), role, label, value,
@@ -37,6 +40,7 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
   action NAME [TARGET] [--dir up|down|left|right|next|previous] [--name CUSTOM]
                                        an accessibility action: activate increment decrement scroll escape magic_tap
                                        custom
+{NET}
 Actions print what they did and the screen after it (--after diff: only changes, --after none: nothing; --json).
 The phone: --phone NAME (name, folder or path), else $X86SIM_DEVICE, else the only running phone.";
 
@@ -65,6 +69,13 @@ fn main() {
 
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // net: options of its own (x86sim net ...)
+    let first = if matches!(args.first().map(String::as_str), Some("--phone" | "-p")) { 2 } else { 0 };
+    if args.get(first).map(String::as_str) == Some("net") {
+        let phone = (first == 2).then(|| args[1].clone());
+        let rest = args.split_off(first + 1);
+        return ax_net::run(&pick(phone.as_deref())?, rest);
+    }
     let mut flag = |name: &str| -> bool {
         if let Some(i) = args.iter().position(|a| a == name) {
             args.remove(i);
@@ -101,7 +112,7 @@ fn run() -> Result<()> {
     let rules = opt("--rules");
     let aname = opt("--name");
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-        println!("{USAGE}");
+        println!("{}", USAGE.replace("{NET}", ax_net::USAGE));
         return Ok(());
     }
     let inst = pick(phone.as_deref())?;

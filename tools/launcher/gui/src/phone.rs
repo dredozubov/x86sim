@@ -790,6 +790,14 @@ impl App {
             hline(ui);
         }
 
+        // ---- Network: an app's requests (net_ui.rs; iPhone and iPad)
+        if inst.platform == "ios" {
+            if self.fold_section(ui, "net", "Network", "", "") {
+                crate::net_ui::section(ui, inst, phase == Phase::Running);
+            }
+            hline(ui);
+        }
+
         // ---- Performance
         // no summary: memory and CPU are the tiles at the top
         if self.fold_section(ui, "perf", "Performance", "", "") {
@@ -811,7 +819,7 @@ impl App {
 
     fn fold_section(&mut self, ui: &mut egui::Ui, key: &'static str, title_text: &str, summary: &str, tip: &str) -> bool {
         let open = self.open.contains(key);
-        let hint = match key { "features" => "f", "logs" => "l", "perf" => "p", "share" | "ax" | "web" => "", _ => "a" };
+        let hint = match key { "features" => "f", "logs" => "l", "perf" => "p", "share" | "ax" | "web" | "net" => "", _ => "a" };
         if fold(ui, title_text, summary, tip, hint, open) != open {
             if open {
                 self.open.remove(key);

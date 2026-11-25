@@ -627,6 +627,8 @@ function phoneView(id) {
     micBtn = control ? btn("", canMic ? "Your microphone into the device (asks the browser for it)" : "The microphone needs HTTPS (or localhost) and a browser with AudioWorklet", () => (mic ? micStop() : micStart())) : null;
     if (micBtn && !canMic) micBtn.disabled = true;
     if (pan) parts.push(...[pan.features, pan.logs].filter(Boolean));
+    // the Network section (netpanel.js): an app's requests, control links only
+    if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast }); parts.push(netp.panel); }
     if (axi) parts.push(axi.panel());
     if (pan) parts.push(...[pan.perf, pan.simulate].filter(Boolean));
     parts.push(group("Sound", soundBtn, volIn, micBtn));
@@ -676,7 +678,7 @@ function phoneView(id) {
   }
   // the title bar: Devices / name, model and OS, the state, Start or Stop; the tiles: memory, CPU, uptime (the
   // dashboard's numbers, polled)
-  let lastHead = "", pan = null, needsRestart = false, pointerMode = false;
+  let lastHead = "", pan = null, netp = null, needsRestart = false, pointerMode = false;
   function head() {
     const d = info || {};
     const state = d.state || (lastState.running === false ? "off" : lastState.running ? "running" : "");
@@ -982,6 +984,7 @@ function phoneView(id) {
     alive = false;
     if (axi) axi.close();
     if (pan) pan.close();
+    if (netp) netp.close();
     if (pointerMode) send({ t: "pointer", a: "remove" });
     releaseAll();
     if (mic) micStop();

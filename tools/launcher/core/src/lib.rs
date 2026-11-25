@@ -26,6 +26,8 @@ pub mod logs;
 pub mod pool;
 pub mod profile;
 pub mod macho;
+/// Network capture of native apps (host/simnet): records, capture on / off, mocks
+pub mod net;
 pub mod ring;
 /// Web Inspector: Safari and WKWebView pages over webinspectord (RWI)
 pub mod rwi;
