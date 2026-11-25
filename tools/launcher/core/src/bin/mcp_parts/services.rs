@@ -47,7 +47,12 @@ fn x86sim(dev: &std::path::Path, cmd: &str, args: &[String], input: Option<&[u8]
     let out = crate::mcp_simctl::wait_bounded(child, std::time::Duration::from_secs(180)).map_err(|e| anyhow::anyhow!("x86sim {cmd}: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    anyhow::ensure!(out.status.success(), "x86sim {cmd}: {}", if err.is_empty() { text } else { err });
+    if !out.status.success() {
+        let msg = if err.is_empty() { text } else { err };
+        // simctl.py's errors already start with "x86sim <cmd>:"
+        let prefix = format!("x86sim {cmd}:");
+        anyhow::bail!("{}", if msg.starts_with(&prefix) { msg } else { format!("{prefix} {msg}") });
+    }
     Ok(text)
 }
 
