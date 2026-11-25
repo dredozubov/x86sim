@@ -291,7 +291,7 @@ MIN="com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.appl
 # never answer it for a simctl-installed app.
 UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd com.apple.SpringBoard com.apple.sleepd com.apple.TextInput.kbd com.apple.FileCoordination
 	com.apple.usernotificationsd com.apple.InputUI com.apple.assistantd com.apple.assetsd com.apple.geod com.apple.navd com.apple.Maps.mapssyncd
-	com.apple.campo com.apple.FileProvider com.apple.DesktopServicesHelper com.apple.PosterBoard com.apple.financed
+	com.apple.campo com.apple.FileProvider com.apple.DesktopServicesHelper com.apple.revisiond com.apple.PosterBoard com.apple.financed
 	com.apple.passd com.apple.finhealthd com.apple.healthd com.apple.healthappd com.apple.medialibraryd
 	com.apple.StatusKitAgent com.apple.mobileassetd com.apple.assetsubscriptiond com.apple.corespeechd com.apple.sirittsd
 	com.apple.siriinferenced com.apple.siriknowledged com.apple.siriactionsd com.apple.searchd com.apple.corespotlightservice
@@ -314,7 +314,9 @@ FULLUI="com.apple.chronod"
 # FileProvider (Speed 16, on demand: started when Files opens): fileproviderd + the sim2host stand-in (host/fpsim2host) give Files its Browse locations (iCloud Drive, On My iPhone, Recently Deleted). Without them Files only
 # showed Recents. DesktopServicesHelper (Speed 17, on demand): Files lists On My iPhone (the LocalStorage domain, no
 # extension in iOS 27) through DesktopServices, whose com.apple.DesktopServicesHelper.FileService does the file
-# operations. Without it the folder stayed "Loading" and New Folder did nothing.
+# operations. Without it the folder stayed "Loading" and New Folder did nothing. revisiond (GenerationalStorage, on
+# demand: started when FileProviderResolver / GSLibrary resolves a "did=" bookmark): tracks document IDs -> file IDs;
+# without it bookmark resolution for Files / UIDocumentPicker ("On My iPhone") fails FP -1005 / Resolver -1012.
 # sdkcov P5: nisimhost (on demand: an NISession's first lookup) stands in for the Mac's CoreSimulator Nearby Interaction
 # service (host/nisimhost): Apple's simulators have no nearbyd, an NISession checks its discovery token in with
 # com.apple.CoreSimulator.NearbyInteraction on the host. Without it NISession.discoveryToken stayed nil where Apple's
@@ -445,7 +447,7 @@ XR_UI="com.apple.installcoordinationd com.apple.backboardd com.apple.SurfBoard c
 	com.apple.CoreAuthentication.daemon com.apple.storekitd com.apple.quicklook.ThumbnailsAgent com.apple.midiserver-sim
 	com.apple.pasteboard.pasted com.apple.wcd com.apple.voiced com.apple.accessibility.axassetsd
 	com.apple.ctkd com.apple.syncdefaultsd com.apple.accountsd com.apple.amsaccountsd
-	com.apple.locationd com.apple.FileProvider com.apple.devicemanagementclient.managedappsd
+	com.apple.locationd com.apple.FileProvider com.apple.revisiond com.apple.devicemanagementclient.managedappsd
 	com.apple.GameController.gamecontrollerd com.apple.LocalAuthenticationUIService
 	com.apple.devicecheckd com.apple.AuthenticationServicesCore.AuthenticationServicesAgent
 	com.apple.contactsd com.apple.calaccessd com.apple.remindd com.apple.assetsd com.apple.mediaremoted
