@@ -133,6 +133,9 @@ visionOS: as on Apple's simulator the model reads available and generation is re
 
 ## Simulator-side binaries
 
+Everything builds on Linux (AGENTS.md); `docs/LINUX-BUILD.md` lists every committed binary and generated file, where
+it was made and how it rebuilds here.
+
 The Mach-O files in `host/` and `tests/` (`simhost`, `arm64host`, `SimFramebuffer.framework`, `SimulatorHID.framework`,
 `libsimshim.dylib`, `libsimaudio.dylib`, `iosurfaced`, `metalhostd`, `fpsim2host`, `netconfig`, `openurl`, `mtlprobe`,
 `iosprobe`, the probes, diagnostic shims and sample apps) are our own code and are committed, so nothing needs building
