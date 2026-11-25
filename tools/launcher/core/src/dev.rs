@@ -807,7 +807,9 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
     let t = triple(&o.platform);
     say(&format!("== build {} for {t} ({})", p.name, if o.release { "release" } else { "debug" }));
     let mut c = command("bash");
-    c.arg(fork_dir().join("ship.sh")).arg("--simulator").current_dir(&p.dir).env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
+    // a Kotlin Multiplatform app (xtool.env: KMP_GRADLE_ROOT) builds its shared framework first: kmp/build-app.sh
+    c.arg(crate::devkmp::sim_build_script(&p.dir)).arg("--simulator").current_dir(&p.dir);
+    c.env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
     let mut app_line = None;
     let rc = stream(c, &mut |l: &str| {
         if let Some(f) = log.as_mut() {

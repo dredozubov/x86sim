@@ -702,6 +702,9 @@ x86sim dev device | ship | ship-mac | convert | auth   # real iPhones, App Store
 - **Build** Swift, SwiftUI, Objective-C, C and C++ apps with Swift and xtool, along with Flutter and Kotlin
   Multiplatform, as simulator builds for x86Sim (`ship.sh --simulator`) or device builds for an iPhone. Linux versions
   of `actool`, `ibtool`, `momc` and `xcstringstool` are included, and Xcode projects can be converted.
+- **Kotlin Multiplatform**: an app whose `xtool.env` names its Gradle build (`KMP_GRADLE_ROOT`) builds with
+  `kmp/build-app.sh` (Gradle, Kotlin/Native's link for `ios_simulator_arm64`, the app): `x86sim dev run` works on it
+  as on any xtool app (`tests/dev/kmp_e2e.py`: a Compose Multiplatform counter on a phone).
 - **Run on a device**: `device-run.sh` (`x86sim dev device`) pairs an iPhone, installs and launches the app, attaches
   LLDB, streams its console and symbolicates crash reports.
 - **Publish**: `ship.sh` (`x86sim dev ship`) builds a release `.ipa`, creates certificates and profiles, signs it and
