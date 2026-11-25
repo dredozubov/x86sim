@@ -72,7 +72,7 @@ pub fn darling_bin() -> PathBuf {
 pub fn darling_state() -> DarlingState {
     let bin = darling_bin();
     let Ok(md) = std::fs::metadata(&bin) else { return DarlingState::Missing };
-    if !userns() && (md.uid() != 0 || md.mode() & 0o4000 == 0) {
+    if !userns() && !nonroot() && (md.uid() != 0 || md.mode() & 0o4000 == 0) {
         return DarlingState::NotSetuid;
     }
     if let Ok(want) = std::env::var("X86SIM_DARLING_ID") {
@@ -87,6 +87,11 @@ pub fn darling_state() -> DarlingState {
 /// Darling runs without root, through a user namespace (the AppImage's userns mode, build/release/darling-userns.sh)
 pub fn userns() -> bool {
     repo_root().join("darling-prefix/.x86sim-userns").exists()
+}
+
+/// Darling runs without root and without namespaces (the AppImage's nonroot mode, build/release/darling-nonroot.sh)
+pub fn nonroot() -> bool {
+    repo_root().join("darling-prefix/.x86sim-nonroot").exists()
 }
 
 /// The command the privileged step runs (shown to the user, also for running it by hand with sudo)
@@ -254,6 +259,7 @@ pub fn checks() -> Vec<Check> {
     // the privileged step
     v.push(match darling_state() {
         DarlingState::Ready if userns() => check("Darling", Level::Ok, "runs without root (user namespace)", ""),
+        DarlingState::Ready if nonroot() => check("Darling", Level::Ok, "runs without root or namespaces (nonroot mode: each device's prefix is a copy)", ""),
         DarlingState::Ready => check("Darling", Level::Ok, format!("installed ({})", darling_bin().display()), ""),
         DarlingState::Missing => check("Darling", Level::Fail, "not installed yet", "Install it below (asks for your password once)."),
         DarlingState::NotSetuid => check("Darling", Level::Fail, "bin/darling is not setuid root", "Install it below (asks for your password once)."),

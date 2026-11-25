@@ -70,7 +70,7 @@ DID=$(cd "$S/darling" && find . -type f -o -type l | LC_ALL=C sort | while read 
 	if [ -L "$f" ]; then echo "$f -> $(readlink "$f")"; else echo "$f $(stat -c %a "$f") $(sha256sum < "$f" | cut -c1-16)"; fi
 done | sha256sum | cut -c1-16)
 echo "$DID" > "$S/DARLING_ID"
-cp "$X/build/release/install-helper.sh" "$X/build/release/darling-userns.sh" "$S/"
+cp "$X/build/release/install-helper.sh" "$X/build/release/darling-userns.sh" "$X/build/release/darling-nonroot.sh" "$S/"
 echo "  darling id $DID, $(du -sh "$S/darling" | cut -f1)"
 
 echo "== tools"
