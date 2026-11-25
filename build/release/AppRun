@@ -54,8 +54,8 @@ done
 # "userns" = no root at all, through an unprivileged user namespace (darling-userns.sh); "nonroot" = no root and no
 # namespaces (darling-nonroot.sh: Darling's DARLING_NONROOT mode, each prefix a copy of the system image).
 # X86SIM_DARLING_MODE picks one; auto: system when this build is installed there, else userns when the kernel allows
-# it, else nonroot in a container or where nothing could install it as root (no pkexec, no sudo), else system (the
-# wizard then asks to install).
+# it, else nonroot in a container (which has a PID namespace of its own: guests see small pids, as XNU's are; on a bare
+# host they would get the host's, up to 4194304), else system (the wizard then asks to install).
 DID=$(cat "$S/DARLING_ID")
 mode=${X86SIM_DARLING_MODE:-auto}
 if [ "$mode" = auto ]; then
@@ -63,7 +63,7 @@ if [ "$mode" = auto ]; then
 		mode=system
 	elif unshare -r -m true 2>/dev/null; then
 		mode=userns
-	elif [ -e /run/.containerenv ] || [ -e /.dockerenv ] || { ! command -v pkexec > /dev/null && ! command -v sudo > /dev/null; }; then
+	elif [ -e /run/.containerenv ] || [ -e /.dockerenv ]; then
 		mode=nonroot
 	else
 		mode=system

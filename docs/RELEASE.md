@@ -102,8 +102,10 @@ Darling's `bin/darling` must be setuid root and its prefix is fixed; an AppImage
 - **nonroot (no root, no namespaces).** `darling-nonroot.sh` runs the AppImage's Darling tree with
   `DARLING_NONROOT=1`: the launcher takes its install prefix from its own path, each phone's prefix is a copy of the
   system image (~690 MB, updated in place at later starts) instead of an overlay, and the container shares the host's
-  process table. AppRun picks it when user namespaces are blocked and the system install is not an option: inside a
-  container (`/run/.containerenv`, `/.dockerenv`) or with neither `pkexec` nor `sudo`.
+  process table. AppRun picks it when user namespaces are blocked inside a container (`/run/.containerenv`,
+  `/.dockerenv`). Tested 2026-11-24: an iPhone 17 Pro (iOS 27.2) booted to the home screen and ran Settings (touches
+  work) in a bwrap sandbox standing in for a container: no user namespaces, a PID namespace of its own, the prefix on
+  overlayfs. Not tested on a bare host, where guests get the host's pids (above XNU's 99999; `ps` refuses them).
 
 Prefix filesystem: the kernel's overlayfs cannot take its upper layer on another overlay (a container's root file
 system) or a network file system and refuses with EINVAL. Darling's launcher then goes on by itself when nobody can
