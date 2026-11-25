@@ -307,6 +307,13 @@ def main():
         priv = os.path.join(tmp, "System/Library/PrivateFrameworks", n + ".framework", n + ".tbd")
         if not os.path.lexists(os.path.join(fw, n + ".tbd")) and os.path.exists(priv):
             os.symlink(os.path.relpath(priv, fw), os.path.join(fw, n + ".tbd"))
+    # a framework's Metal library (CoreImage.metallib: what `metal -framework CoreImage` links stitchable kernels
+    # against), as Xcode's SDK has it: the runtime's copy is the same file
+    for lib in glob.glob(os.path.join(rt, "RuntimeRoot/System/Library/Frameworks/*.framework/*.metallib")):
+        fw = os.path.basename(os.path.dirname(lib))
+        if os.path.basename(lib) == fw[:-len(".framework")] + ".metallib" and \
+                os.path.isdir(os.path.join(tmp, "System/Library/Frameworks", fw)):
+            shutil.copy2(lib, os.path.join(tmp, "System/Library/Frameworks", fw))
     settings = {
         "CanonicalName": f"{canon}{ver}", "DisplayName": f"Simulator - {disp} {ver} (x86Sim substitute)",
         "Version": ver, "MaximumDeploymentTarget": f"{ver}.99", "DefaultDeploymentTarget": ver, "IsBaseSDK": "YES",
