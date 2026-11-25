@@ -141,8 +141,7 @@ The Mach-O files in `host/` and `tests/` (`simhost`, `arm64host`, `SimFramebuffe
 `iosprobe`, the probes, diagnostic shims and sample apps) are our own code and are committed, so nothing needs building
 to run. To rebuild them on Linux, put the SDKs in `sdks/` (gitignored, never committed), then run the usual scripts,
 e.g. `make mac` and `build/mac-build-arm64-shims.sh`: with `sdks/` present they build locally (`build/linux-env.sh`:
-clang + ld64.lld, `build/linux-swiftc.sh`). `X86SIM_BUILD=mac` with `X86SIM_MAC=user@mac` builds on a Mac over ssh
-instead. Two ways to fill `sdks/`:
+clang + ld64.lld, `build/linux-swiftc.sh`). Two ways to fill `sdks/`:
 
 - **`make sdks`: no Mac, no Xcode, no Apple ID.** `build/sdk/macos-sdk.py` downloads `MacOSX.sdk` from Apple's public
   software-update CDN (the Command Line Tools SDK package `xcode-select --install` fetches; about 70 MB).

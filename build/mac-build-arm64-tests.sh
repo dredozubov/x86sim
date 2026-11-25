@@ -1,6 +1,6 @@
 #!/bin/bash
-# Stage 0 (arm64 plan): build tests/arm64 on the Mac as plain arm64 iOS-simulator binaries, plus macOS arm64 baselines.
-# Usage on the Mac: build/mac-build-arm64-tests.sh <srcdir> <outdir>
+# Stage 0 (arm64 plan): build tests/arm64 as plain arm64 iOS-simulator binaries, plus macOS arm64 baselines (run on the
+# Mac for comparison). Usage: build/mac-build-arm64-tests.sh <srcdir> <outdir>
 set -euo pipefail
 # x86Sim: elsewhere (Linux) xcrun is build/linux-bin/xcrun: Linux clang + ld64.lld + sdks/ (build/linux-env.sh)
 [ "$(uname)" = Darwin ] || PATH="$(cd "$(dirname "$0")" && pwd)/linux-bin:$PATH"

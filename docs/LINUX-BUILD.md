@@ -36,7 +36,7 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 
 | Script | Used the Mac for | Fix |
 |---|---|---|
-| `build/mac-env.sh` (`X86SIM_BUILD=mac`) | building every simulator-side binary over ssh when `sdks/` was missing | the Mac path is removed: without `sdks/` the build says how to make them (`make sdks`) |
+| `build/mac-env.sh` (`X86SIM_BUILD=mac`) | building every simulator-side binary over ssh when `sdks/` was missing | done: the Mac path is removed; without `sdks/` the build says how to make them (`make sdks`) |
 | `build/linux-metal.sh` (`X86SIM_METAL_RECORD=1`) | compiling Metal shaders on a cache miss | done (F3) |
 | `tests/metal/shaders/build.sh`, `tests/apps/sdkcov/res/sdkcovCI.sh` | `xcrun metal` on the Mac | done (F3): run here |
 | `cli/libexec/xctest.py` (`x86sim test fetch-platform`) | copying Xcode's `<Platform>.platform` XCTest files from the Mac | F1: taken from Xcode.xip on Linux (the Darwin SDK `x86sim dev setup sdk --xip` builds) |

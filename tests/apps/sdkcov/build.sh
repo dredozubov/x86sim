@@ -2,7 +2,7 @@
 # x86Sim sdkcov: build the SDK coverage app for each platform's arm64 simulator with swiftc (no Xcode project) into
 # $X86SIM_SCRATCH/apps/sdkcov-<platform>.app (bundle id com.x86sim.test.sdkcov on all four).
 # Usage: tests/apps/sdkcov/build.sh [ios] [tvos] [watchos] [xros]   (default: all four)
-# Linux (build/linux-env.sh) or the Mac (X86SIM_BUILD=mac, over ssh), as tests/apps/build.sh.
+# Linux (build/linux-env.sh), as tests/apps/build.sh.
 # App extensions (sources in ext/, module sdkcov each, App Group group.com.x86sim.test.sdkcov): sdkcovWidget.appex
 # (PlugIns/, WidgetKit: iOS, watchOS, visionOS), sdkcovFileProvider.appex (PlugIns/, File Provider: iOS, visionOS) and
 # sdkcovExt.appex (Extensions/, ExtensionKit: iOS only) bound to the extension point the app defines in

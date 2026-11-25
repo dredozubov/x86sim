@@ -18,8 +18,7 @@ help:
 	@echo "                        SUDO_PASS from the environment or a sudo prompt)"
 	@echo "make sdks               sdks/MacOSX.sdk from Apple's public CDN + a substitute sdks/iPhoneSimulator.sdk built from"
 	@echo "                        the runtime in runtimes/ (no Mac, no Apple ID; build/sdk/, docs/DEVELOPMENT.md)"
-	@echo "make mac                build the simulator-side Mach-O binaries (host/*/arm64, simhost): on Linux with sdks/,"
-	@echo "                        else on \$$X86SIM_MAC (Xcode, ssh)"
+	@echo "make mac                build the simulator-side Mach-O binaries (host/*/arm64, simhost) on Linux with sdks/"
 	@echo "make mac-diag           build the optional arm64 diagnostic shims (host/simshim/diag/arm64)"
 
 submodules:
