@@ -915,6 +915,17 @@ GuestThread::GuestThread() {
     // Hybrid svc;ret (frontend): a thunk block ends in FastDispatchHint instead of PopRSBHint. With RSB off
     // (shared translations) PopRSBHint is ReturnFromRunCode, so every libsystem call left Run(). Opt-in for now.
     c.fuse_svc_ret = getenv("X86SIM_A64_FUSE_SVC") && atoi(getenv("X86SIM_A64_FUSE_SVC")) == 1;
+    // Translate 1 (2026-11-25): X86SIM_A64_SIDE_EXITS=N: a conditional branch is a side exit and the block goes on, up
+    // to N per block (dynarmic's TranslationOptions::max_side_exits; tests/arm64/sidexit.c). Off by default: on an
+    // iPhone 18 Pro boot without the cache, -14% blocks but more instructions translated twice (the code after an
+    // exit is reached on its own too): CPU and translation time within noise of off.
+    // Translate 2 (2026-11-25): tiered translation: a block runs in dynarmic's small A64 interpreter (a64_interp.cpp:
+    // integer code, loads/stores, branches) its first N times and is translated after that. Most of what a process
+    // translates while starting runs a few times. X86SIM_A64_INTERP=N (0: off). Default 2: an iPhone 18 Pro boot
+    // without the cache, SpringBoard's CPU 13.6 -> ~12.0 s (thresholds 1-3 alike, 8 worse: blocks that turn hot pay
+    // their interpreted runs first); with the AOT image almost nothing misses, so nothing changes there.
+    c.interpret_threshold = [] { const char *e = getenv("X86SIM_A64_INTERP"); return e ? (size_t)atoi(e) : (size_t)2; }();
+    c.max_side_exits = [] { const char *e = getenv("X86SIM_A64_SIDE_EXITS"); return e ? (size_t)atoi(e) : (size_t)0; }();
     // Speed 17: guarded direct links for import stubs (X86SIM_A64_STUBLINK=0: off)
     c.link_import_stubs = !(getenv("X86SIM_A64_STUBLINK") && atoi(getenv("X86SIM_A64_STUBLINK")) == 0);
     // Perf 9: forward block links skip the halt check (X86SIM_A64_HALT_ALL=1: every link checks; code-shaping, debug only)
@@ -1063,11 +1074,14 @@ static void profile_tick() {
     Dynarmic::A64::Jit::SharedStats st{};
     if (shared_translations() && g_shared_code) st = Dynarmic::A64::Jit::GetSharedStats(*g_shared_code);
     logf("profile: wall %.1fs cpu %.1fs translate %.1fs blocks %llu insns %llu code %.1f MB lookups %llu threads %d"
-         " | getblock %llu thunk %llu l0 %llu probe %llu lf %llu",
+         " | getblock %llu thunk %llu l0 %llu probe %llu lf %llu | fastmem faults %llu checked %llu | interp blocks %llu insns %llu unsupported %llu",
          (now - start) / 1e9, c.tv_sec + c.tv_nsec / 1e9, st.translate_ns / 1e9, (unsigned long long)st.blocks,
          (unsigned long long)st.guest_instructions, st.code_bytes / 1048576.0, (unsigned long long)st.lookups, g_live_threads.load(),
          (unsigned long long)st.getblock, (unsigned long long)st.thunk, (unsigned long long)st.l0_hits,
-         (unsigned long long)st.probe_hits, (unsigned long long)st.lf_hits);
+         (unsigned long long)st.probe_hits, (unsigned long long)st.lf_hits, (unsigned long long)st.fastmem_faults,
+         (unsigned long long)st.checked_retranslations, (unsigned long long)st.interp_blocks, (unsigned long long)st.interp_insns,
+         (unsigned long long)st.interp_unsupported);
+    if (const std::string bc = Dynarmic::A64::Jit::BlockCountHistogram(); !bc.empty()) logf("profile: %s", bc.c_str());
     std::string top;
     for (const auto &[n, pc] : Dynarmic::A64::Jit::TopThunkTargets(12)) {
         char b[48];

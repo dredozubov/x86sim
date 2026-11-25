@@ -9,6 +9,16 @@ set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
 set(DYNARMIC_FRONTENDS A64 CACHE STRING "" FORCE)
 set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
 set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+# ThinLTO across libarm64jit and dynarmic: dynarmic's translator makes millions of calls to tiny out-of-line IR helpers
+# (Value::GetType/IsImmediate, GetNumArgsOf, RegAlloc). Measured 2026-11-25 on an iPhone 18 Pro boot without the
+# translation cache: 22-31% less translation time per block in SpringBoard and backboardd. Emitted code is unchanged,
+# so AOT images stay valid. -DX86SIM_JIT_LTO=OFF builds without it.
+option(X86SIM_JIT_LTO "ThinLTO for libarm64jit + dynarmic" ON)
+find_program(X86SIM_LLD ld.lld)
+if(X86SIM_JIT_LTO AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND X86SIM_LLD)
+	add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-flto=thin>)
+	add_link_options(-flto=thin -fuse-ld=lld)
+endif()
 add_subdirectory(${DYNARMIC_SRC} dynarmic EXCLUDE_FROM_ALL)
 add_executable(a64hugecopy a64hugecopy.c)
 add_library(arm64jit SHARED host.cpp jit.cpp boundary.cpp handlers.cpp malloc.cpp objc.cpp gheap.cpp signals.cpp fp16.cpp stubdylib.cpp jitcache.cpp dyldsim.cpp guestlibc.cpp swiftconf.cpp swiftscan.cpp astc.cpp lzfse.cpp gdbstub.cpp prof.cpp callconv.S)
