@@ -31,6 +31,9 @@ mod mcp_services;
 // ---- agent actions, round 2 (feat/agent-tools-2 C/D): fill, ... ----
 #[path = "mcp_parts/actions.rs"]
 mod mcp_actions;
+// ---- devices and apps, round 2 (feat/agent-tools-2 D): sim_delete, ... ----
+#[path = "mcp_parts/devices.rs"]
+mod mcp_devices;
 
 fn tools() -> Value {
     let phone = json!({"type": "string", "description": "the device: its name (as in the hub, e.g. \"QA\"), folder (device-a64-qa) or path. Default: the only running device, else the configured one"});
@@ -153,6 +156,10 @@ fn tools() -> Value {
         v.iter_mut().for_each(mcp_actions::extend_wait_for);
         v.extend(mcp_actions::tools(&phone));
     }
+    // ---- devices and apps, round 2 ----
+    if let Value::Array(v) = &mut t {
+        v.extend(mcp_devices::tools(&phone));
+    }
     t
 }
 
@@ -261,6 +268,9 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
         return r.map(|(t, v)| Answer::Text(t, v));
     }
     if let Some(r) = mcp_services::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(Answer::Json);
+    }
+    if let Some(r) = mcp_devices::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(Answer::Json);
     }
     if name == "batch" {

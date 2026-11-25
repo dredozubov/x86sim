@@ -23,7 +23,12 @@ x86sim-aot sim status                         # every phone: model, OS, off/star
 x86sim device models                          # models; then: x86sim device create --model "iPhone 17 Pro" qa
 x86sim-aot --device qa sim start              # boots in the background (stop / restart likewise)
 x86sim --phone qa wait home 300               # returns once the home screen is drawn
+x86sim device delete qa --stop                # when done: folder, state, prefix, ring (MCP sim_delete stop=true)
 ```
+
+`device delete` leaves the Darling overlay's root-owned work folder (`a64prefix-qa.workdir`) and prints the `pkexec rm`
+that removes it; `--privileged` runs it (a password dialog for the person at the desktop). The default device is never
+deleted.
 
 Or take a booted one from a pool (someone ran `x86sim pool up N`):
 
@@ -288,7 +293,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `screenshot`,
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
 README.md lists them by group). Every tool takes `phone`.
 

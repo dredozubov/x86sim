@@ -27,6 +27,10 @@ Devices
   device create --model "iPhone 17 Pro" [name]
                        new arm64 device of that model (var/device-a64-<name>); boot it with A64_DEVICE=<dir>. An Apple TV
                        or Apple Watch model takes the newest tvOS / watchOS runtime in runtimes/
+  device delete NAME [--stop] [--privileged]
+                       delete a device: its folder, state and run folders, prefix and overlay work folder, frame ring;
+                       --stop stops a running one first; --privileged removes the overlay's root-owned work folder
+                       through pkexec (else it is reported with the command; exit 3)
   runtime list [ios|tvos|watchos|all] | url B | fetch B
                        27.x simulator runtimes from Apple (no Mac / Apple ID): fetch downloads build B into runtimes/
   runtime delete B [--all] [--stop] [--yes] [--dry-run] [--json]
@@ -265,7 +269,10 @@ num() { case $1 in ''|*[!0-9.-]*) return 1 ;; esac; }
 case $c in
 	help|-h|--help) usage ;;
 	wait) exec python3 "$L/framecheck.py" wait "${1:-home}" "${2:-300}" ;;
-	device) exec python3 "$L/arm64/device-a64.py" "$@" ;;
+	device)
+		# delete: core/src/devdelete.rs (shared with the MCP tool sim_delete)
+		if [ "${1:-}" = delete ]; then shift; ax device-delete "$@"; fi
+		exec python3 "$L/arm64/device-a64.py" "$@" ;;
 	runtime)
 		if [ "${1:-}" = delete ]; then
 			# core rtdelete.rs (shared with the launcher's Versions page and the MCP tool runtime_delete)

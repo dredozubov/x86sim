@@ -94,6 +94,8 @@ fn run() -> Result<()> {
     let submit = flag("--submit");
     let keys = flag("--keys");
     let append = flag("--append");
+    let stop = flag("--stop");
+    let privileged = flag("--privileged");
     let tri = |on: bool, off: bool| if on { Some(true) } else if off { Some(false) } else { None };
     let (en, dis) = (flag("--enabled"), flag("--disabled"));
     let (sel, unsel) = (flag("--selected"), flag("--unselected"));
@@ -125,6 +127,21 @@ fn run() -> Result<()> {
     let (xlabel, xvalue, xcontains, xcount) = (opt("--label"), opt("--value"), opt("--contains"), opt("--count"));
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
         println!("{USAGE}");
+        return Ok(());
+    }
+    // device-delete NAME [--stop] [--privileged] (cli/x86sim device delete): the device named, never a default one
+    if args[0] == "device-delete" {
+        let name = args.get(1).cloned().or(phone.clone()).ok_or_else(|| anyhow!("device delete NAME [--stop] [--privileged]"))?;
+        let inst = instance::find(&name).ok_or_else(|| anyhow!("no device {name:?} (x86sim device list)"))?;
+        let d = x86sim_core::devdelete::delete(&inst, stop, privileged)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&d)?);
+        } else {
+            print!("{}", d.text());
+        }
+        if !d.left.is_empty() {
+            std::process::exit(3);
+        }
         return Ok(());
     }
     let inst = pick(phone.as_deref())?;

@@ -12,6 +12,7 @@ pub mod apps;
 pub mod desktop;
 pub mod dev;
 pub mod devapp;
+pub mod devdelete;
 pub mod discover;
 pub mod dyldcache;
 pub mod features;
