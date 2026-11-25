@@ -189,6 +189,11 @@ Develop apps (omarchy-apple-dev, external/omarchy-apple-dev; `x86sim dev help` f
                        the package's XCTest / Swift Testing tests, built here and run on the device (x86sim test --spm)
   dev device | ship | ship-mac | convert | auth
                        real iPhones (device-run.sh), App Store / TestFlight (ship.sh), Xcode project conversion
+Apple Account (x86sim-account; `x86sim account help`; the launcher's Settings > Apple Account)
+  account login|logout|status
+                       one Apple ID sign-in (password + two-factor; the session in the keyring) for developer
+                       downloads
+
 Pool (devices kept booted for agents / CI; x86sim-pool, see `x86sim pool help`)
   pool up N [--model M] [--preset lean]   clone and boot N devices (memory permitting)
   pool take [--ttl S] [--reset none|apps|restart|erase] [--pid PID|--hold-parent] [--wait S]
@@ -357,6 +362,11 @@ case $c in
 	build) exec make -C "$X" "$@" ;;
 	dev)
 		b=$X/tools/launcher/target/release/x86sim-dev
+		[ -x "$b" ] || { echo "x86sim: $b not built (cd tools/launcher && cargo build --release)" >&2; exit 1; }
+		exec "$b" "$@" ;;
+	account)
+		# the Apple Account sign-in for Xcode downloads and signing (core account.rs; the launcher's Settings)
+		b=$X/tools/launcher/target/release/x86sim-account
 		[ -x "$b" ] || { echo "x86sim: $b not built (cd tools/launcher && cargo build --release)" >&2; exit 1; }
 		exec "$b" "$@" ;;
 	repos) exec "$L/repos.sh" "$@" ;;

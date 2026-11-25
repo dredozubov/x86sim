@@ -34,6 +34,10 @@ name = "x86sim-pool"
 path = "src/bin/pool.rs"
 
 [[bin]]
+name = "x86sim-account"
+path = "src/bin/account.rs"
+
+[[bin]]
 name = "x86sim-devapp"
 path = "src/bin/devapp.rs"
 
@@ -59,3 +63,8 @@ ocrs = { version = "0.14", default-features = false, features = ["onnx"] }
 rten = { version = "0.28", default-features = false, features = ["onnx_format"] }
 rten-imageproc = "0.28"
 sha2 = "0.10"
+# Apple Account sign-in (account.rs): SRP-6a with PBKDF2-SHA256 as Apple's sign-in wants, base64 for its JSON (HTTP
+# stays curl)
+num-bigint = "0.4"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+base64 = "0.22"

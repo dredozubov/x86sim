@@ -910,6 +910,8 @@ impl App {
             });
         });
         ui.add_space(S5);
+        self.account_section(ui);
+        ui.add_space(S5);
         save |= self.update_settings(ui);
         if save {
             let _ = host::save_hub(&self.hub);

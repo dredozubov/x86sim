@@ -3,6 +3,7 @@
 //! pre-translation (AOT) and settings. Logic lives in x86sim-core; the GUI repaints only when a frame or a status
 //! changes.
 /// Accessibility Inspector: overlay, properties, actions, audit
+mod account_ui;
 mod axinspect_ui;
 mod develop;
 mod devctl_ui;
@@ -146,6 +147,7 @@ pub struct App {
     pub last_slow: Instant,
     pub setup: setup::Setup,
     pub develop: develop::Develop,
+    pub account: account_ui::AccountUi,
     pub setup_checking: bool,
     pub ctx: egui::Context,
     /// the `?` overlay
@@ -283,6 +285,7 @@ impl App {
             last_slow: Instant::now() - Duration::from_secs(60),
             setup: setup::Setup::default(),
             develop: develop::Develop::default(),
+            account: account_ui::AccountUi::default(),
             setup_checking: false,
             ctx: cc.egui_ctx.clone(),
             help: false,

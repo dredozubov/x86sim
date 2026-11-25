@@ -1,6 +1,7 @@
 //! x86Sim launcher core: the chunked AOT image (static discovery, incremental builds driven through libarm64jit's
 //! builder), per-device feature toggles and sim control. Shared by the `x86sim-aot` CLI, the `x86sim-mcp` server and
 //! the egui launcher.
+pub mod account;
 pub mod aot;
 pub mod ax;
 /// Accessibility Inspector: properties, element at a point, accessibility actions; the audit
