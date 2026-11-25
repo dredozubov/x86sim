@@ -84,8 +84,8 @@ plain view provides its subviews. Hidden views and `accessibilityElementsHidden`
 `accessibilityViewIsModal` hides its siblings. Off-screen elements are dropped unless `all` is set.
 
 Roles: `textfield`, `searchfield`, `switch`, `adjustable`, `key`, `tabbar`, `link`, `button`, `heading`,
-`image`, `text`, `icon` (SpringBoard), `element` (anything else with a label, value or identifier), and the web
-roles below.
+`image`, `text`, `icon` (SpringBoard), `node` (a game's object: Engines below), `element` (anything else with a label,
+value or identifier), and the web roles below.
 
 ### The inspector (`tree` with `full`)
 
@@ -136,6 +136,31 @@ the content box and clipped to it. Elements of a hidden iframe, or of one that c
 
 Web content gets about 80% of the request's `timeout`. Frames that have not answered by then are left out and
 counted in `web_pending`, so a busy WebContent process does not cost the whole snapshot.
+
+## Engines
+
+Content UIKit's accessibility does not describe: game views and engines that draw everything themselves. Their readers
+are `host/simax/simax_engines.m` (and one file per engine), hooked into the walk: a game view's elements are added where
+the view is, in the view's window, with frames in screen points as any other.
+
+### Game views: SpriteKit and SceneKit nodes
+
+`host/simax/simax_engines.m`. A game draws its world in one view, so UIKit's accessibility sees one view and nothing in
+it unless the developer gave nodes accessibility. In an `SKView` or `SCNView`, every *named* node that shows becomes an
+element besides what the view's own accessibility lists (SpriteKit lists label nodes' text by itself; a node listed
+that way is not listed twice): role `node`, `label` the node's name, `class` the node's class, `oid` the node.
+
+- SpriteKit: the presented scene's tree. Hidden nodes, nodes with alpha under 0.01 and their subtrees are skipped. The
+  frame is `calculateAccumulatedFrame` (the node with its children) taken from its parent's coordinates through the
+  scene to the view (`convertPoint:toNode:`, `convertPointToView:`), clipped to the view; a node outside the view is not
+  listed.
+- SceneKit: the root node's tree, by presentation node (where actions and animations put it now). A node's bounding box
+  (its subtree's) is projected corner by corner (`projectPoint:`); corners behind the camera are dropped and a node with
+  none in front is not listed, nor is one without geometry (a camera, a light). A node is covered, and not listed, when
+  a hit test through its center (`SCNHitTestSearchModeAll`, hidden nodes ignored) meets another node first and it only
+  later.
+- `key` is `sk:<name>#<n>` / `scn:<name>#<n>`, the n-th node of that name in the tree, so a moving node keeps its ref,
+  and `tap "Player"`, `wait_for "Enemy" gone=true` work on games built with names.
 
 ## Host
 
