@@ -6,6 +6,8 @@
            removed with --privileged, which needs a person at the password dialog)
   state    app_state of the test app (tests/apps/x86forms): not running, then launched (its pid, foreground,
            memory), sent to the background by Home, terminated (last exit SIGKILL); without bundle_id: running apps
+  abort    why an app died: dyld refusing x86dyldfail (a missing symbol) and x86forms calling abort_with_reason
+           (recorded by libsimshim) reach app_launch's error and app_state's last exit
   launch   app_launch of an app that exits at once (x86forms --exit-early, exit(3)) fails saying so; a good launch
            still answers its pid
 
@@ -127,6 +129,30 @@ class Run:
         self.check("launch: a good launch answers its pid", not err and re.search(r": \d+", text), "%.1f s: %s" % (dt, text[:200]))
         self.m.call("app_terminate", bundle_id=APP, after="none")
 
+    # -- abort: reasons
+    def abort(self):
+        if not self.install():
+            return
+        dyld = os.path.join(os.path.dirname(self.app), "x86dyldfail.app")
+        text, _, err, _ = self.m.call("app_install", path=dyld)
+        self.check("abort: x86dyldfail installed", not err, text[:120])
+        text, _, err, dt = self.m.call("app_launch", bundle_id="com.x86sim.test.x86dyldfail", after="none")
+        self.check("abort: a launch dyld refuses is an error", err and "died" in text, "%.1f s: %s" % (dt, text[:400]))
+        if "Symbol not found" not in text and "reason" not in text:
+            # dyld's reason comes from the translator's log (linux/arm64jit host.cpp h_helper_abort): an installed
+            # libarm64jit from before it logs none
+            print("SKIP abort: dyld's reason (the installed translator does not log dyld_sim's abort reason yet)", flush=True)
+        else:
+            self.check("abort: the error has dyld's reason", "Symbol not found" in text and "x86sim_no_such_symbol" in text, text[:400])
+            text, st, err, _ = self.m.call("app_state", bundle_id="com.x86sim.test.x86dyldfail")
+            self.check("abort: app_state's last exit has the reason", "Symbol not found" in text, text[:400])
+        self.m.call("app_terminate", bundle_id=APP, after="none")
+        text, _, err, dt = self.m.call("app_launch", bundle_id=APP, args=["--abort-reason"], after="none")
+        self.check("abort: abort_with_reason's reason (libsimshim) in the launch error", err and "the reason agents should see" in text, "%.1f s: %s" % (dt, text[:400]))
+        a, text = self.app_info()
+        self.check("abort: and in app_state", "the reason agents should see" in text, text[:400])
+        self.m.call("app_uninstall", bundle_id="com.x86sim.test.x86dyldfail")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -143,7 +169,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["state", "launch", "delete"]:
+        for name in ["state", "launch", "abort", "delete"]:
             if want(name):
                 getattr(r, name)()
     finally:

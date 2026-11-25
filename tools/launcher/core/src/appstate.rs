@@ -165,11 +165,69 @@ fn ui_state(inst: &Instance, pid: u32, host_pid: u32, procs: &HashMap<u32, Row>)
     }
 }
 
+/// The state dir and Darling prefix this boot of the phone uses
+fn dirs(inst: &Instance) -> (PathBuf, PathBuf) {
+    match crate::instance::Monitor::default().poll(std::slice::from_ref(inst)).into_iter().next() {
+        Some(s) => (s.state_dir, s.prefix),
+        None => (inst.state_dir.clone(), inst.prefix.clone()),
+    }
+}
+
 /// launchd's lines of the phone this boot (the state dir's copy), lossy text
 fn launchd_log(inst: &Instance) -> String {
-    let st = crate::instance::Monitor::default().poll(std::slice::from_ref(inst)).into_iter().next();
-    let dir: PathBuf = st.map(|s| s.state_dir).unwrap_or_else(|| inst.state_dir.clone());
-    read(&dir.join("launchd.log").to_string_lossy())
+    read(&dirs(inst).0.join("launchd.log").to_string_lossy())
+}
+
+/// The newest abort line in a file: simshim's records ("<time> abort_with_reason namespace 1 code 0x2a: ...") or the
+/// translator's ("_abort_with_payload: namespace 6 code 0x4: Symbol not found: ... (lr 0x...)")
+fn abort_line(text: &str) -> Option<String> {
+    let l = text.lines().filter(|l| l.contains("abort_with_payload") || l.contains("abort_with_reason")).filter(|l| l.contains("namespace")).last()?;
+    let i = l.find("namespace")?;
+    let mut r = l[i..].to_string();
+    if let Some(j) = r.rfind(" (lr 0x") {
+        r.truncate(j);
+    }
+    // namespace 6 is dyld's (OS_REASON_DYLD): its reason says what it could not do
+    if r.starts_with("namespace 6 ") {
+        r = format!("dyld: {}", r.split_once(": ").map(|x| x.1).unwrap_or(&r));
+    }
+    Some(r)
+}
+
+/// Why a process of `exe` aborted, newest first by file time: simshim's records in the device's log folder
+/// (data/var/log/x86sim-exit/<exe>.<pid>.log) and the translator's process logs (<prefix>/private/var/tmp/x86sim-a64
+/// and .prev, <exe>.<pid>.log: dyld's halts come before libsimshim is loaded). `pid`: only that process's; else the
+/// newest within `max_age`.
+pub fn abort_reason(inst: &Instance, exe: &str, pid: Option<u32>, max_age: Duration) -> Option<String> {
+    if exe.is_empty() {
+        return None;
+    }
+    let prefix = dirs(inst).1;
+    let roots = [inst.dir.join("data/var/log/x86sim-exit"), prefix.join("private/var/tmp/x86sim-a64"), prefix.join("private/var/tmp/x86sim-a64.prev")];
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = vec![];
+    for d in roots {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let Some(rest) = n.strip_prefix(&format!("{exe}.")).and_then(|r| r.strip_suffix(".log")) else { continue };
+            if pid.is_some_and(|p| rest != p.to_string()) || rest.parse::<u32>().is_err() {
+                continue;
+            }
+            let Ok(t) = e.metadata().and_then(|m| m.modified()) else { continue };
+            if pid.is_none() && t.elapsed().unwrap_or_default() > max_age {
+                continue;
+            }
+            files.push((t, e.path()));
+        }
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.into_iter().find_map(|(_, p)| abort_line(&read(&p.to_string_lossy())))
+}
+
+/// The pid of launchd's line ("... [1853]) <Notice>: exited ...")
+fn line_pid(l: &str) -> Option<u32> {
+    let head = l.split(") <").next()?;
+    let i = head.rfind(" [")?;
+    head[i + 2..].trim_end_matches(']').parse().ok()
 }
 
 /// The last "exited due to ..." line of an app's job (UIKitApplication:<bid>[...]) in launchd's log
@@ -234,7 +292,11 @@ pub fn app_state(inst: &Instance, bundle: Option<&str>) -> Result<Vec<AppState>>
             installed: app.is_some(),
             running: !processes.is_empty(),
             processes,
-            last_exit: last_exit_in(&log, &b),
+            last_exit: last_exit_in(&log, &b).map(|mut e| {
+                let exe = app.and_then(|a| a["CFBundleExecutable"].as_str()).unwrap_or("");
+                e.reason = line_pid(&e.line).and_then(|p| abort_reason(inst, exe, Some(p), Duration::ZERO));
+                e
+            }),
             bundle_id: b,
         });
     }
@@ -256,16 +318,19 @@ pub fn alive(inst: &Instance, pid: u32) -> bool {
 
 /// Why a launch failed, from what launchd logged since (`n0` exit lines before it): "; exit(3) at ..."
 fn why(inst: &Instance, bundle: &str, n0: usize) -> String {
+    let exe = installed(inst).ok().and_then(|a| a.get(bundle).and_then(|x| x["CFBundleExecutable"].as_str().map(String::from))).unwrap_or_default();
     // launchd writes the line a moment after the process ends
     for _ in 0..8 {
         let ex = exits(&launchd_log(inst), bundle);
         if ex.len() > n0 {
             let e = last_exit_in(&ex[n0..].join("\n"), bundle).unwrap_or_default();
-            return format!(": {} at {}", e.how, e.when);
+            let reason = line_pid(&e.line).and_then(|p| abort_reason(inst, &exe, Some(p), Duration::ZERO));
+            return format!(": {} at {}{}", e.how, e.when, reason.map(|r| format!("; reason: {r}")).unwrap_or_default());
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    String::new()
+    // no exit line (no process at all): an abort recorded in the last half minute
+    abort_reason(inst, &exe, None, Duration::from_secs(30)).map(|r| format!("; reason: {r}")).unwrap_or_default()
 }
 
 /// How long a launched app must stay alive to count as started
@@ -336,5 +401,11 @@ mod tests {
         assert!(last_exit_in(log, "com.x").is_none());
         assert_eq!(linux_path("/Volumes/SystemRoot/srv/x/a.app"), "/srv/x/a.app");
         assert_eq!(linux_path("/Applications/A.app"), "/Applications/A.app");
+        assert_eq!(line_pid("2026-11-25 13:43:15.140071 (user/1000/UIKitApplication:com.x.a[2957][rb-legacy] [1853]) <Notice>: exited due to SIGKILL"), Some(1853));
+        assert_eq!(
+            abort_line("x\n[a64] _abort_with_payload: namespace 6 code 0x4: Symbol not found: _x86sim_no_such_symbol | Referenced from: /x (lr 0x1234)\n").as_deref(),
+            Some("dyld: Symbol not found: _x86sim_no_such_symbol | Referenced from: /x")
+        );
+        assert_eq!(abort_line("2026-11-25T13:00:00Z abort_with_reason namespace 1 code 0x2a: test abort\n").as_deref(), Some("namespace 1 code 0x2a: test abort"));
     }
 }

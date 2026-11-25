@@ -34,11 +34,11 @@ build_exe() { build "$@" && chmod +x "$2"; }
 what=${*:-simshim simfb simhid}
 for w in $what; do case $w in
 simshim)
-	tar cf - -C "$X/host/simshim/compat" simshim.c -C "$X/host/simshim/diag" oslogdiag.m diagpath.h |
+	tar cf - -C "$X/host/simshim/compat" simshim.c simshim_abort.c -C "$X/host/simshim/diag" oslogdiag.m diagpath.h |
 	build a64sh "$X/host/simshim/arm64$SUF/compat/libsimshim.dylib" "
 		cc() { $CC -O1 -Wall -Wno-unused-variable -Wno-deprecated-declarations \"\$@\"; } &&
-		cc -c -o simshim.o simshim.c && cc -c -DSIMSHIM_OSLOG -o oslog.o oslogdiag.m &&
-		cc -dynamiclib -framework IOKit -framework CoreFoundation -lobjc -lsqlite3 -Wl,-U,_BSPathExistsOnSystemPartition -o libsimshim.dylib simshim.o oslog.o" ;;
+		cc -c -o simshim.o simshim.c && cc -c -DSIMSHIM_OSLOG -o oslog.o oslogdiag.m && cc -c -o abort.o simshim_abort.c &&
+		cc -dynamiclib -framework IOKit -framework CoreFoundation -lobjc -lsqlite3 -Wl,-U,_BSPathExistsOnSystemPartition -o libsimshim.dylib simshim.o oslog.o abort.o" ;;
 simax)
 	# the accessibility reader for agents (snapshot / type; libsimshim dlopens it in processes with UIKit)
 	# WebKit where the platform has it (not tvOS / watchOS); the visionOS / watchOS SDKs with headers are the -xcode ones

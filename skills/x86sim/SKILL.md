@@ -179,6 +179,12 @@ x86sim --phone qa logs                        # the phone's service logs; logs L
 x86sim --phone qa app-state com.example.myapp # running? pid, foreground / background / suspended, MB, CPU, last exit
 ```
 
+Why an app died at launch shows in three places: `app_launch` fails when no process started or it died within 3 s,
+saying how (exit code, signal) and why when it was recorded; `app-state` has it as the last exit's reason; `logs`
+prints an `== abort reason` section. Reasons are what abort_with_payload / abort_with_reason were given (libobjc,
+libdispatch, the app's own calls; libsimshim writes them to `<data>/var/log/x86sim-exit/<exe>.<pid>.log`) and dyld's
+halts (library not loaded, symbol not found, wrong platform), which the translator logs.
+
 ## 6b. Debug with LLDB
 
 ```sh

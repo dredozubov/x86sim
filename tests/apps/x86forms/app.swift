@@ -6,7 +6,7 @@
 //                   pickers (wheels, date and time), each value shown in a text with an identifier
 //   list            a list whose rows reorder by drag (edit mode's handles) and a box that takes a dropped item
 //   --exit-early    exits with status 3 right after launch (app_launch must say the app died)
-//   --abort-reason  calls abort_with_reason after a second (the reason must reach app_logs / app_state)
+//   --abort-reason  calls abort_with_reason at once (the reason must reach app_launch's error, app_logs, app_state)
 // Each change is logged as an X86TEST line and shown on screen.
 import SwiftUI
 import UIKit
@@ -150,6 +150,10 @@ struct Root: View {
     }
 }
 
+// libsystem_kernel's abort_with_reason, bound by dyld like any import (so libsimshim's interposer sees it)
+@_silgen_name("abort_with_reason")
+func abortWithReason(_ ns: UInt32, _ code: UInt64, _ reason: UnsafePointer<CChar>, _ flags: UInt64) -> Never
+
 @main
 struct X86FormsApp: App {
     let screen: String
@@ -162,14 +166,9 @@ struct X86FormsApp: App {
             exit(3)
         }
         if args.contains("--abort-reason") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                typealias F = @convention(c) (UInt32, UInt64, UnsafePointer<CChar>, UInt64) -> Void
-                let h = dlopen(nil, RTLD_NOW)
-                guard let sym = dlsym(h, "abort_with_reason") else { X86Test.log("abort-reason", false, "no abort_with_reason"); return }
-                X86Test.log("abort-reason", true, "calling")
-                // namespace 1 (OS_REASON_JETSAM-free user reason: 1 is "test"), code 42
-                unsafeBitCast(sym, to: F.self)(1, 42, "x86forms test abort: the reason agents should see", 0)
-            }
+            X86Test.log("abort-reason", true, "calling")
+            // namespace 1, code 42: what agents should see as the reason
+            abortWithReason(1, 42, "x86forms test abort: the reason agents should see", 0)
         }
     }
     var body: some Scene { WindowGroup { Root(screen: screen) } }
