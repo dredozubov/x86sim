@@ -15,6 +15,7 @@ pub mod desktop;
 pub mod dev;
 pub mod devapp;
 pub mod devdelete;
+pub mod devdotnet;
 pub mod devkmp;
 pub mod discover;
 pub mod dyldcache;

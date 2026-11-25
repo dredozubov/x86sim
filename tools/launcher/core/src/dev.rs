@@ -686,7 +686,8 @@ pub fn remember(dir: &Path, phone: Option<&str>) {
 pub struct Project {
     pub dir: PathBuf,
     pub name: String,
-    /// xtool (Package.swift + xtool.yml: builds here), flutter, swiftpm (no xtool.yml), xcodeproj (convert it first)
+    /// xtool (Package.swift + xtool.yml: builds here), dotnet (a net*-ios .csproj: builds here), flutter, swiftpm (no
+    /// xtool.yml), xcodeproj (convert it first)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
@@ -708,11 +709,16 @@ pub fn project(dir: &Path) -> Result<Project> {
         "flutter"
     } else if dir.join("Package.swift").exists() {
         "swiftpm"
+    } else if crate::devdotnet::csproj(&dir).is_some() {
+        "dotnet"
     } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj")) {
         "xcodeproj"
     } else {
-        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml or .xcodeproj)", dir.display());
+        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml, net*-ios .csproj or .xcodeproj)", dir.display());
     };
+    if let Some((name, bundle_id, app)) = (kind == "dotnet").then(|| crate::devdotnet::describe(&dir)).flatten() {
+        return Ok(Project { name, kind: kind.into(), bundle_id, app, dir });
+    }
     let y = yml.unwrap_or_default();
     let name = yml_value(&y, "product").unwrap_or(base);
     let app = std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"));
@@ -790,6 +796,7 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
     let p = project(dir)?;
     match p.kind.as_str() {
         "xtool" => {}
+        "dotnet" => anyhow::ensure!(o.platform == "ios", "{}: .NET for iOS apps build for iOS phones only", p.dir.display()),
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
         "xcodeproj" => bail!("{}: an Xcode project: convert it first (x86sim dev convert {}/<App>.xcodeproj)", p.dir.display(), p.dir.display()),
         _ => bail!("{}: a SwiftPM package without xtool.yml (add one: `version: 1` and `bundleID: com.you.App`)", p.dir.display()),
@@ -806,9 +813,14 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
     let mut log = std::fs::File::create(&log_path).ok();
     let t = triple(&o.platform);
     say(&format!("== build {} for {t} ({})", p.name, if o.release { "release" } else { "debug" }));
-    let mut c = command("bash");
-    // a Kotlin Multiplatform app (xtool.env: KMP_GRADLE_ROOT) builds its shared framework first: kmp/build-app.sh
-    c.arg(crate::devkmp::sim_build_script(&p.dir)).arg("--simulator").current_dir(&p.dir);
+    let mut c = if p.kind == "dotnet" {
+        crate::devdotnet::sim_build_command(&p.dir, o.release)
+    } else {
+        let mut c = command("bash");
+        // a Kotlin Multiplatform app (xtool.env: KMP_GRADLE_ROOT) builds its shared framework first: kmp/build-app.sh
+        c.arg(crate::devkmp::sim_build_script(&p.dir)).arg("--simulator").current_dir(&p.dir);
+        c
+    };
     c.env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
     let mut app_line = None;
     let rc = stream(c, &mut |l: &str| {
