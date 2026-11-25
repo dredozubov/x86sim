@@ -92,6 +92,14 @@ x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappe
   (`· inner screen` unfolded, `· outer screen`); taps go to that screen.
 - A process that does not answer in time is named in a `busy (no answer): <bundle> (pid N: ...)` line.
 - An element the app has loaded but scrolled out of view is scrolled in before a tap. `snapshot --all` lists those.
+- **Text in pixels** (OCR): a view drawing its own pixels (Metal, OpenGL, SpriteKit / SceneKit, a game engine, a web
+  page's `<canvas>`) that covers a quarter of the screen and has no elements inside is read from the frame by itself:
+  its text comes as `text` elements tagged `[ocr]` (`"ocr": true` in `--json`), with refs that stay, and an
+  `ocr: ...` line says which view, which frame and how long (about 0.1-0.4 s once per frame, then cached).
+  `snapshot --ocr` (MCP `ocr=true`) reads the whole screen and adds any text no element says (custom-drawn controls,
+  text in images). `tap "Start Game"`, `wait-for` and `find` look in the pixels by themselves when no element matches
+  (one or two letters read wrong still match). The models (~12 MB) download once into `~/.cache/x86sim/ocr`;
+  offline, the `ocr:` line says what to fetch. Latin script; `X86SIM_OCR=0` turns it off.
 - Prefer `id:` targets for your own app (set `accessibilityIdentifier`), labels for system UI.
 - `type` inserts text as the software keyboard does (any characters, no layout issues). `--keys` sends hardware key
   presses instead (US layout), for games and key handlers. Tap the field first (or it types into the focused one).
@@ -118,11 +126,16 @@ colours, images, rendering, or when the snapshot shows too little (games, Metal 
 
 ```sh
 x86sim --phone qa screenshot out.png 3        # newest frame; the number divides the size (3 on a 3x phone = points)
+x86sim --phone qa screenshot out.png --marks  # in points, every element outlined with its @ref beside it
+x86sim --phone qa screenshot out.png --marks actionable   # only what tap acts on (controls, links, fields, [ocr])
+x86sim --phone qa screenshot el.png --target @e7          # one element, cropped with a margin
 x86sim --phone qa io recordVideo --secs 10 out.mp4
 ```
 
 Without a divisor the PNG is full device pixels, while snapshot coordinates are points. The MCP `screenshot` tool
-returns points by default.
+returns points by default; `marks=true` / `marks=actionable` (and `ocr=true` for the whole screen's text) answer the
+marked image with the snapshot's text, `target=@e7` the crop. When working from an image, ask for marks: each tag is
+the ref to `tap`. The browser page's Capture group has "With marks" too.
 
 ## 5. Clean, repeatable screenshots
 
@@ -257,7 +270,8 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 - The **first snapshot** of a running process turns on accessibility automation (as XCUITest does) and loads UIKit's
   accessibility bundles: it is 0.1-0.2 s slower, and the setting stays on in that phone.
 - An empty or thin snapshot means the screen has no accessibility elements (a game, a Metal view, a custom-drawn
-  control): fall back to a screenshot and `tap X Y` in device pixels.
+  control): try `snapshot --ocr` (text read from pixels, tappable by text or ref), then a screenshot with `--marks`,
+  and only then `tap X Y`.
 - **Per platform** (snapshot and actions checked on iPhone, iPad, Apple TV, Apple Watch and Vision Pro):
   - *iPad*: windowed apps are placed where they show; `front` lists the top window's app first, SpringBoard's window
     chrome (window controls, resize grabbers, a card per window behind) is the "app windows" group, and an element

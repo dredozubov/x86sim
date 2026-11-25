@@ -109,6 +109,9 @@ pub struct El {
     /// web content of an iframe: the frame's URL
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub frame_url: Option<String>,
+    /// text read from the pixels (OCR: ocr.rs), not an accessibility element
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub ocr: bool,
 }
 
 impl El {
@@ -140,7 +143,7 @@ impl El {
                 s += &format!(" id={i}");
             }
         }
-        for (on, f) in [(!self.enabled, "disabled"), (self.selected, "selected"), (self.focused, "focused"), (self.offscreen, "offscreen"), (self.covered, "covered")] {
+        for (on, f) in [(!self.enabled, "disabled"), (self.selected, "selected"), (self.focused, "focused"), (self.offscreen, "offscreen"), (self.covered, "covered"), (self.ocr, "ocr")] {
             if on {
                 s += &format!(" [{f}]");
             }
@@ -201,6 +204,9 @@ pub struct Snapshot {
     /// SnapOpts::full: interactive views VoiceOver cannot reach (simax `hidden`, with `app` and `pid` added)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub hidden: Vec<Value>,
+    /// text read from the frame (OCR): which frame, how long it took, what was read
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ocr: Option<crate::ocr::OcrInfo>,
 }
 
 impl Snapshot {
@@ -295,6 +301,9 @@ impl Snapshot {
         }
         if !self.busy.is_empty() {
             out += &format!("busy (no answer): {}\n", self.busy.join(", "));
+        }
+        if let Some(o) = &self.ocr {
+            out += &o.line();
         }
         if let Some(f) = self.focus {
             // tvOS: name what has the focus (an element above shows [focused]; else where it is)
@@ -479,13 +488,16 @@ struct RefState {
     /// threads never run); they get a short timeout until they answer again
     #[serde(default)]
     stuck: HashSet<u32>,
+    /// the text elements the last whole-screen OCR read (snapshot ocr=true): a later one gives them their refs again
+    #[serde(default)]
+    ocr_prev: Vec<El>,
 }
 
 fn refs_path(inst: &Instance) -> PathBuf {
     inst.state_dir.join("ax-refs.json")
 }
 
-fn boot_id(inst: &Instance) -> String {
+pub(crate) fn boot_id(inst: &Instance) -> String {
     // the frame ring is made anew at every boot (its ctime moves with every frame: inode and birth time)
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(&inst.ring).map(|m| format!("{}.{:?}", m.ino(), m.created().ok())).unwrap_or_default()
@@ -589,6 +601,9 @@ pub struct SnapOpts {
     pub all: bool,
     /// per process answer timeout
     pub timeout_ms: u64,
+    /// also read the text of the whole screen from its pixels (OCR) and add what no element says; without it only
+    /// large views with no elements inside (Metal, OpenGL, games, a web page's canvas) are read
+    pub ocr: bool,
 }
 
 fn layer_of(bundle: &str, window: &str, class: &str, id: &str) -> &'static str {
@@ -801,6 +816,8 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     let mut spaces: Vec<(u8, String, Space)> = Vec::new();
     let geo = Geometry::of(inst);
     let mut silent: Vec<String> = Vec::new();
+    // views that draw their own pixels (simax `pixels`): OCR reads those with no elements inside
+    let mut pixels: Vec<crate::ocr::Region> = Vec::new();
     let n_answers = answers.len();
     // SpringBoard's word on the device: locked, and the processes FrontBoard suspended
     let sb = answers.iter().filter_map(|a| a.1.as_ref().ok()).find(|v| v["bundle"] == SPRINGBOARD);
@@ -911,6 +928,29 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
                 key: s(&e["key"]),
                 rot,
                 frame_url: s(&e["frame_url"]),
+                ocr: false,
+            });
+        }
+        for p in v["pixels"].as_array().into_iter().flatten() {
+            // an app that only draws pixels (a game) is still the app in front
+            has_app_content |= !SHELLS.contains(&bundle.as_str());
+            let win = p["win"].as_u64().unwrap_or(0) as usize;
+            let window = wins.get(win).cloned().unwrap_or_default();
+            let rot = match win_space.get(win) {
+                Some(Some(sp)) => sp.rot,
+                Some(None) => continue,
+                None => proc_space.map(|s| s.rot).unwrap_or(0),
+            };
+            let class = p["class"].as_str().unwrap_or("").to_string();
+            pixels.push(crate::ocr::Region {
+                frame: p["frame"].as_array().map(|f| [0, 1, 2, 3].map(|i| f.get(i).and_then(Value::as_f64).unwrap_or(0.0))).unwrap_or_default(),
+                layer: layer_of(&bundle, &window, &class, "").to_string(),
+                kind: p["kind"].as_str().unwrap_or("").to_string(),
+                class,
+                app: bundle.clone(),
+                pid,
+                window,
+                rot,
             });
         }
         for h in v["hidden"].as_array().into_iter().flatten() {
@@ -981,14 +1021,26 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     for (i, e) in idx.into_iter().zip(home) {
         snap.elements[i] = e;
     }
+    // text in pixels (views with no elements, the whole screen with ocr)
+    crate::ocr::augment(inst, &mut snap, pixels, opt.ocr);
     let mut next = st.next.max(1);
-    assign_refs(&mut snap.elements, &st.last.elements, &mut next);
+    let mut prev = std::mem::take(&mut st.last.elements);
+    prev.extend(st.ocr_prev.iter().filter(|o| !prev.iter().any(|p| p.r == o.r)).cloned().collect::<Vec<_>>());
+    assign_refs(&mut snap.elements, &prev, &mut next);
+    if opt.ocr {
+        st.ocr_prev = snap.elements.iter().filter(|e| e.ocr).cloned().collect();
+    }
     snap.ms = t0.elapsed().as_millis() as u64;
     st.next = next;
     // the full picture is remembered (an --all snapshot's off-screen elements keep their refs too)
     st.last = snap.clone();
     save_refs(inst, &st);
     Ok(snap)
+}
+
+/// The refs the last whole-screen OCR gave (text read from pixels)
+pub(crate) fn ocr_refs(inst: &Instance) -> Vec<String> {
+    load_refs(inst).ocr_prev.into_iter().map(|e| e.r).collect()
 }
 
 /// The last snapshot taken of the phone (for diffs and refs), if it is of this boot
@@ -1072,6 +1124,9 @@ pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a
                     Some(3)
                 } else if val.contains(&t) {
                     Some(4)
+                } else if e.ocr && crate::ocr::near(&l, &t) {
+                    // text read from pixels: a letter or two read wrong
+                    Some(2)
                 } else {
                     None
                 }
@@ -1286,8 +1341,18 @@ pub fn drag(inst: &Instance, sp: Space, from: (f64, f64), to: (f64, f64), ms: u6
 /// Resolves a target to an element of a fresh snapshot (a ref: of the last one, checked against the screen now)
 pub fn resolve(inst: &Instance, target: &str) -> Result<(El, Snapshot)> {
     let snap = snapshot(inst, SnapOpts::default())?;
-    let e = find(&snap, target)?.clone();
-    Ok((e, snap))
+    let err = match find(&snap, target) {
+        Ok(e) => return Ok((e.clone(), snap)),
+        Err(e) => e,
+    };
+    // text no element says, or a ref a whole-screen OCR gave: read the screen's pixels too
+    if crate::ocr::worth_a_look(inst, &parse_target(target)) {
+        let s2 = snapshot(inst, SnapOpts { ocr: true, ..Default::default() })?;
+        if let Ok(e) = find(&s2, target) {
+            return Ok((e.clone(), s2));
+        }
+    }
+    Err(err)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1987,9 +2052,14 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
     let t0 = Instant::now();
     let t = parse_target(target);
     let mut ring = Ring::new(&screen_ring(inst));
+    // text no element says: also looked for in the pixels (OCR, once per new frame)
+    let ocr = crate::ocr::worth_a_look(inst, &t);
     loop {
         let seq = ring.seq();
-        let snap = snapshot(inst, SnapOpts::default());
+        let mut snap = snapshot(inst, SnapOpts::default());
+        if ocr && matches!(&snap, Ok(s) if find_all_q(s, &t, 2).into_iter().all(|e| e.offscreen || e.covered)) {
+            snap = snapshot(inst, SnapOpts { ocr: true, ..Default::default() });
+        }
         if let Ok(snap) = &snap {
             let hit = find_all_q(snap, &t, 2).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
             if hit.is_some() != gone {
@@ -2076,10 +2146,24 @@ pub fn terminate(inst: &Instance, bundle: &str, after: After) -> Result<Outcome>
 /// The newest frame upright as PNG, scaled down by `div` (the device's scale gives a picture in points: the same
 /// coordinates as the snapshot's)
 pub fn screenshot(inst: &Instance, div: u32) -> Result<(Vec<u8>, u32, u32)> {
+    // upright as the front app's interface stands (its points are the snapshot's), on the panel in use
+    let (rgb, ow, oh, _) = upright_frame(inst, front_space(inst).rot, div)?;
+    let mut out = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut out, ow as u32, oh as u32);
+        e.set_color(png::ColorType::Rgb);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header()?.write_image_data(&rgb)?;
+    }
+    Ok((out, ow as u32, oh as u32))
+}
+
+/// The newest frame as RGB, upright for an interface turned `rot` (a Space's), scaled down by `div`: (pixels, width,
+/// height, the frame's sequence number)
+pub fn upright_frame(inst: &Instance, rot: u32, div: u32) -> Result<(Vec<u8>, usize, usize, u64)> {
     let mut ring = Ring::new(&screen_ring(inst));
     let f = ring.latest().ok_or_else(|| anyhow!("{}: no frame (is the device running?)", inst.name))?;
-    // upright as the front app's interface stands (its points are the snapshot's), on the panel in use
-    let rot = (panel(inst).0.map(|p| p.1).unwrap_or(0) + front_space(inst).rot) % 360;
+    let rot = (panel(inst).0.map(|p| p.1).unwrap_or(0) + rot) % 360;
     let div = div.max(1) as usize;
     let (w, h, s) = (f.w as usize, f.h as usize, f.stride as usize);
     let (sw, sh) = (w / div, h / div);
@@ -2119,14 +2203,7 @@ pub fn screenshot(inst: &Instance, div: u32) -> Result<(Vec<u8>, u32, u32)> {
             rgb.extend_from_slice(&small[o..o + 3]);
         }
     }
-    let mut out = Vec::new();
-    {
-        let mut e = png::Encoder::new(&mut out, ow as u32, oh as u32);
-        e.set_color(png::ColorType::Rgb);
-        e.set_depth(png::BitDepth::Eight);
-        e.write_header()?.write_image_data(&rgb)?;
-    }
-    Ok((out, ow as u32, oh as u32))
+    Ok((rgb, ow, oh, f.seq))
 }
 
 pub fn base64(b: &[u8]) -> String {

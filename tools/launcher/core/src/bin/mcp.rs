@@ -82,8 +82,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "environment variables for the app, e.g. {\"API_URL\": \"http://localhost:8080\"}"}, "after": after}, "required": ["bundle_id"]}},
         {"name": "app_list", "description": "Installed apps on a running device (simctl listapps).", "inputSchema": {"type": "object", "properties": {"phone": phone}}},
         // agents: the screen as text and actions on its elements (x86sim_core::ax, host/simax)
-        {"name": "snapshot", "description": "The device's screen as text: the accessibility elements of the app(s) in front, SpringBoard (alerts, home screen icons, status bar, Control Center) and web pages (DOM: links, buttons, fields, headings, text). One line per element: @ref role \"label\" value= id= [states] (center x,y in points). Refs stay the same for the same element across snapshots, so act on them (tap ref=@e3). diff=true: only what changed since the last snapshot. all=true: also elements scrolled out of view. json=true: full records (frames, app, layer, window).",
-         "inputSchema": {"type": "object", "properties": {"phone": phone, "diff": {"type": "boolean"}, "all": {"type": "boolean"}, "json": {"type": "boolean"}}}},
+        {"name": "snapshot", "description": "The device's screen as text: the accessibility elements of the app(s) in front, SpringBoard (alerts, home screen icons, status bar, Control Center) and web pages (DOM: links, buttons, fields, headings, text). One line per element: @ref role \"label\" value= id= [states] (center x,y in points). Refs stay the same for the same element across snapshots, so act on them (tap ref=@e3). diff=true: only what changed since the last snapshot. all=true: also elements scrolled out of view. json=true: full records (frames, app, layer, window). Text drawn as pixels (Metal / OpenGL / SpriteKit / SceneKit views, games, a web page's canvas) is read by OCR when such a view covers a quarter of the screen and has no elements: role text, tagged [ocr] (json: ocr: true); tap / wait_for find it by its text. ocr=true reads the whole screen and adds any text no element says (images with text, custom-drawn controls).",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "diff": {"type": "boolean"}, "all": {"type": "boolean"}, "json": {"type": "boolean"}, "ocr": {"type": "boolean"}}}},
         {"name": "tap", "description": "Tap an element and answer with the screen after it settled. target: a ref from the snapshot (@e3), id:<accessibility identifier>, or label text (exact, then prefix, then substring; alerts over the app win); or x and y in points. An element scrolled out of view is scrolled in first. hold_ms >= 500 is a long press.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "hold_ms": {"type": "integer"}, "after": after}}},
         {"name": "long_press", "description": "Touch and hold an element (target as tap) or a point, ms (default 800): context menus, icon editing.",
@@ -106,8 +106,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "button": {"type": "string"}, "ms": {"type": "integer"}, "after": after}, "required": ["button"]}},
         {"name": "sim_keyboard", "description": "Apple Simulator's I/O > Keyboard. software: on / off / toggle the on-screen keyboard while a hardware keyboard is connected (Toggle Software Keyboard, Cmd-K; it shows while a text field is focused). hardware: connect / disconnect / toggle the simulated hardware keyboard (Connect Hardware Keyboard, Shift-Cmd-K; disconnected, the software keyboard shows on every focus as on a device; kept across boots, also for a device that is off). status: both states. Typing (type, key) works either way; snapshot lists the keyboard's keys (role key) while it is up. Answers with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "keyboard": {"type": "string", "enum": ["software", "hardware", "status"]}, "action": {"type": "string", "enum": ["on", "off", "toggle", "connect", "disconnect"]}, "after": after}, "required": ["keyboard"]}},
-        {"name": "screenshot", "description": "The screen as an image (PNG), upright. Default scale: one pixel per point, so positions match the snapshot's coordinates; scale=1 for full device pixels, 2 for half, etc. (a divisor).",
-         "inputSchema": {"type": "object", "properties": {"phone": phone, "scale": {"type": "integer"}}}},
+        {"name": "screenshot", "description": "The screen as an image (PNG), upright. Default scale: one pixel per point, so positions match the snapshot's coordinates; scale=1 for full device pixels, 2 for half, etc. (a divisor). marks=true: every element of a fresh snapshot outlined with its @ref beside it (marks=actionable: only controls, links, fields, icons and [ocr] text), the snapshot's text alongside, for working from the image; ocr=true marks the whole screen's text read from pixels too. target=@e3 (or id:..., or text): only that element, cropped with a margin.",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "scale": {"type": "integer"}, "marks": {"type": ["boolean", "string"], "description": "true | actionable"}, "target": {"type": "string"}, "ocr": {"type": "boolean"}}}},
         {"name": "open_url", "description": "Open a URL (web page in Safari, deep link, prefs:/settings link) as simctl openurl, and answer with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "url": {"type": "string"}, "after": after}, "required": ["url"]}},
         {"name": "app_terminate", "description": "Stop a running app by bundle id (simctl terminate) and answer with the screen.",
@@ -428,7 +428,7 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
         }
         "snapshot" => {
             let prev = ax::last(&inst);
-            let snap = ax::snapshot(&inst, ax::SnapOpts { all: a["all"].as_bool().unwrap_or(false), ..Default::default() })?;
+            let snap = ax::snapshot(&inst, ax::SnapOpts { all: a["all"].as_bool().unwrap_or(false), ocr: a["ocr"].as_bool().unwrap_or(false), ..Default::default() })?;
             let text = match (a["diff"].as_bool().unwrap_or(false), prev) {
                 (true, Some(p)) => snap.diff(&p),
                 _ => snap.text(),
@@ -490,6 +490,19 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             let div = a["scale"].as_u64().map(|s| s as u32).unwrap_or(inst.scale.round().max(1.0) as u32);
             // a stable frame: what an action or setting just changed, not the frame before it
             ax::settle(&inst, std::time::Duration::from_millis(150), std::time::Duration::from_millis(1500));
+            let marks = match &a["marks"] {
+                Value::Bool(true) => Some(x86sim_core::marks::Marks::All),
+                Value::String(s) => x86sim_core::marks::Marks::parse(s),
+                _ => None,
+            };
+            if let Some(t) = a["target"].as_str().filter(|t| !t.is_empty()) {
+                let (png, w, h, e) = x86sim_core::marks::element_shot(&inst, t, div)?;
+                return Ok(Answer::Image(ax::base64(&png), format!("{} @{} {} {}, {w}x{h} px", inst.name, e.r, e.role, e.label.as_deref().unwrap_or(""))));
+            }
+            if let Some(m) = marks {
+                let (png, w, h, n, snap) = x86sim_core::marks::marked(&inst, m, div, a["ocr"].as_bool().unwrap_or(false))?;
+                return Ok(Answer::Image(ax::base64(&png), format!("{} screen, {w}x{h} px, {n} marks\n{}", inst.name, snap.text())));
+            }
             let (png, w, h) = ax::screenshot(&inst, div)?;
             return Ok(Answer::Image(ax::base64(&png), format!("{} screen, {w}x{h} px", inst.name)));
         }

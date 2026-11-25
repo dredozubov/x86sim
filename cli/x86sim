@@ -56,10 +56,12 @@ Devices
 
 Agents (read the screen as text, act on elements; same core as the MCP server's snapshot / tap / ... tools)
   [--phone NAME] <command>   any command on a device by name / folder / path (default: x86sim.env's X86SIM_DEVICE)
-  snapshot [--diff] [--all] [--json]
+  snapshot [--diff] [--all] [--json] [--ocr]
                        the screen as text: the front app's accessibility elements, SpringBoard's (alerts, home screen,
                        status bar) and web content, one per line: @e3 role "label" value= id= [states] (x,y points).
-                       Refs stay with their element across snapshots. --diff: only changes since the last snapshot
+                       Refs stay with their element across snapshots. --diff: only changes since the last snapshot.
+                       Text in large Metal / game / canvas views with no elements is read from pixels ([ocr] lines);
+                       --ocr: the whole screen's text that no element says too
   find TARGET          what a target matches. TARGET: @e3 | id:IDENTIFIER | "label text" | X Y (points)
   tap TARGET | long-press TARGET [--ms N]
                        touch an element (scrolled into view first if needed); answers with the screen after it settled
@@ -90,6 +92,9 @@ Display and input
   view [--bg]          GTK viewer window with mouse/keyboard input (simview.py; DISPLAY defaults to :0)
   screenshot [out.png] [divisor]
                        newest frame as PNG (fb2png.py; default ./x86sim-<time>.png, full size)
+  screenshot [out.png] --marks [actionable] | --target TARGET [--scale N]
+                       in points: every element outlined with its @ref (actionable: controls and [ocr] text only), or
+                       one element cropped with a margin
   tap X Y | swipe X1 Y1 X2 Y2 [ms] | pinch CX CY R1 R2 [ms] | pan2 X1 Y1 X2 Y2 [ms]
   type TEXT | key USAGE | home | lock | openurl URL | app BUNDLEID | dismiss [rounds] | raw LINE...
   crown DELTA [steps]  Apple Watch / Vision Pro: turn the Digital Crown
@@ -266,7 +271,8 @@ case $c in
 		exec python3 "$L/arm64/runtime-fetch.py" "$@" ;;
 	logs) cmd_logs "$@" ;;
 	view) cmd_view "$@" ;;
-	screenshot|shot) cmd_screenshot "$@" ;;
+	# marks / one element: the agent screenshot (x86sim-ax, points)
+	screenshot|shot) case " $* " in *" --marks"*|*" --target "*) ax screenshot "$@" ;; *) cmd_screenshot "$@" ;; esac ;;
 	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)

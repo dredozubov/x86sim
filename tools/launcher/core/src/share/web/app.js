@@ -637,7 +637,10 @@ function phoneView(id) {
     // x86sim profile: 5 s CPU profile of the app in front, downloaded as speedscope JSON (control links only)
     const profBtn = control ? h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/profile.json?secs=5`), download: "",
       title: "CPU profile of the app in front for 5 seconds (speedscope JSON: open it at speedscope.app)", text: "Profile 5 s" }) : null;
-    const capture = [h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`), download: "", text: "Screenshot" }), recBtn, profBtn];
+    const capture = [h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`), download: "", text: "Screenshot" }),
+      // with marks: each element outlined with its @ref (as the agents' screenshot marks=true), in points
+      h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`), download: "",
+        title: "Screenshot with every element outlined and its @ref beside it (the refs agents use)", text: "With marks" }), recBtn, profBtn];
     const qSel = h("select", { onchange: (e) => { quality = Number(e.target.value); save(); connect(); } }, ["Low", "Medium", "High"].map((l, i) => h("option", { value: i, selected: i === quality, text: l })));
     const cSel = h("select", { onchange: (e) => { codec = e.target.value; save(); connect(); } },
       h("option", { value: "h264", text: "H.264" + (canH264 ? "" : " (needs HTTPS)"), selected: codec === "h264", disabled: !canH264 }), h("option", { value: "jpeg", text: "JPEG", selected: codec === "jpeg" }));

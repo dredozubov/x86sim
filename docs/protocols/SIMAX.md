@@ -56,7 +56,7 @@ says whether that screen is `UIScreen.mainScreen` and `display` gives its displa
 | op | arguments | answer |
 |---|---|---|
 | `info` | | the fields above; SpringBoard's also `locked` (`SBLockScreenManager isUILocked`) and `suspended` (pids FrontBoard suspended) |
-| `tree` | `fg` (only walk when on screen), `all` (include elements scrolled out of view), `noax`, `timeout` | plus `elements`, `focus` (oid of the first responder), `focus_item` (the focus engine's item: `oid`, `class`, `frame`, `label`; tvOS's remote focus), `animating`, `web_pending` |
+| `tree` | `fg` (only walk when on screen), `all` (include elements scrolled out of view), `noax`, `timeout` | plus `elements`, `focus` (oid of the first responder), `focus_item` (the focus engine's item: `oid`, `class`, `frame`, `label`; tvOS's remote focus), `animating`, `web_pending`, `pixels` (below) |
 | `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `value` |
 | `scroll` | `oid` | `ok` (`accessibilityScrollToVisible`, else `scrollRectToVisible` in the nearest scroll view) |
 | `activate` | `oid`, `tap` | `ok` (`accessibilityActivate`); with `tap`, when that answers NO, a tap made in the process at the element's activation point (a UITouch with an IOHIDEvent digitizer event through `sendEvent:`): `tapped`, `at` |
@@ -210,6 +210,30 @@ fires `onValueChanged`; `clear` replaces, else it appends), the field's `TouchSc
 same text (the field reads it back every frame), and then `onEndEdit` is invoked. A focused UI Toolkit `TextField` gets
 its `value` set (a `ChangeEvent`). `insertText:` reaches neither. Without a focused Unity field, `type` goes on as for
 any app. Engines without exported reflection (Unreal, Godot, cocos2d) have no reader of their own.
+
+### Views that draw their own pixels (`pixels`)
+
+`tree` also lists the views on screen that render without UIKit's views (`simax_pixels.m`): a view whose layer is a
+`CAMetalLayer` or `CAEAGLLayer` (MTKView, GLKView, game engines such as Unity's, Flutter), an `SKView` or an `SCNView`,
+covering at least 1/16 of its window. They are noted while the walk passes them, also when they set
+`accessibilityElementsHidden` (a game hiding nothing but saying so). Each has `frame` (screen points, clipped to the
+window), `class`, `kind` (`metal`, `opengl`, `spritekit`, `scenekit`), `win` and `oid`; at most 16. The DOM walk gives a
+`<canvas>` the role `canvas`.
+
+The host (`core/src/ocr.rs`) reads the text of each one that covers a quarter of the screen and has no element of its
+app inside (an element as large as the view itself does not count) from the frame with OCR, and adds it as `text`
+elements with `ocr: true`. A canvas element without an accessible name becomes such a view (one with a name stays, as
+an `image`). Text in the status bar's area is left out (its elements say it). The snapshot's `ocr` says which frame was
+read (`frame`, the ring's sequence number), how long it took (`ms`), whether that frame had been read before
+(`cached`), the views read and what failed (`error`: no models, offline). `snapshot` with `ocr` reads the whole screen
+and keeps the text no element says: not inside a labelled element smaller than a quarter of the screen, not an
+element's label within 60 x 40 points. An OCR element's `key` and `oid` are `ocr:<text>@<x/32>,<y/32>`.
+
+The engine is ocrs (rten runtime, pure Rust) with its text detection and recognition models, downloaded once into
+`~/.cache/x86sim/ocr` and checked by SHA-256 (`X86SIM_OCR_MODELS_URL`: another place to fetch them from). The picture is
+read at one pixel per point (`X86SIM_OCR_PPP`); the detector's fixed input size is met by tiles overlapping by a third.
+Results are cached per frame (in the process and in `<state dir>/ocr-cache.json`), keyed by the ring, the boot and the
+frame number. `X86SIM_OCR=0` turns it off; a Vision Pro has no flat screen to read.
 
 ## Host
 
