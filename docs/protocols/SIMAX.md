@@ -167,8 +167,10 @@ that way is not listed twice): role `node`, `label` the node's name, `class` the
 
 Flutter builds its accessibility tree (the `SemanticsObject`s under a `FlutterView`) only while it believes an assistive
 technology runs; so do Unity 2023.2+ (`AccessibilityHierarchy`, `AssistiveSupport`), Unreal's Slate accessibility and
-Godot 4.5+ (AccessKit). Flutter's own simulator builds turn semantics on anyway; a device build, as an installed
-`.ipa` converted for the simulator runs, does not. At the first `tree` request of a process (none for `noax`), simax
+Godot 4.5+ (AccessKit). Flutter's own simulator builds turn semantics on anyway. A device build converted for the
+simulator (tests/apps/flutter_demo, Flutter stable with Dart 3.14) turned out to show its tree in x86Sim without the
+switch too, since accessibility automation is on in the process; the switch is there for engine versions and engines that
+ask only whether VoiceOver runs. At the first `tree` request of a process (none for `noax`), simax
 looks for those engines' images: `Flutter.framework`, `UnityFramework.framework`, and the image that defines Unreal's
 `FIOSView` or Godot's `GDTView` / `GodotView` (both link into the app's executable). In each, the pointers its calls to
 `UIAccessibilityIsVoiceOverRunning` go through (`__got`, `__auth_got`, `__la_symbol_ptr`) are rebound to a function

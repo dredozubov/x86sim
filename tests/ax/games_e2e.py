@@ -15,12 +15,17 @@ simax_unity.m; docs/protocols/SIMAX.md "Engines"), driven through x86sim-mcp ove
            onEndEdit); the same with the object lookups stripped (X86UNITY_STRIPPED=1: the scene walk)
   flutter  a Flutter app (--flutter-app PATH --flutter-bundle ID; a device build goes through app_install's
            conversion): its semantics tree shows (buttons, text fields); --flutter-tap LABEL is tapped and
-           --flutter-field LABEL typed into
+           --flutter-field LABEL typed into (--flutter-wait / -tapped / -typed: texts that say it worked). For
+           tests/apps/flutter_demo (build.sh: a device .ipa): --flutter-app $X86SIM_SCRATCH/apps/flutter_demo.ipa
+           --flutter-bundle com.x86sim.test.flutterDemo --flutter-wait "Taps: 0" --flutter-tap id:tap-button
+           --flutter-tapped "Taps: 1" --flutter-field "Your name" --flutter-typed "Typed: x86sim"
+  unity    a Unity IL2CPP game (--unity-app PATH --unity-bundle ID, the same -tap / -field / -wait options): elements
+           from the IL2CPP reader (or the game's own accessibility), taps, typing through the component
 
 Usage: tests/ax/games_e2e.py --phone NAME [--mcp PATH] [--only sprite,scene,vo,unityfake,...] [--out DIR] [--games-app PATH]
        [--vo-app PATH] [--unityfake-app PATH]
        (tests/apps/build.sh x86games; tests/apps/x86vo/build-vo.sh; tests/apps/x86unity/build-unity.sh)
-flutter runs only when its app is given. Exit status: failed checks. Use a phone of your own.
+flutter / unity run only when their app is given. Exit status: failed checks. Use a phone of your own.
 """
 import argparse
 import os
@@ -138,21 +143,33 @@ class Games(Run):
         f = [e for e in s["elements"] if e.get("app") == UNITY and e.get("role") == "textfield"]
         self.check("%s: the field's value" % tag, bool(f) and f[0].get("value") == "Ada", f and str(f[0]))
 
-    def engine_app(self, name, app, bundle, tap, field):
+    def engine_app(self, name, app, bundle, tap, field, wait=None, tapped=None, typed=None):
         if not self.launch(app, bundle, None):
             return
+        # the first snapshot is the first tree request: the screen-reader switch turns on then; the tree comes after
+        s0, _ = self.m.snap()
+        first = len([e for e in s0["elements"] if e.get("app") == bundle])
+        if wait:
+            self.m.call("wait_for", target=wait, timeout=30)
         s, _ = self.m.snap()
         mine = [e for e in s["elements"] if e.get("app") == bundle]
         roles = sorted({e.get("role") for e in mine})
-        self.check("%s: elements from the app" % name, len(mine) >= 2, "%d elements, roles %s" % (len(mine), roles))
+        self.check("%s: elements from the app" % name, len(mine) >= 2,
+                   "%d elements at the first snapshot, %d after; roles %s" % (first, len(mine), roles))
         if tap:
             text, _, err, _ = self.m.call("tap", target=tap)
             self.check("%s: tap %r" % (name, tap), not err, text[:200])
+            if tapped:
+                ok = not self.m.call("wait_for", target=tapped, timeout=10)[2]
+                self.check("%s: the tap reached the app (%r)" % (name, tapped), ok)
         if field:
             self.m.call("tap", target=field, after="none")
             time.sleep(1.5)
             text, _, err, _ = self.m.call("type", text="x86sim")
             self.check("%s: type into %r" % (name, field), not err and "x86sim" in text, text[:300])
+            if typed:
+                ok = not self.m.call("wait_for", target=typed, timeout=10)[2]
+                self.check("%s: the app got the text (%r)" % (name, typed), ok)
 
 
 def main():
@@ -165,11 +182,14 @@ def main():
     ap.add_argument("--games-app", default=os.path.join(sc, "apps/x86games.app"))
     ap.add_argument("--vo-app", default=os.path.join(sc, "apps/x86vo.app"))
     ap.add_argument("--unityfake-app", default=os.path.join(sc, "apps/x86unity.app"))
-    for e in ("flutter",):
+    for e in ("flutter", "unity"):
         ap.add_argument("--%s-app" % e)
         ap.add_argument("--%s-bundle" % e)
         ap.add_argument("--%s-tap" % e)
         ap.add_argument("--%s-field" % e)
+        ap.add_argument("--%s-wait" % e, help="text to wait for once the app is up")
+        ap.add_argument("--%s-tapped" % e, help="text the app shows after the tap")
+        ap.add_argument("--%s-typed" % e, help="text the app shows after typing x86sim")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     m = Mcp(a.mcp, a.phone, open(os.path.join(a.out, "games-%s.log" % a.phone), "w"))
@@ -187,7 +207,11 @@ def main():
             r.unityfake(a.unityfake_app, False)
             r.unityfake(a.unityfake_app, True)
         if want("flutter") and a.flutter_bundle:
-            r.engine_app("flutter", a.flutter_app, a.flutter_bundle, a.flutter_tap, a.flutter_field)
+            r.engine_app("flutter", a.flutter_app, a.flutter_bundle, a.flutter_tap, a.flutter_field, a.flutter_wait,
+                         a.flutter_tapped, a.flutter_typed)
+        if want("unity") and a.unity_bundle:
+            r.engine_app("unity", a.unity_app, a.unity_bundle, a.unity_tap, a.unity_field, a.unity_wait, a.unity_tapped,
+                         a.unity_typed)
     finally:
         m.close()
     print("%d failed: %s" % (len(r.fails), ", ".join(r.fails)))
