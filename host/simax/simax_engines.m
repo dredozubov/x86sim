@@ -1,8 +1,9 @@
 // x86Sim: simax's readers for content UIKit's accessibility does not describe (game engines, SpriteKit, SceneKit),
 // hooked from simax.m (protocol: docs/protocols/SIMAX.md, "Engines").
 //
-//   simax_engines_screen_reader()  once, at a process's first tree: Flutter builds its accessibility tree only while
-//                                  a screen reader runs. In Flutter's image
+//   simax_engines_screen_reader()  once, at a process's first tree: Flutter, Unity (2023.2+ AccessibilityHierarchy /
+//                                  AssistiveSupport), Unreal (Slate) and Godot (4.5+, AccessKit) build their
+//                                  accessibility trees only while a screen reader runs. In the images of those engines
 //                                  UIAccessibilityIsVoiceOverRunning answers yes (their bound pointers to it are
 //                                  rebound), and the "VoiceOver status changed" notification makes them look again.
 //                                  Nothing else in the process sees VoiceOver on.
@@ -69,12 +70,24 @@ static int rebind_image(const struct mach_header_64* mh, intptr_t slide, void* f
 	return n;
 }
 
+// the image that defines an Objective-C class (an engine linked into the app's main executable: Unreal, Godot)
+static const struct mach_header* image_of_class(const char* name) {
+	Class c = objc_getClass(name);
+	Dl_info di;
+	if (!c || !dladdr((__bridge void*)c, &di)) return NULL;
+	return di.dli_fbase;
+}
+
 void simax_engines_screen_reader(void) {
 	static BOOL done;
 	if (done) return;
 	done = YES;
 	void* vo = dlsym(RTLD_DEFAULT, "UIAccessibilityIsVoiceOverRunning");
 	if (!vo) return;
+	// engines linked into the main executable, found by their Objective-C classes: Unreal's view, Godot's (GodotView
+	// before 4.3, GDTView after)
+	const struct mach_header* unreal = image_of_class("FIOSView");
+	const struct mach_header* godot = image_of_class("GDTView") ?: image_of_class("GodotView");
 	NSMutableArray* which = [NSMutableArray array];
 	int total = 0;
 	for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) {
@@ -82,6 +95,9 @@ void simax_engines_screen_reader(void) {
 		const char* path = _dyld_get_image_name(i);
 		NSString* eng = nil;
 		if (path && strstr(path, "/Flutter.framework/Flutter")) eng = @"flutter";
+		else if (path && strstr(path, "/UnityFramework.framework/UnityFramework")) eng = @"unity";
+		else if (mh == unreal) eng = @"unreal";
+		else if (mh == godot) eng = @"godot";
 		if (!eng || mh->magic != MH_MAGIC_64) continue;
 		int k = rebind_image((const struct mach_header_64*)mh, _dyld_get_image_vmaddr_slide(i), vo, (void*)vo_yes);
 		total += k;

@@ -163,16 +163,18 @@ that way is not listed twice): role `node`, `label` the node's name, `class` the
   and `tap "Player"`, `wait_for "Enemy" gone=true` work on games built with names.
 
 
-### Flutter: the screen reader it waits for
+### Engines that wait for a screen reader
 
 Flutter builds its accessibility tree (the `SemanticsObject`s under a `FlutterView`) only while it believes an assistive
-technology runs. Flutter's own simulator builds turn semantics on anyway; a device build, as an installed
+technology runs; so do Unity 2023.2+ (`AccessibilityHierarchy`, `AssistiveSupport`), Unreal's Slate accessibility and
+Godot 4.5+ (AccessKit). Flutter's own simulator builds turn semantics on anyway; a device build, as an installed
 `.ipa` converted for the simulator runs, does not. At the first `tree` request of a process (none for `noax`), simax
-looks for Flutter's image, `Flutter.framework`. There the pointers its calls to
+looks for those engines' images: `Flutter.framework`, `UnityFramework.framework`, and the image that defines Unreal's
+`FIOSView` or Godot's `GDTView` / `GodotView` (both link into the app's executable). In each, the pointers its calls to
 `UIAccessibilityIsVoiceOverRunning` go through (`__got`, `__auth_got`, `__la_symbol_ptr`) are rebound to a function
 that answers yes, and `UIAccessibilityVoiceOverStatusDidChangeNotification` is posted, so the engine looks again and
 builds its tree. Nothing else in the process sees VoiceOver on: UIKit, the app's own code and other frameworks still get
-no. A process without Flutter is not touched. Flutter's `Semantics(identifier:)` is the element's `id`
+no. A process without those engines is not touched. Flutter's `Semantics(identifier:)` is the element's `id`
 (`tap id:...`). `X86SIM_AX_LOG=1` logs `engines: screen reader on for flutter:<pointers rebound>`.
 
 ## Host
