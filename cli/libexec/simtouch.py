@@ -75,9 +75,47 @@ W, H = device_size()
 KEYS = {c: (4 + i, False) for i, c in enumerate("abcdefghijklmnopqrstuvwxyz")}
 KEYS.update({c.upper(): (4 + i, True) for i, c in enumerate("abcdefghijklmnopqrstuvwxyz")})
 KEYS.update({c: (0x1e + i, False) for i, c in enumerate("1234567890")})
-KEYS.update({" ": (0x2c, False), "\n": (0x28, False), "-": (0x2d, False), "=": (0x2e, False), ".": (0x37, False),
-             ",": (0x36, False), "/": (0x38, False), ";": (0x33, False), "'": (0x34, False), "@": (0x1f, True),
-             "!": (0x1e, True), "?": (0x38, True), ":": (0x33, True), "_": (0x2d, True)})
+KEYS.update({c: (0x1e + i, True) for i, c in enumerate("!@#$%^&*()")})
+KEYS.update({
+    " ": (0x2c, False), "\n": (0x28, False), "\b": (0x2a, False), "\t": (0x2b, False),
+    "-": (0x2d, False), "_": (0x2d, True), "=": (0x2e, False), "+": (0x2e, True),
+    "[": (0x2f, False), "{": (0x2f, True), "]": (0x30, False), "}": (0x30, True),
+    "\\": (0x31, False), "|": (0x31, True), ";": (0x33, False), ":": (0x33, True),
+    "'": (0x34, False), '"': (0x34, True), "`": (0x35, False), "~": (0x35, True),
+    ",": (0x36, False), "<": (0x36, True), ".": (0x37, False), ">": (0x37, True),
+    "/": (0x38, False), "?": (0x38, True),
+})
+
+
+def validate_text(text):
+    for c in text:
+        if c not in KEYS:
+            sys.exit("simtouch: unsupported character %r (U+%04X): HID text only supports US ASCII" % (c, ord(c)))
+
+
+def type_text(s, text):
+    if not text:
+        return
+    hold, gap = 0.025, 0.04
+    # simhid holds the first key command of a session for up to SIMHID_KB_TOUCH_GUARD_MS (1000 ms) after a
+    # touch lift or SIMHID_KB_FIRST_SETTLE_MS (800 ms) on first attach. Warm up with a harmless Shift release
+    # and wait for that settle to finish so subsequent keystrokes do not queue up and scramble Shift state.
+    if len(text) > 1 or KEYS[text[0]][1]:
+        send(s, "key up 225")
+        time.sleep(1.05)
+    for c in text:
+        u, shift = KEYS[c]
+        if shift:
+            send(s, "key down 225")
+            time.sleep(hold)
+        send(s, "key down %d" % u)
+        time.sleep(hold)
+        send(s, "key up %d" % u)
+        if shift:
+            time.sleep(hold)
+            send(s, "key up 225")
+            time.sleep(hold)
+        time.sleep(gap)
 
 
 def feature_on(fid):
@@ -210,6 +248,9 @@ def main(a):
         # (NOTE_ATTRIB) and reports memory pressure to every process (see cli/libexec/jetsam.py memory_warning)
         os.utime(os.path.join(os.path.dirname(SOCK), "var/run/memory_warning_simulation"))
         return
+    if a[0] == "text":
+        text = " ".join(a[1:])
+        validate_text(text)
     s = connect()
     if a[0] == "tap":
         x, y = float(a[1]), float(a[2])
@@ -299,12 +340,7 @@ def main(a):
         u = named[a[1].lower()] if a[1].lower() in named else int(a[1], 0)
         send(s, "key down %d" % u, "key up %d" % u)
     elif a[0] == "text":
-        for c in " ".join(a[1:]):
-            u, shift = KEYS[c]
-            if shift: send(s, "key down 225")
-            send(s, "key down %d" % u, "key up %d" % u)
-            if shift: send(s, "key up 225")
-            time.sleep(0.02)
+        type_text(s, text)
     elif a[0] == "raw":
         send(s, *a[1:])
     else:
