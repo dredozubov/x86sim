@@ -303,7 +303,7 @@ pub fn cli(args: &[String]) -> i32 {
     let inst = match phone.as_deref() {
         Some(p) => instance::find(p),
         None => {
-            let running: Vec<_> = instance::summaries(0).into_iter().filter(|s| s.state != "off").collect();
+            let running: Vec<_> = instance::summaries_unprobed(0).into_iter().filter(|s| s.state != "off").collect();
             match running.as_slice() {
                 [one] => instance::find(&one.id),
                 _ => std::env::var("X86SIM_DEVICE").ok().and_then(|d| instance::find(&d)),

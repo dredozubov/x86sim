@@ -49,7 +49,7 @@ fn pick(phone: Option<&str>) -> Result<instance::Instance> {
             return Ok(instance::load(std::path::Path::new(&d)));
         }
     }
-    let running: Vec<_> = instance::summaries(0).into_iter().filter(|s| s.state != "off").collect();
+    let running: Vec<_> = instance::summaries_unprobed(0).into_iter().filter(|s| s.state != "off").collect();
     if running.len() == 1 {
         return instance::find(&running[0].id).ok_or_else(|| anyhow!("device vanished"));
     }

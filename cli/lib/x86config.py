@@ -44,7 +44,16 @@ _run_dir = None
 
 
 def _usable_dir(d):
-    return bool(d) and os.path.isabs(d) and len(d) <= RUN_DIR_MAX and os.path.isdir(d) and \
+    # as rundir.rs usable(): a real directory owned by this user that no one else can write (root after a plain su
+    # keeps the user's XDG_RUNTIME_DIR; some containers set it to /tmp)
+    import stat
+    if not (d and os.path.isabs(d) and len(d) <= RUN_DIR_MAX):
+        return False
+    try:
+        st = os.lstat(d)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o022 and \
         os.access(d, os.W_OK | os.X_OK)
 
 

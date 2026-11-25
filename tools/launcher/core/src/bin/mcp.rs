@@ -156,7 +156,7 @@ fn phone_of(a: &Value, cfg: &aot::Config) -> anyhow::Result<instance::Instance> 
             anyhow::anyhow!("no device {k:?} (devices: {})", instance::list().iter().map(|i| i.name.clone()).collect::<Vec<_>>().join(", "))
         });
     }
-    let running: Vec<_> = instance::summaries(0).into_iter().filter(|s| s.state != "off").collect();
+    let running: Vec<_> = instance::summaries_unprobed(0).into_iter().filter(|s| s.state != "off").collect();
     if running.len() == 1 {
         return instance::find(&running[0].id).ok_or_else(|| anyhow::anyhow!("device vanished"));
     }

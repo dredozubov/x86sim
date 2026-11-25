@@ -273,8 +273,20 @@ pub struct Summary {
     pub hung_reason: String,
 }
 
-/// Every phone's state; samples CPU over `sample_ms` (0: memory and state only).
+/// Every phone's state; samples CPU over `sample_ms` (0: memory and state only). Probes each phone's SpringBoard
+/// (`responsive` / `hung`, up to [`crate::liveness`]'s probe timeout on a busy or stuck phone): callers that only want
+/// the list or the state use [`summaries_unprobed`].
 pub fn summaries(sample_ms: u64) -> Vec<Summary> {
+    summaries_with(sample_ms, true)
+}
+
+/// [`summaries`] without the SpringBoard probe (`responsive` None, `hung` false): picking a phone, waiting for a
+/// state. With the probe, every MCP call that named no phone waited out the probe timeout on a busy phone.
+pub fn summaries_unprobed(sample_ms: u64) -> Vec<Summary> {
+    summaries_with(sample_ms, false)
+}
+
+fn summaries_with(sample_ms: u64, probe: bool) -> Vec<Summary> {
     // one Monitor for the process: a fresh one forgot which phones had reached home, so a phone with a dark app open
     // (every watchOS app) was reported "starting" again by the MCP server's phones_list
     static MON: std::sync::Mutex<Option<Monitor>> = std::sync::Mutex::new(None);
@@ -292,7 +304,7 @@ pub fn summaries(sample_ms: u64) -> Vec<Summary> {
             .iter()
             .zip(&st)
             .map(|(i, s)| {
-                let boot = s.boot_time.filter(|_| s.phase == Phase::Running && s.home);
+                let boot = s.boot_time.filter(|_| probe && s.phase == Phase::Running && s.home);
                 sc.spawn(move || boot.map(|b| crate::liveness::check(i, b)))
             })
             .collect();

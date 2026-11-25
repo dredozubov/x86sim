@@ -214,7 +214,7 @@ pub fn plan(r: &Runtime) -> Plan {
         kept.push(format!("{} stays: outside runtimes/ and the scratch dir", i.path.display()));
     }
     let gone = r.version.is_empty();
-    let sums = crate::instance::summaries(0);
+    let sums = crate::instance::summaries_unprobed(0);
     let devices = crate::instance::list()
         .into_iter()
         .filter(|i| i.runtime_dir == r.dir || gone && i.build == r.build)
@@ -281,7 +281,7 @@ pub fn stop_devices(p: &Plan, secs: u64) -> Result<()> {
     }
     let t0 = std::time::Instant::now();
     while t0.elapsed().as_secs() < secs {
-        let sums = crate::instance::summaries(0);
+        let sums = crate::instance::summaries_unprobed(0);
         if p.devices.iter().all(|d| sums.iter().find(|s| s.id == d.id).is_none_or(|s| s.state == "off")) {
             return Ok(());
         }

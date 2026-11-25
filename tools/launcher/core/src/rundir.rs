@@ -1,7 +1,7 @@
 //! Where a phone's frame ring and the host-side sockets next to it live (simhid's short socket, simax's accessibility
 //! readers, webinspectord's debugger socket): the rule of cli/lib/x86config.py's run_dir, which mksimdevice.py uses to
 //! write SIMFB_RING into a phone's sim.env.
-//!   1. `$XDG_RUNTIME_DIR`, when it is a directory this user can write
+//!   1. `$XDG_RUNTIME_DIR`, when it is a directory this user owns and only this user can write
 //!   2. `/run/user/<uid>`, the same (a login session's, or a lingering user's)
 //!   3. `/tmp/x86sim-<uid>`, made private (0700) and checked to be this user's: no login session at all (a headless
 //!      server, a container, su). Not under ~/.cache: the directory must be short ([`MAX_DIR`]), and a ring on disk
@@ -46,12 +46,21 @@ fn short(d: &Path) -> bool {
     d.is_absolute() && d.as_os_str().len() <= MAX_DIR
 }
 
-/// A directory this user can create files in
-fn usable(d: &Path) -> bool {
+/// A directory this user can create files in and nobody else can: a real directory (not a link) owned by `uid`,
+/// writable by no group or other user. Writable alone was not enough: root after a plain `su` keeps the user's
+/// XDG_RUNTIME_DIR, where that user could plant links for the ring's temporary file (simfb opens it O_CREAT|O_TRUNC
+/// without O_NOFOLLOW); an XDG_RUNTIME_DIR of /tmp (some containers) let every user do the same.
+fn usable(d: &Path, uid: u32) -> bool {
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
     let Ok(c) = std::ffi::CString::new(d.as_os_str().as_bytes()) else { return false };
+    let Ok(m) = std::fs::symlink_metadata(d) else { return false };
     // SAFETY: c is a valid NUL-terminated path
-    short(d) && d.is_dir() && unsafe { libc::access(c.as_ptr(), libc::W_OK | libc::X_OK) } == 0
+    short(d)
+        && m.file_type().is_dir()
+        && m.uid() == uid
+        && m.mode() & 0o022 == 0
+        && unsafe { libc::access(c.as_ptr(), libc::W_OK | libc::X_OK) } == 0
 }
 
 /// Makes `d` (in a world-writable /tmp) a directory only `uid` can use: created 0700, or an existing one kept only if
@@ -75,10 +84,10 @@ fn private(d: &Path, uid: u32) -> bool {
 
 /// The rule (module docs) over the given places; None when none works (the private directory is someone else's).
 pub fn pick(c: &Candidates) -> Option<PathBuf> {
-    if let Some(x) = c.xdg_runtime_dir.as_ref().filter(|x| usable(x)) {
+    if let Some(x) = c.xdg_runtime_dir.as_ref().filter(|x| usable(x, c.uid)) {
         return Some(x.clone());
     }
-    if usable(&c.run_user) {
+    if usable(&c.run_user, c.uid) {
         return Some(c.run_user.clone());
     }
     private(&c.private, c.uid).then(|| c.private.clone())
@@ -175,6 +184,27 @@ mod tests {
         // owned by someone else
         let c = Candidates { private: target, uid: me().wrapping_add(1), ..c };
         assert_eq!(pick(&c), None);
+        std::fs::remove_dir_all(&s).unwrap();
+    }
+
+    #[test]
+    fn shared_or_foreign_runtime_dir_skipped() {
+        let s = scratch("e");
+        let (x, r) = (s.join("x"), s.join("r"));
+        std::fs::create_dir_all(&x).unwrap();
+        std::fs::create_dir_all(&r).unwrap();
+        // writable by others (an XDG_RUNTIME_DIR of /tmp): skipped
+        std::fs::set_permissions(&x, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let c = Candidates { xdg_runtime_dir: Some(x.clone()), run_user: r.clone(), private: s.join("p"), uid: me() };
+        assert_eq!(pick(&c), Some(r.clone()));
+        // another user's (root after su keeps the user's XDG_RUNTIME_DIR): skipped, down to the private one
+        std::fs::set_permissions(&x, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let other = Candidates { uid: me().wrapping_add(1), private: s.join("q"), ..c.clone() };
+        assert!(!usable(&x, other.uid) && !usable(&r, other.uid));
+        // a link to a good directory: skipped
+        let link = s.join("l");
+        std::os::unix::fs::symlink(&r, &link).unwrap();
+        assert!(!usable(&link, me()));
         std::fs::remove_dir_all(&s).unwrap();
     }
 

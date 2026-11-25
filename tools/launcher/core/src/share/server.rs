@@ -429,7 +429,7 @@ impl Server {
             return c.1.clone();
         }
         let insts = instance::list();
-        let sums = instance::summaries(0);
+        let sums = instance::summaries_unprobed(0);
         let v: Vec<Value> = insts
             .iter()
             .map(|i| {
