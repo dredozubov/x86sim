@@ -42,7 +42,7 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 | `cli/libexec/xctest.py` (`x86sim test fetch-platform`) | copying Xcode's `<Platform>.platform` XCTest files from the Mac | F1: taken from Xcode.xip on Linux (the Darwin SDK `x86sim dev setup sdk --xip` builds) |
 | `tests/apps/XCTestDemo/build.sh` | `xcodebuild build-for-testing` of the XCTest fixture | F1 (see there) |
 | `cli/libexec/arm64/fetch-macos-host.sh` | copying `/System/Library/GeoServicesData` (Maps' seed resource manifest) | done (F2): no download needed. The seed only names a tile group; geod then fetches Apple's manifest and every resource (the region / territory / time zone archives included) itself. boot-a64.sh writes it; Maps draws tiles on a phone with no geod state |
-| `tests/apps/build-ipa.sh` | building the DeviceHello device `.ipa` fixture with Xcode | F4: the Linux device toolchain |
+| `tests/apps/build-ipa.sh` | building the DeviceHello device `.ipa` fixture with Xcode | done (F4): Swift 6.4 + the Darwin SDK made from Xcode.xip on Linux (what `x86sim dev device` uses), clang + ld64.lld, rcodesign; `x86sim-devapp inspect` reads it as the Mac-built one, and it installs and runs on a phone |
 | `tools/devicetypes/extract-devicetypes.py` | reading Xcode's device type plists | Open |
 | `tests/apps/sdkcov/res/sdkcovMovies.swift`, `sdkcovGK.swift` | running macOS programs that write fixtures | Open |
 | `linux/fmrelay/fmrelay.py`, `boot-a64.sh` (`X86SIM_FM_RELAY`) | a runtime service, not a build: Apple's on-device FoundationModels model runs only on a Mac with Apple Intelligence, so the optional relay forwards the guest's model requests there (off by default) | cannot move: documented in AGENTS.md |

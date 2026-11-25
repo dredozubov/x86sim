@@ -298,8 +298,8 @@ metadata, on a copy (the input is never changed):
 App Store downloads are encrypted with FairPlay (`LC_ENCRYPTION_INFO` cryptid 1) for the device they were bought
 on and are refused with a message saying so; export a development, ad-hoc or enterprise build instead. Binaries
 without an arm64 slice (armv7, arm64e only, x86_64) are refused too. `x86sim-devapp inspect X.ipa` shows what a
-bundle holds; `tests/apps/build-ipa.sh` builds a small device `.ipa` (an embedded fat framework, entitlements) on a
-Mac as a fixture.
+bundle holds; `tests/apps/build-ipa.sh` builds a small device `.ipa` (an embedded fat framework, entitlements) on
+Linux as a fixture.
 
 ### Tests (XCTest, XCUITest)
 
