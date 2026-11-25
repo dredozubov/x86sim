@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """x86Sim: regenerate cli/lib/devicetypes-a64.json and cli/lib/devicetype-<model>.json on Linux from Xcode.xip.
 
-    tools/devicetypes/extract-devicetypes.py SOURCE [--runtime 27.2] [--include-unsupported]
+    tools/devicetypes/extract-devicetypes.py SOURCE [--runtime 27.2] [--include-unsupported] [--out DIR]
+
+--out DIR writes the files into DIR instead of cli/lib (`x86sim account download-xcode` compares them with cli/lib).
 
 SOURCE holds Xcode's simulator device types (CoreSimulator/Profiles/DeviceTypes/*.simdevicetype), any of:
   - Xcode.xip (developer.apple.com, free Apple ID; the file `x86sim dev setup sdk --xip` takes), read as a stream
@@ -255,12 +257,15 @@ def ios_runtime(rtver):
 
 
 def main():
-    rtver, unsupported, src = "27.2", False, None
+    rtver, unsupported, src, out_dir = "27.2", False, None, LIB
     a = sys.argv[1:]
     while a:
         o = a.pop(0)
         if o == "--runtime":
             rtver = a.pop(0)
+        elif o == "--out" and a:
+            out_dir = a.pop(0)
+            os.makedirs(out_dir, exist_ok=True)
         elif o == "--include-unsupported":
             unsupported = True
         elif o.startswith("-") or src:
@@ -335,7 +340,7 @@ def main():
                          f"own (iPhone Duo: 27.2 24B91016s, runtime-fetch.py fetch 24B91016s)")
         if js not in written:
             written.add(js)
-            with open(os.path.join(LIB, js), "w") as f:
+            with open(os.path.join(out_dir, js), "w") as f:
                 json.dump(ints(caps), f, indent=1, sort_keys=True)
     # x86Sim's own device types (no Apple profile): a variant of an Apple one right after it
     final = {}
@@ -346,7 +351,7 @@ def main():
                 final[xname] = dict(e, w=str(int(e["w"]) // scale), h=str(int(e["h"]) // scale),
                                     scale="%f" % (float(e["scale"]) / scale), pitch="%f" % (float(e["pitch"]) / scale))
     out = final
-    with open(os.path.join(LIB, "devicetypes-a64.json"), "w") as f:
+    with open(os.path.join(out_dir, "devicetypes-a64.json"), "w") as f:
         json.dump(out, f, indent=1)
         f.write("\n")
     print(f"{sum(1 for v in out.values() if 'platform' in v)} of them Apple TV / Apple Watch / Apple Vision Pro")
