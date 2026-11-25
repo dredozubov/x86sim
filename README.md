@@ -454,6 +454,9 @@ x86sim pool down --delete
   command reaps them. Taking is atomic across processes (a lock around the pool's state in `var/pool/`).
 - **Reset on release** (`--reset` at take or release): `apps` (default: uninstall the apps installed during the
   lease, with their data, then Home), `restart` (a fresh boot), `erase` (re-cloned from the template), `none`.
+- **Hung devices**: a device whose SpringBoard stops answering (its simax reader, asked on SpringBoard's main
+  thread, silent for 3 checks in a row over 10 s or more) shows `hung` in `pool status` and `"hung": true` in MCP
+  `phones_list`; it is not handed out, and a free one is restarted (an `apps` reset of a hung device restarts it).
 - **Fast creation**: members are clones of `<pool>-template`, a device of the pool's model booted once and stopped,
   copied with `cp --reflink=auto` (instant and sharing disk on btrfs / XFS) and given their own paths and UDID.
 - **Memory**: `pool up` boots a device only while available memory stays above a reserve (3 GB, `--reserve-mb`)

@@ -30,7 +30,7 @@ fn tools() -> Value {
     let phone = json!({"type": "string", "description": "the device: its name (as in the hub, e.g. \"QA\"), folder (device-a64-qa) or path. Default: the only running device, else the configured one"});
     let after = json!({"type": "string", "enum": ["full", "diff", "none"], "description": "what to answer with after the action settled: the whole screen (default), only what changed, or nothing"});
     let mut t = json!([
-        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime.",
+        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime; responsive (SpringBoard answers; null while not known) and hung (running, but SpringBoard has not answered for 10 s or more: restart the device).",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "sim_status", "description": "Same as phones_list (kept for older clients).",
          "inputSchema": {"type": "object", "properties": {}}},
