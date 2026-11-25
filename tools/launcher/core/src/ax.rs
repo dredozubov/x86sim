@@ -2055,6 +2055,7 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
     let mut ring = Ring::new(&screen_ring(inst));
     // text no element says: also looked for in the pixels (OCR, once per new frame)
     let ocr = crate::ocr::worth_a_look(inst, &t);
+    let mut gone_q: Option<u8> = None;
     loop {
         let seq = ring.seq();
         let mut snap = snapshot(inst, SnapOpts::default());
@@ -2062,8 +2063,13 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
             snap = snapshot(inst, SnapOpts { ocr: true, ..Default::default() });
         }
         if let Ok(snap) = &snap {
-            // tap's rules: exact, then prefix, then a part of the label (or value), best first
-            let hit = find_all(snap, &t).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
+            // tap's rules: exact, then prefix, then a part of the label (or value), best first. gone: what the target
+            // matched when the wait began, no looser (a node "Coin" taken while a score label "Coin 1" stays: the
+            // substring match must not keep the wait going)
+            if gone && gone_q.is_none() {
+                gone_q = Some((0..=4u8).find(|q| find_all_q(snap, &t, *q).into_iter().any(|e| !e.offscreen && !e.covered)).unwrap_or(u8::MAX));
+            }
+            let hit = find_all_q(snap, &t, gone_q.unwrap_or(u8::MAX)).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
             if hit.is_some() != gone {
                 let ms = t0.elapsed().as_millis();
                 let did = match hit {
