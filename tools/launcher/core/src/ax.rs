@@ -1759,6 +1759,58 @@ pub fn swipe(inst: &Instance, from: (f64, f64), to: (f64, f64), ms: u64, after: 
     Ok(outcome(inst, format!("swiped ({:.0},{:.0}) -> ({:.0},{:.0})", from.0, from.1, to.0, to.1), before, after))
 }
 
+/// Two fingers on the screen around (cx, cy) in points: their half-spacing goes from r1 to r2 (r2 > r1 zooms in)
+/// while the line through them turns by `rotate_deg` (clockwise; a two-finger rotation), over `ms`
+pub fn pinch(inst: &Instance, center: Option<&str>, at: Option<(f64, f64)>, r1: f64, r2: f64, rotate_deg: f64, ms: u64, after: After) -> Result<Outcome> {
+    anyhow::ensure!(!matches!(inst.platform.as_str(), "tvos" | "watchos" | "xros"), "{}: pinch needs a touch screen (iPhone, iPad)", inst.name);
+    anyhow::ensure!([r1, r2, rotate_deg].iter().all(|v| v.is_finite()) && r1 >= 1.0 && r2 >= 1.0, "radius and to_radius: half the distance between the fingers in points, at least 1");
+    let before = last(inst);
+    let (cx, cy, what, sp) = match (center, at) {
+        (Some(t), _) => {
+            let (e, snap) = resolve(inst, t)?;
+            let sp = snap.space_of(&e);
+            let (x, y) = e.center(sp.size);
+            (x, y, format!("@{} {} ", e.r, e.role), sp)
+        }
+        (None, Some((x, y))) => (x, y, String::new(), front_space(inst)),
+        (None, None) => {
+            let sp = front_space(inst);
+            (sp.size.0 / 2.0, sp.size.1 / 2.0, String::new(), sp)
+        }
+    };
+    let (w, h) = sp.size;
+    let a0 = 0f64;
+    let a1 = rotate_deg.to_radians();
+    let fingers = |r: f64, ang: f64| ((cx - r * ang.cos(), cy - r * ang.sin()), (cx + r * ang.cos(), cy + r * ang.sin()));
+    for (r, ang) in [(r1, a0), (r2, a1)] {
+        let ((x1, y1), (x2, y2)) = fingers(r, ang);
+        for (x, y) in [(x1, y1), (x2, y2)] {
+            anyhow::ensure!((0.0..=w).contains(&x) && (0.0..=h).contains(&y), "a finger at ({x:.0},{y:.0}) would be off the screen ({w:.0}x{h:.0} points): a smaller radius or another center");
+        }
+    }
+    anyhow::ensure!(simhid_up(inst), "{}: its touch input (host/simhid) does not answer (is the device still starting?)", inst.name);
+    let mut hd = hid_for(inst, sp);
+    let n = (ms.max(50) / 16).clamp(4, 200);
+    let send = |hd: &mut Hid, phase: &str, t: f64| {
+        let ((x1, y1), (x2, y2)) = fingers(r1 + (r2 - r1) * t, a0 + (a1 - a0) * t);
+        let (p, q) = (sp.norm(x1, y1), sp.norm(x2, y2));
+        hd.touch2(phase, p.0, p.1, q.0, q.1);
+    };
+    send(&mut hd, "down", 0.0);
+    for i in 1..=n {
+        std::thread::sleep(Duration::from_millis(ms.max(50) / n));
+        send(&mut hd, "move", i as f64 / n as f64);
+    }
+    // the fingers rest a moment before they lift, so the gesture ends without a fling
+    std::thread::sleep(Duration::from_millis(50));
+    send(&mut hd, "up", 1.0);
+    let mut did = format!("pinched {what}at ({cx:.0},{cy:.0}) from radius {r1:.0} to {r2:.0}");
+    if rotate_deg != 0.0 {
+        did += &format!(", turned {rotate_deg:.0} degrees");
+    }
+    Ok(outcome(inst, did, before, after))
+}
+
 fn tv_arrow(direction: &str) -> Result<u32> {
     Ok(match direction {
         "down" => 0x51,
@@ -1927,8 +1979,13 @@ pub fn open_url(inst: &Instance, url: &str, after: After) -> Result<Outcome> {
 }
 
 pub fn launch(inst: &Instance, bundle: &str, args: &[String], after: After) -> Result<Outcome> {
+    launch_env(inst, bundle, args, &[], after)
+}
+
+/// `launch` with environment variables for the app (KEY, VALUE)
+pub fn launch_env(inst: &Instance, bundle: &str, args: &[String], env: &[(String, String)], after: After) -> Result<Outcome> {
     let before = last(inst);
-    let a = crate::apps::launch(inst, bundle, args)?;
+    let a = crate::apps::launch_env(inst, bundle, args, env)?;
     if after != After::None {
         wait_front_is(inst, bundle, Duration::from_secs(20));
     }
