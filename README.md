@@ -697,6 +697,8 @@ x86sim dev new HelloApp               # a SwiftUI app (xtool new), set up for iO
 x86sim dev run HelloApp --phone QA    # build for that device's platform, install and launch: the edit-run loop
 x86sim dev test HelloApp              # the same, then check it still runs and take a screenshot
 x86sim dev device | ship | ship-mac | convert | auth   # real iPhones, App Store / TestFlight, Xcode projects
+x86sim dev setup cocoapods            # a pinned Ruby and CocoaPods in your home directory, for Podfile projects
+x86sim dev pod ios install            # pod install on Linux (React Native, Expo, Flutter plugins with a Podfile)
 ```
 
 - **Build** Swift, SwiftUI, Objective-C, C and C++ apps with Swift and xtool, along with Flutter and Kotlin

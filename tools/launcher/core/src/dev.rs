@@ -84,7 +84,8 @@ pub fn env() -> Vec<(String, String)> {
             path.push(d.into());
         }
     }
-    let mut v = vec![("PATH".to_string(), std::env::join_paths(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())];
+    // the omarchy-apple-dev tree, for the `pod` wrapper (it moves with the AppImage)
+    let mut v = vec![("OAD_DIR".to_string(), fork_dir().to_string_lossy().into_owned()), ("PATH".to_string(), std::env::join_paths(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())];
     if std::env::var_os("XDG_CONFIG_HOME").is_none() && swiftpm_dir() == home().join(".config/swiftpm") {
         v.push(("XDG_CONFIG_HOME".into(), home().join(".config").to_string_lossy().into_owned()));
     }
@@ -320,6 +321,11 @@ pub fn status() -> Status {
         if auth { "" } else { "x86sim dev auth (interactive Apple ID sign-in, in a terminal)" },
     ));
 
+    // CocoaPods (optional: React Native, Expo, Flutter plugins with a Podfile)
+    if let Some(p) = crate::devpods::status_piece() {
+        v.push(p);
+    }
+
     // the Swift toolchain's lldb for `x86sim debug` (optional: /usr/bin/lldb is the fallback)
     if let Some(p) = swift_lldb_status() {
         v.push(p);
@@ -362,6 +368,7 @@ fn job_steps(kind: &str) -> &'static [&'static str] {
         "swift" => &["== swift: download", "== swift: unpack", "== swift: check"],
         "verify" => &["== verify: new project", "== verify: build"],
         "lldb" => &["== swift lldb: /", "== swift lldb: download", "== swift lldb: unpack", "== swift lldb: toolchain view"],
+        "cocoapods" => &["== cocoapods", "== Ruby", "== CocoaPods"],
         "repair" => &["== repair", "Installed actool", "Building OpenAppleMacrosServer"],
         _ => &["== swift", "== 1", "== 3.", "== 4.", "== 5.", "== 6.", "Installed actool", "Building OpenAppleMacrosServer", "== 7."],
     }
@@ -416,7 +423,7 @@ pub fn start_job(kind: &str, args: &[String]) -> Result<Job> {
     if let Some(j) = job().filter(|j| j.running) {
         bail!("a setup job is already running ({}, pid {}): wait for it or cancel it", j.kind, j.pid);
     }
-    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "all"), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb or all");
+    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "cocoapods" | "all"), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb, cocoapods or all");
     let d = work_dir();
     std::fs::create_dir_all(&d)?;
     for f in ["job.rc", "job.log"] {
@@ -1034,8 +1041,8 @@ pub fn mcp_tools() -> Vec<serde_json::Value> {
     vec![
         json!({"name": "dev_status", "description": "Develop (omarchy-apple-dev): the app toolchain's state: Swift, xtool, the iOS SDK (and its simulator platforms), device tools; ready_sim says whether simulator builds work. Includes the running / last setup job with its step and log tail, and the recent projects.",
                "inputSchema": {"type": "object", "properties": {}}}),
-        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use).",
-               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
+        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use), cocoapods (a pinned user-local Ruby and CocoaPods, ~70 MB: pod install for React Native / Expo apps and Flutter plugins with a Podfile).",
+               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb", "cocoapods"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
         json!({"name": "dev_setup_cancel", "description": "Stop the running setup job.", "inputSchema": {"type": "object", "properties": {}}}),
         json!({"name": "dev_new", "description": "Make a new SwiftUI app project (xtool new) in parent (default: ~/x86sim-apps), set up for every simulator platform. Returns its directory.",
                "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "a Swift identifier, e.g. HelloApp"}, "parent": {"type": "string"}}, "required": ["name"]}}),

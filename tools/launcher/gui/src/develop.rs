@@ -91,6 +91,7 @@ fn piece_icon(id: &str) -> &'static str {
         "swift" => icon::CODE,
         "xtool" => icon::HAMMER,
         "sdk" => icon::APPLE_LOGO,
+        "cocoapods" => icon::PACKAGE,
         _ => icon::DEVICE_MOBILE,
     }
 }
@@ -186,6 +187,11 @@ impl App {
                         ("xtool", s) if s != "ok" => {
                             if ui.add(Btn::primary(if s == "missing" { "Install" } else { "Update" }).icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("xtool (built from source, about 7 minutes), rcodesign, ipsw, pymobiledevice3").clicked() {
                                 start = Some(("toolchain", vec![]));
+                            }
+                        }
+                        ("cocoapods", s) if s != "ok" => {
+                            if ui.add(Btn::primary(if s == "stale" { "Update" } else { "Install" }).icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Ruby and CocoaPods, pinned, into your home folder (about 70 MB): for React Native, Expo and Flutter plugins with a Podfile").clicked() {
+                                start = Some(("cocoapods", vec![]));
                             }
                         }
                         ("packages", "missing") => {
