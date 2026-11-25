@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "lib"))
 import x86config  # noqa: E402
 
 USAGE = """usage: x86sim [--phone NAME] test [options]
-       x86sim test fetch-platform [ios|tvos|watchos|xros]
+       x86sim test fetch-platform [ios|tvos|watchos|xros] [--platform DIR]   (copy XCTest's platform files into sdks/)
 
 What to run (one of):
   --xctestrun FILE        an .xctestrun from `xcodebuild build-for-testing` (products next to it, as Xcode's
@@ -222,9 +222,9 @@ def find_platform(name, given):
         for p in (os.path.join(c, name + ".platform"), c):
             if os.path.isdir(os.path.join(p, "Developer/Library/Frameworks/XCTest.framework")):
                 return os.path.realpath(p)
-    die("no XCTest frameworks for %s: put Xcode's %s.platform in sdks/ (x86sim test fetch-platform copies it from "
-        "$X86SIM_MAC), point --platform / X86SIM_XCTEST_PLATFORMS at a copy of Xcode's Contents/Developer/Platforms, "
-        "or set up the xtool SDK from an Xcode .xip (x86sim dev setup sdk --xip Xcode.xip)" % (name, name))
+    die("no XCTest frameworks for %s: set up the Darwin SDK from an Xcode .xip on this machine (x86sim dev setup sdk "
+        "--xip Xcode.xip: Xcode from developer.apple.com, free Apple ID), or point --platform / X86SIM_XCTEST_PLATFORMS "
+        "at a copy of Xcode's Contents/Developer/Platforms" % name)
 
 
 # the parts of <Platform>.platform/Developer a test process loads
@@ -878,26 +878,31 @@ def report(s, quiet):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def fetch_platform(args):
-    """Copy what x86sim test needs of Xcode's <Platform>.platform from $X86SIM_MAC into sdks/ (ssh + tar)."""
-    plat = args[0] if args else "ios"
+    """Copy what x86sim test needs of <Platform>.platform from the Darwin SDK `x86sim dev setup sdk --xip Xcode.xip`
+    builds on Linux (or --platform DIR, a copy of Xcode's Contents/Developer/Platforms) into sdks/."""
+    plat = next((x for x in args if not x.startswith("-")), "ios")
     if plat not in PLATFORMS:
-        die("fetch-platform ios|tvos|watchos|xros")
+        die("fetch-platform ios|tvos|watchos|xros [--platform DIR]")
     name = PLATFORMS[plat]
-    mac = os.environ.get("X86SIM_MAC") or x86config.load().get("X86SIM_MAC")
-    if not mac:
-        die("set X86SIM_MAC (ssh host of a Mac with Xcode) in x86sim.env, or copy Xcode's "
-            "Contents/Developer/Platforms/%s.platform into sdks/ yourself" % name)
+    given = args[args.index("--platform") + 1] if "--platform" in args[:-1] else None
     dst = os.path.join(ROOT, "sdks")
-    os.makedirs(dst, exist_ok=True)
-    parts = " ".join("'%s.platform/Developer/%s'" % (name, p) for p in PLATFORM_PARTS + ["Library/Xcode/Agents/XCTRunner.app", "usr/lib/XCTest.swiftmodule"])
-    remote = 'cd "$(xcode-select -p)/Platforms" && COPYFILE_DISABLE=1 tar cf - %s 2>/dev/null' % parts
-    print("x86sim test: copying %s.platform's XCTest files from %s into %s" % (name, mac, dst), file=sys.stderr)
-    p1 = subprocess.Popen(["ssh", "-o", "BatchMode=yes", mac, remote], stdout=subprocess.PIPE)
-    p2 = subprocess.run(["tar", "xf", "-", "-C", dst], stdin=p1.stdout, stderr=subprocess.DEVNULL)
-    p1.wait()
-    if p2.returncode or not os.path.isdir(os.path.join(dst, name + ".platform/Developer/Library/Frameworks/XCTest.framework")):
-        die("copy failed (is Xcode installed on %s?)" % mac, 1)
-    print(os.path.join(dst, name + ".platform"))
+    sdk_plat = os.path.join(dst, name + ".platform")
+    src = find_platform(name, given)
+    if os.path.realpath(src) == os.path.realpath(sdk_plat):
+        print(sdk_plat)
+        return
+    print("x86sim test: copying %s's XCTest files from %s into %s" % (name, src, dst), file=sys.stderr)
+    for part in PLATFORM_PARTS + ["usr/lib/XCTest.swiftmodule"]:
+        s, d = os.path.join(src, "Developer", part), os.path.join(sdk_plat, "Developer", part)
+        if not os.path.exists(s):
+            continue
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        if os.path.isdir(s):
+            shutil.rmtree(d, ignore_errors=True)
+            shutil.copytree(s, d, symlinks=True)
+        else:
+            shutil.copy2(s, d)
+    print(sdk_plat)
 
 
 def parse(argv):

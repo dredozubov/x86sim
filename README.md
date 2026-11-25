@@ -298,8 +298,8 @@ metadata, on a copy (the input is never changed):
 App Store downloads are encrypted with FairPlay (`LC_ENCRYPTION_INFO` cryptid 1) for the device they were bought
 on and are refused with a message saying so; export a development, ad-hoc or enterprise build instead. Binaries
 without an arm64 slice (armv7, arm64e only, x86_64) are refused too. `x86sim-devapp inspect X.ipa` shows what a
-bundle holds; `tests/apps/build-ipa.sh` builds a small device `.ipa` (an embedded fat framework, entitlements) on a
-Mac as a fixture.
+bundle holds; `tests/apps/build-ipa.sh` builds a small device `.ipa` (an embedded fat framework, entitlements) on
+Linux as a fixture.
 
 ### Tests (XCTest, XCUITest)
 
@@ -329,8 +329,9 @@ x86sim test qa --spm MyPackage                          # a Swift package's test
   / `x86sim test --spm`, which builds its tests on Linux with the `x86sim dev` toolchain. Test bundles inside an Xcode
   project (an app's unit tests, UI test runners) need Xcode's build system.
 - **XCTest's frameworks** (`XCTest.framework`, `XCTestCore`, `XCUIAutomation`, `libXCTestBundleInject.dylib`) are
-  Xcode's, not the runtime's: `x86sim test` takes them from `sdks/<Platform>.platform` (`x86sim test fetch-platform`
-  copies them from `$X86SIM_MAC`), `--platform DIR`, or the SDK `x86sim dev setup sdk --xip` installed.
+  Xcode's, not the runtime's: `x86sim test` takes them from the Darwin SDK `x86sim dev setup sdk --xip Xcode.xip` builds
+  on Linux (Xcode.xip from developer.apple.com, a free Apple ID; Apple publishes no XCTest download without one),
+  `sdks/<Platform>.platform` (`x86sim test fetch-platform` copies them there) or `--platform DIR`.
 - **Every platform**: `tests/apps/XCTestDemo` builds for iOS, tvOS, watchOS and visionOS (`X86SIM_PLATFORM=tvos
   tests/apps/XCTestDemo/build.sh`; `run.sh <phone>` picks the phone's). Its unit, logic and UI tests give Apple's
   results on iPhone, iPad, Apple TV, Apple Watch and Vision Pro.

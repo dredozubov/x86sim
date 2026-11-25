@@ -1,8 +1,7 @@
 #!/bin/bash
-# x86Sim: build the test apps (tests/apps/<name>) for the arm64 iOS Simulator on the Mac (X86SIM_MAC) with swiftc —
-# no Xcode project — and copy the .app bundles to $X86SIM_SCRATCH/apps/. Usage: tests/apps/build.sh [name...]
-# On Linux (X86SIM_BUILD=linux, build/mac-env.sh: the default when sdks/iPhoneSimulator.sdk exists) the same commands
-# run here: build/linux-bin's xcrun/codesign map to build/linux-swiftc.sh + ld64.lld.
+# x86Sim: build the test apps (tests/apps/<name>) for the arm64 iOS Simulator on Linux with swiftc — no Xcode project —
+# and copy the .app bundles to $X86SIM_SCRATCH/apps/. Usage: tests/apps/build.sh [name...]
+# build/mac-env.sh: build/linux-bin's xcrun/codesign map to build/linux-swiftc.sh + ld64.lld and the SDKs in sdks/.
 # X86SIM_PLATFORM=tvos|watchos|xros: for that simulator, into <name>-<platform>.app (tests/apps/platform.sh).
 set -eo pipefail
 X86SIM_ROOT=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}

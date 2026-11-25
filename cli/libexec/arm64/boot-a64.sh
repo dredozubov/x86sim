@@ -892,16 +892,16 @@ plistlib.dump({"$archiver": "NSKeyedArchiver", "$version": 100000, "$objects": o
 	"$top": {"Version": 1, "Generation": 1, "Index": U(1)}}, open(sys.argv[1], "wb"), fmt=plistlib.FMT_BINARY)
 PY
 fi
-# Speed 27: and host data a Mac has in /System/Library (cli/libexec/arm64/fetch-macos-host.sh fetches it from the Mac
-# into runtimes/macos-host): geod seeds its resource manifest from /System/Library/GeoServicesData/ResourceManifest.json;
-# without it there was no active tile group and Maps drew a bare globe grid without ever requesting a tile.
-for d in GeoServicesData; do
-	if [ -d "$X/runtimes/macos-host/System/Library/$d" ]; then
-		ln -sfn "/Volumes/SystemRoot$X/runtimes/macos-host/System/Library/$d" "$DPREFIX/System/Library/$d"
-	else
-		echo "  note: no runtimes/macos-host/System/Library/$d (cli/libexec/arm64/fetch-macos-host.sh): Maps has no tiles"
-	fi
-done
+# Speed 27: geod seeds its resource manifest from /System/Library/GeoServicesData/ResourceManifest.json (a Mac's own
+# /System/Library has one, the simulator runtime has none); without it there was no active tile group and Maps drew a
+# bare globe grid without ever requesting a tile. The seed only has to name a tile group: geod then fetches Apple's
+# current manifest and every resource in it (styles, icons, the region / territory / time zone archives) itself, so
+# x86Sim writes it (runtimes/geo-seed; 2611252: a tile group of Apple's manifest, 2026-11-25; geod replaces it).
+G=$X/runtimes/geo-seed/GeoServicesData
+if [ ! -f "$G/ResourceManifest.json" ]; then
+	mkdir -p "$G" && echo '{"tileGroup": [{"identifier": 2611252}], "resource": []}' > "$G/ResourceManifest.json"
+fi
+ln -sfn "/Volumes/SystemRoot$G" "$DPREFIX/System/Library/GeoServicesData"
 # Speed 27: the audio devices (what a Mac's CoreSimulator/coreaudiod provide): host/simaudio/arm64/libsimaudio.dylib in
 # each process (mksimdevice, X86SIM_AUDIO) streams PCM to cli/libexec/simaudio.py (PipeWire). Without an input device
 # Siri's recording failed at once (corespeechd: "siriInputSource 'sino'. No Input available", AudioQueue -66680 finding

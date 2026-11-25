@@ -229,8 +229,8 @@ Prints XCTest's log, then the failing tests with `file:line` and `** TEST SUCCEE
 `results.json` (per test: result, duration, failures) and `junit.xml` go to the dir it names (`--out`, `--json -`
 for JSON only). MCP: `xctest_run`. App test targets and UI test runners come from a Mac's `xcodebuild
 build-for-testing` (copy the whole `Build/Products` dir with the `.xctestrun`). XCTest's frameworks come from Xcode:
-if it says "no XCTest frameworks", run `x86sim test fetch-platform` (needs `X86SIM_MAC`) or `x86sim dev setup sdk
---xip`. UI tests need the phone's `xctest` feature (on by default; `x86sim-aot --device qa features set xctest on`
+if it says "no XCTest frameworks", run `x86sim dev setup sdk --xip Xcode.xip` (the Darwin SDK, built on Linux from
+Xcode.xip, holds them). UI tests need the phone's `xctest` feature (on by default; `x86sim-aot --device qa features set xctest on`
 and a restart if someone turned it off). A run takes seconds for unit tests, ~5-10 s per UI test.
 
 ## 8. Show a phone to a human

@@ -1,23 +1,20 @@
 #!/bin/bash
-# x86Sim: Linux drop-in for `xcrun -sdk iphonesimulator metal` / `metallib`, served from Mac-built artifacts.
+# x86Sim: Linux drop-in for `xcrun -sdk <sdk> metal` / `metallib`: Apple's own Metal toolchain, run under Darling.
 #
-# There is no faithful way to produce Apple AIR on Linux: the Metal Shading Language front end exists only in Apple's
-# toolchain, and AIR bitcode re-encoded by upstream LLVM (23) is rejected by Apple's MTLCompilerService (it loads as a
-# library, every pipeline build crashes the compiler service), while the metallib container itself is easy to write.
-# So this tool is a content-addressed cache: the key is the tool, its flags and the bytes of every input; a hit
-# copies the byte-identical Mac output, a miss fails (or, with X86SIM_METAL_RECORD=1, runs the real tool on
-# $X86SIM_MAC once and stores the result under build/metal-cache/, which is committed).
+# The Metal Shading Language front end exists only in Apple's toolchain (AIR re-encoded by upstream LLVM is rejected
+# by Apple's MTLCompilerService). Since Xcode 26 that toolchain is a separate public download (a MobileAsset, no Apple
+# ID): build/metal-toolchain.py fetches it into sdks/metal-<build>/ (x86_64 slice), and this script runs its `metal` /
+# `metallib` in a Darling container of its own (X86SIM_METAL_DPREFIX, default $X86SIM_SCRATCH/metal-prefix), with
+# build/metal-shim.c's library inserted. Same output as on a Mac with the same toolchain build.
 #
-# Usage (same arguments the Mac invocations use; a leading `-sdk <sdk>` is accepted and ignored):
+# Usage (the arguments Xcode's tools take; `-sdk <sdk>` picks sdks/<Platform>.sdk as SDKROOT, as xcrun does):
 #   build/linux-metal.sh metal    -target air64-apple-ios26.5-simulator -c probe.metal -o probe.air
-#   build/linux-metal.sh metal    -target air64-apple-ios26.5-simulator probe.metal -o probe.metallib
+#   build/linux-metal.sh metal    -sdk iphonesimulator k.metal -o k.metallib -framework CoreImage
 #   build/linux-metal.sh metallib probe.air -o probe.metallib
-#   build/linux-metal.sh key      metal|metallib <args...>     # print the cache key (to seed the cache by hand)
 #   build/linux-metal.sh inspect  <file.metallib>...           # header, sections, functions (type, hash check)
 # Also works when symlinked as `metal` / `metallib`.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
-CACHE=${X86SIM_METAL_CACHE:-$ROOT/build/metal-cache}
 
 inspect() {
 	python3 -I - "$@" <<'PY'
@@ -55,51 +52,30 @@ for path in sys.argv[1:]:
 PY
 }
 
-# Parse the tool's arguments: inputs, output (-o), and the flags that define the output.
-parse() {
-	tool=$1; shift; inputs=(); flags=(); out=""
-	while (($#)); do case $1 in
-		-sdk) shift 2 ;;
-		-o) out=$2; shift 2 ;;
-		-o*) out=${1#-o}; shift ;;
-		-target|-std|-I|-D|-include|-frameworks) flags+=("$1" "$2"); shift 2 ;;
-		-*) flags+=("$1"); shift ;;
-		*) inputs+=("$1"); shift ;;
-	esac; done
-	((${#inputs[@]})) || { echo "linux-metal: $tool: no input files" >&2; exit 2; }
-	[ -n "$out" ] || { echo "linux-metal: $tool: -o <output> is required" >&2; exit 2; }
-	key=$( { printf '%s\n' "$tool" "${flags[@]}" --; for f in "${inputs[@]}"; do sha256sum < "$f"; done; } | sha256sum | cut -c1-40)
-	case $tool in
-		metal) case " ${flags[*]} " in *" -c "*) ext=air ;; *" -S "*) ext=ll ;; *) ext=metallib ;; esac ;;
-		metallib) ext=metallib ;;
-	esac
-}
-
+# run <tool> <args...>: the toolchain's tool in the Darling container, Linux paths seen through /Volumes/SystemRoot
 run() {
-	parse "$@"
-	hit="$CACHE/$key.$ext"
-	if [ ! -f "$hit" ] && [ "${X86SIM_METAL_RECORD:-0}" = 1 ]; then
-		. "$ROOT/build/mac-env.sh"
-		# Mac-side names: flatten inputs into one dir (the tools see basenames only; #include of siblings is not handled)
-		args=(); for f in "${flags[@]}"; do args+=("$(printf %q "$f")"); done
-		for f in "${inputs[@]}"; do args+=("$(printf %q "$(basename "$f")")"); done
-		mkdir -p "$CACHE"; tmp=$(mktemp "$CACHE/.rec.XXXXXX")
-		tar cf - -C "$(dirname "${inputs[0]}")" $(for f in "${inputs[@]}"; do basename "$f"; done) | mac "
-			d=\$(mktemp -d /tmp/x86metal.XXXXXX) && cd \$d && tar xf - &&
-			xcrun -sdk iphonesimulator $tool ${args[*]} -o out.$ext >&2 && cat out.$ext; r=\$?; rm -rf \$d; exit \$r" > "$tmp" ||
-			{ rm -f "$tmp"; echo "linux-metal: recording on $MAC failed" >&2; exit 1; }
-		mv "$tmp" "$hit"
-		{ printf '%s %s.%s %s' "$(date -u +%FT%TZ)" "$key" "$ext" "$tool"; printf ' %q' "${flags[@]}"
-		  for f in "${inputs[@]}"; do printf ' %s@%s' "$(basename "$f")" "$(sha256sum < "$f" | cut -c1-16)"; done; echo; } >> "$CACHE/MANIFEST"
-		echo "linux-metal: recorded $key.$ext from $MAC" >&2
-	fi
-	if [ ! -f "$hit" ]; then
-		echo "linux-metal: no Mac-built artifact for: $tool ${flags[*]} ${inputs[*]} (key $key.$ext)." >&2
-		echo "  Metal shaders cannot be compiled on Linux; the source or flags changed since the last Mac build." >&2
-		echo "  Re-record on the Mac: X86SIM_METAL_RECORD=1 $0 $tool ${flags[*]} ${inputs[*]} -o $out" >&2
-		exit 1
-	fi
-	cp "$hit" "$out"
+	local tool=$1; shift
+	TC=$(python3 -I "$ROOT/build/metal-toolchain.py" path) || {
+		echo "linux-metal: no Metal toolchain in sdks/: build/metal-toolchain.py fetch (about 840 MB from Apple)" >&2; exit 1; }
+	X86SIM_ROOT=${X86SIM_ROOT:-$ROOT}; . "$ROOT/cli/lib/config.sh"
+	local V=/Volumes/SystemRoot args="" a sdkroot=${SDKROOT:-}
+	q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+	while (($#)); do
+		a=$1; shift
+		case $a in
+			-sdk) case $1 in iphonesimulator*) sdkroot=$ROOT/sdks/iPhoneSimulator.sdk ;;
+				appletvsimulator*) sdkroot=$ROOT/sdks/AppleTVSimulator.sdk ;; watchsimulator*) sdkroot=$ROOT/sdks/WatchSimulator.sdk ;;
+				xrsimulator*) sdkroot=$ROOT/sdks/XRSimulator.sdk ;; macosx*) sdkroot=$ROOT/sdks/MacOSX.sdk ;;
+				*) echo "linux-metal: unknown sdk $1" >&2; exit 2 ;; esac; shift; continue ;;
+			/*) a=$V$(realpath -m "$a") ;;
+			-I/*|-o/*|-F/*|-L/*) a=${a:0:2}$V$(realpath -m "${a:2}") ;;
+		esac
+		args="$args $(q "$a")"
+	done
+	local env="DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=$(q "$V$TC/libmetalshim.dylib")"
+	[ -n "$sdkroot" ] && env="$env SDKROOT=$(q "$V$(realpath "$sdkroot")")"
+	DPREFIX=${X86SIM_METAL_DPREFIX:-$X86SIM_SCRATCH/metal-prefix} "$X86SIM_DARLING" shell /bin/sh -c \
+		"cd $(q "$V$(pwd -P)") && $env exec $(q "$V$TC/bin/$tool")$args"
 }
 
 me=$(basename "$0")
@@ -107,7 +83,6 @@ case $me in metal|metallib) run "$me" "$@"; exit ;; esac
 cmd=${1:-}; shift || true
 case $cmd in
 	metal|metallib) run "$cmd" "$@" ;;
-	key) parse "$@"; echo "$key.$ext" ;;
 	inspect) inspect "$@" ;;
 	*) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2 ;;
 esac

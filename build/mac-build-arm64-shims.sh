@@ -18,8 +18,8 @@ xros) SIMSDK=xrsimulator; T="-target arm64-apple-xros1.0-simulator"; SUF=-xros ;
 esac
 W=$(mktemp -d "$X86SIM_SCRATCH/macbuild.XXXXXX"); trap 'rm -rf "$W"' EXIT
 CC="xcrun -sdk $SIMSDK clang $T"
-# build <dir> <dest> <commands>: stdin (a tar of the sources) is unpacked into /tmp/<dir> on the build host (mac(): the
-# Mac over ssh, or this machine with build/linux-env.sh), <commands> make the file named like <dest> there, and it comes
+# build <dir> <dest> <commands>: stdin (a tar of the sources) is unpacked into /tmp/<dir> by mac() (build/linux-env.sh:
+# here, in a fresh sh), <commands> make the file named like <dest> there, and it comes
 # back as <dest>. A fixed <dir> per target: -g records it, so an unchanged source rebuilds the same binary.
 # build_exe: the same for an executable.
 build() {

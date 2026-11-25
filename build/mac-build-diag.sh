@@ -1,6 +1,6 @@
 #!/bin/sh
-# x86Sim: build the optional diagnostic shims host/simshim/diag/arm64/lib<name>.dylib (arm64 iOS simulator) on the Mac
-# ($X86SIM_MAC). Use one with X86SIM_INSERT=host/simshim/diag/arm64/lib<name>.dylib on a boot (see each file's header).
+# x86Sim: build the optional diagnostic shims host/simshim/diag/arm64/lib<name>.dylib (arm64 iOS simulator) on Linux
+# (build/mac-env.sh). Use one with X86SIM_INSERT=host/simshim/diag/arm64/lib<name>.dylib on a boot (see each file's header).
 #   build/mac-build-diag.sh [name ...]     (default: all; name = source file without extension, e.g. syncdiag)
 # X86SIM_DATA_DIR (their log directory) is the device's data directory as seen inside Darling.
 # X86SIM_DEVICE: the phone whose data directory gets the logs.

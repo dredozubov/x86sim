@@ -1,4 +1,4 @@
-// sdkcov's Core Image kernels (stitchable, Metal): compiled per platform on a Mac with the Metal Toolchain into
+// sdkcov's Core Image kernels (stitchable, Metal): compiled per platform with Apple's Metal toolchain (on Linux) into
 // res/sdkcovCI-<platform>.metallib by res/sdkcovCI.sh; func:CoreImage.cikernel-metal-library (checks/P22_Gaps.swift)
 #include <CoreImage/CoreImage.h>
 using namespace metal;

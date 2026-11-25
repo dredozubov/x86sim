@@ -9,6 +9,16 @@
   simulator to see what Apple does (tests/apps/sdkcov/ref-mac.sh), and validating x86Sim's results against it. It
   is not a build machine and not a source of files for the product. If something really cannot be built here, say
   so in the change, explain why, and find the Linux path before adding a Mac dependency.
+- What is not built here and why (docs/LINUX-BUILD.md has the full audit):
+  - Apple's own pieces are downloaded on Linux, never copied from a Mac: runtimes (`runtime-fetch.py`) and the Metal
+    toolchain (`build/metal-toolchain.py`) without an Apple ID; XCTest's frameworks and the device SDK come from
+    Xcode.xip (a free Apple ID), unpacked on Linux by `x86sim dev setup sdk --xip`. Apple publishes no XCTest without one.
+  - The FoundationModels relay (`X86SIM_FM_RELAY`, off by default) is a runtime service, not a build: Apple's on-device
+    model runs only on a Mac with Apple Intelligence, so the relay forwards the guest's requests there.
+  - `tests/apps/XCTestDemo/build.sh` runs `xcodebuild` on the Mac on purpose: the fixture checks that bundles made by
+    Xcode itself run in `x86sim test` (comparison). Linux-built tests are covered by `x86sim test --spm`.
+  - Still Mac-made, with a Linux path not done yet: sdkcov's `res/*.mov` / `res/sdkcovGK.sks` (their generators can
+    run as guest programs on a phone) and `cli/lib/devicetype-*.json` (Xcode's device type plists, inside Xcode.xip).
 
 ## Stopping processes
 
