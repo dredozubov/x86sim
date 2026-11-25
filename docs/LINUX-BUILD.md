@@ -41,7 +41,7 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 | `tests/metal/shaders/build.sh`, `tests/apps/sdkcov/res/sdkcovCI.sh` | `xcrun metal` on the Mac | done (F3): run here |
 | `cli/libexec/xctest.py` (`x86sim test fetch-platform`) | copying Xcode's `<Platform>.platform` XCTest files from the Mac | F1: taken from Xcode.xip on Linux (the Darwin SDK `x86sim dev setup sdk --xip` builds) |
 | `tests/apps/XCTestDemo/build.sh` | `xcodebuild build-for-testing` of the XCTest fixture | F1 (see there) |
-| `cli/libexec/arm64/fetch-macos-host.sh` | copying `/System/Library/GeoServicesData` (Maps' seed resource manifest) | F2: from Apple's Maps resource service on Linux |
+| `cli/libexec/arm64/fetch-macos-host.sh` | copying `/System/Library/GeoServicesData` (Maps' seed resource manifest) | done (F2): no download needed. The seed only names a tile group; geod then fetches Apple's manifest and every resource (the region / territory / time zone archives included) itself. boot-a64.sh writes it; Maps draws tiles on a phone with no geod state |
 | `tests/apps/build-ipa.sh` | building the DeviceHello device `.ipa` fixture with Xcode | F4: the Linux device toolchain |
 | `tools/devicetypes/extract-devicetypes.py` | reading Xcode's device type plists | Open |
 | `tests/apps/sdkcov/res/sdkcovMovies.swift`, `sdkcovGK.swift` | running macOS programs that write fixtures | Open |

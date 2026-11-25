@@ -83,7 +83,7 @@ entitlement-gated services) is not counted as an x86Sim gap.
 | Networking, DNS | Linux's network | same | regression apps, sdkcov |
 | Bonjour | on the device itself (apps on one phone find each other) | gap across the network: no multicast DNS on the host's LAN | sdkcov MultipeerConnectivity, on-device Bonjour |
 | Network conditioning | none | gap (unverified what Xcode 27 offers here) | |
-| Maps | the app runs | close: tiles need GeoServicesData fetched from a Mac (`fetch-macos-host.sh`), not in a release | |
+| Maps | the app runs | close: tiles draw (boot-a64.sh writes geod's seed manifest; geod downloads Apple's resources) | |
 | Siri | the Siri button and feature toggle exist | unverified | |
 | Apple Intelligence (FoundationModels) | through a Mac with Apple Intelligence (`X86SIM_FM_RELAY`) | same requirement as Apple's simulator; without a Mac: "not ready" | sdkcov with the relay (iPad = Apple) |
 | Pairing a watch with an iPhone | not supported | gap | |
