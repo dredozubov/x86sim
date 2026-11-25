@@ -961,8 +961,8 @@ impl Input {
                 let s = v["s"].as_str().unwrap_or("");
                 let mut skipped = 0;
                 for c in s.chars().take(4000) {
-                    match char_usage(c) {
-                        Some((u, sh)) => {
+                    match crate::keymap::us_stroke(c) {
+                        Some(crate::keymap::Stroke { usage: u, shift: sh }) => {
                             if sh {
                                 self.hid.key(true, 225);
                             }
@@ -1049,44 +1049,6 @@ impl Input {
         }
         Ok(())
     }
-}
-
-/// A typed character -> (HID usage, needs shift), US layout (as the launcher viewer types a paste)
-pub fn char_usage(c: char) -> Option<(u32, bool)> {
-    const SHIFTED: &str = "!@#$%^&*()";
-    Some(match c {
-        'a'..='z' => (4 + (c as u32 - 'a' as u32), false),
-        'A'..='Z' => (4 + (c as u32 - 'A' as u32), true),
-        '1'..='9' => (0x1e + (c as u32 - '1' as u32), false),
-        '0' => (0x27, false),
-        '\n' => (0x28, false),
-        '\t' => (0x2b, false),
-        ' ' => (0x2c, false),
-        '-' => (0x2d, false),
-        '_' => (0x2d, true),
-        '=' => (0x2e, false),
-        '+' => (0x2e, true),
-        '[' => (0x2f, false),
-        '{' => (0x2f, true),
-        ']' => (0x30, false),
-        '}' => (0x30, true),
-        '\\' => (0x31, false),
-        '|' => (0x31, true),
-        ';' => (0x33, false),
-        ':' => (0x33, true),
-        '\'' => (0x34, false),
-        '"' => (0x34, true),
-        '`' => (0x35, false),
-        '~' => (0x35, true),
-        ',' => (0x36, false),
-        '<' => (0x36, true),
-        '.' => (0x37, false),
-        '>' => (0x37, true),
-        '/' => (0x38, false),
-        '?' => (0x38, true),
-        c if SHIFTED.contains(c) => (0x1e + SHIFTED.find(c).unwrap() as u32, true),
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
@@ -1269,12 +1231,6 @@ mod tests {
 
     #[test]
     fn typing_maps_us_keys() {
-        assert_eq!(char_usage('a'), Some((4, false)));
-        assert_eq!(char_usage('Z'), Some((29, true)));
-        assert_eq!(char_usage('!'), Some((0x1e, true)));
-        assert_eq!(char_usage(')'), Some((0x27, true)));
-        assert_eq!(char_usage('@'), Some((0x1f, true)));
-        assert_eq!(char_usage('é'), None);
         assert_eq!(pct_decode("a%20b+c%2F"), "a b c/");
         assert_eq!(host_only("[::1]:7380"), "[::1]");
         assert!(is_loopback_name("localhost:1"));

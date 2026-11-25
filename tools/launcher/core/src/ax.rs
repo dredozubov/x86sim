@@ -1591,7 +1591,8 @@ pub fn type_text(inst: &Instance, text: &str, clear: bool, submit: bool, keys: b
         }
         let mut h = Hid::new(&inst.sock);
         for c in text.chars() {
-            let (u, shift) = key_usage(c).ok_or_else(|| anyhow!("no US key for {c:?} (type without keys)"))?;
+            let crate::keymap::Stroke { usage: u, shift } =
+                crate::keymap::us_stroke(c).ok_or_else(|| anyhow!("no US key for {c:?} (type without keys)"))?;
             if shift {
                 h.key(true, 225);
             }
@@ -1642,26 +1643,6 @@ fn type_in_app(inst: &Instance, req: &Value) -> Result<Value> {
     }
 }
 
-/// HID usage (keyboard page) and shift for a character, US layout
-pub fn key_usage(c: char) -> Option<(u32, bool)> {
-    let lower = "abcdefghijklmnopqrstuvwxyz";
-    if let Some(i) = lower.find(c) {
-        return Some((4 + i as u32, false));
-    }
-    if let Some(i) = lower.find(c.to_ascii_lowercase()) {
-        return Some((4 + i as u32, true));
-    }
-    if let Some(i) = "1234567890".find(c) {
-        return Some((0x1e + i as u32, false));
-    }
-    if let Some(i) = "!@#$%^&*()".find(c) {
-        return Some((0x1e + i as u32, true));
-    }
-    let plain = [(' ', 0x2c), ('\n', 0x28), ('\t', 0x2b), ('-', 0x2d), ('=', 0x2e), ('[', 0x2f), (']', 0x30), ('\\', 0x31), (';', 0x33), ('\'', 0x34), ('`', 0x35), (',', 0x36), ('.', 0x37), ('/', 0x38)];
-    let shifted = [('_', 0x2d), ('+', 0x2e), ('{', 0x2f), ('}', 0x30), ('|', 0x31), (':', 0x33), ('"', 0x34), ('~', 0x35), ('<', 0x36), ('>', 0x37), ('?', 0x38)];
-    plain.iter().find(|k| k.0 == c).map(|k| (k.1, false)).or_else(|| shifted.iter().find(|k| k.0 == c).map(|k| (k.1, true)))
-}
-
 /// A named key (return, tab, escape, delete, space, up/down/left/right, home/end/pageup/pagedown) or a usage number
 pub fn key_named(name: &str) -> Option<u32> {
     let n = name.to_lowercase();
@@ -1682,7 +1663,7 @@ pub fn key_named(name: &str) -> Option<u32> {
         "forwarddelete" => 0x4c,
         _ => {
             if n.chars().count() == 1 {
-                return key_usage(n.chars().next()?).map(|k| k.0);
+                return crate::keymap::us_stroke(n.chars().next()?).map(|k| k.usage);
             }
             return n.strip_prefix("0x").map(|h| u32::from_str_radix(h, 16).ok()).unwrap_or_else(|| n.parse().ok());
         }
@@ -2236,9 +2217,6 @@ mod tests {
 
     #[test]
     fn keys() {
-        assert_eq!(key_usage('a'), Some((4, false)));
-        assert_eq!(key_usage('Z'), Some((29, true)));
-        assert_eq!(key_usage('@'), Some((0x1f, true)));
         assert_eq!(key_named("return"), Some(0x28));
         assert_eq!(key_named("0x2a"), Some(0x2a));
     }

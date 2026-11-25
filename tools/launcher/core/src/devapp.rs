@@ -310,24 +310,26 @@ fn arm64_image(bytes: &[u8]) -> Result<(Vec<u8>, Vec<String>, bool)> {
     Ok((bytes.to_vec(), vec![], false))
 }
 
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    for e in std::fs::read_dir(dir).with_context(|| dir.display().to_string())? {
-        let e = e?;
-        let t = e.file_type()?;
-        if t.is_dir() {
-            walk(&e.path(), out)?;
-        } else if t.is_file() {
-            out.push(e.path());
+/// Regular files below `root` (symlinks are not followed), sorted
+fn files_below(root: &Path) -> Result<Vec<PathBuf>> {
+    let (mut dirs, mut files) = (vec![root.to_path_buf()], vec![]);
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).with_context(|| dir.display().to_string())? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                dirs.push(entry.path());
+            } else if kind.is_file() {
+                files.push(entry.path());
+            }
         }
     }
-    Ok(())
+    files.sort();
+    Ok(files)
 }
 
 fn machos(app: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = vec![];
-    walk(app, &mut files)?;
-    files.sort();
-    Ok(files
+    Ok(files_below(app)?
         .into_iter()
         .filter(|p| {
             let mut h = [0u8; 4];

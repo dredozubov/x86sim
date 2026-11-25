@@ -18,6 +18,7 @@ pub mod host;
 pub mod hot;
 pub mod instance;
 pub mod key;
+pub mod keymap;
 pub mod logs;
 pub mod pool;
 pub mod profile;
