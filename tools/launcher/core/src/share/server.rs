@@ -37,6 +37,8 @@ const AX_CSS: &str = include_str!("web/axinspect.css");
 const MIC_JS: &str = include_str!("web/mic.js");
 // the device page's panels the launcher has (device.rs)
 const PANELS_JS: &str = include_str!("web/panels.js");
+// the Network section (netapi.rs)
+const NET_JS: &str = include_str!("web/netpanel.js");
 
 pub struct Server {
     pub opts: Options,
@@ -565,6 +567,7 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         "/axinspect.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], AX_JS.as_bytes()),
 
         "/panels.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], PANELS_JS.as_bytes()),
+        "/netpanel.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], NET_JS.as_bytes()),
         "/axinspect.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], AX_CSS.as_bytes()),
         "/mic.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], MIC_JS.as_bytes()),
         "/favicon.ico" => return respond(&mut s, 204, "image/x-icon", &[], b""),
@@ -769,6 +772,12 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         (_, ["api", "phones", id, "ax", what]) if srv.visible(&g, id) => {
             let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
             let (code, v) = super::axapi::handle(&req, &inst, what, control);
+            json_resp(&mut s, code, &v)
+        }
+        // the Network section (netapi.rs)
+        (_, ["api", "phones", id, "net", what]) if srv.visible(&g, id) => {
+            let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
+            let (code, v) = super::netapi::handle(&req, &inst, what, control);
             json_resp(&mut s, code, &v)
         }
         _ => json_resp(&mut s, if owner { 404 } else { 403 }, &json!({"error": "not found or not allowed"})),

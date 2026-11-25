@@ -5,6 +5,7 @@
 //! find it there and talk to it over loopback with its control token.
 /// the Accessibility Inspector's routes (/api/phones/<id>/ax/...)
 pub mod axapi;
+pub mod netapi;
 pub mod device;
 pub mod audio;
 /// Web Inspector routes (control role): x86sim inspect, the viewer's Inspect button
