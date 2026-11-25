@@ -6,6 +6,8 @@ the .app around the binary), installs and launches it; then the app's UI is read
 
   hello    rust/samples/hello-uikit: UIKit from Rust (objc2). The snapshot shows "Hello from Rust"; tapping
            "Tap me" turns "Taps: 0" into "Taps: 1".
+  tauri    rust/samples/tauri-hello: Tauri 2 (tao + WKWebView, Tauri's Swift half built with Linux Swift). The page's
+           heading is in the snapshot; tapping "Greet" calls the Rust command, whose answer appears on the page.
 
 Usage: tests/dev/rust_e2e.py --phone NAME [--start] [--mcp PATH] [--only hello,...] [--out DIR]
   --start boots the phone when it is off and stops it at the end. X86SIM_OAD picks the dev toolchain checkout (default: external/omarchy-apple-dev).
@@ -27,6 +29,7 @@ OAD = os.environ.get("X86SIM_OAD") or os.path.join(ROOT, "external/omarchy-apple
 # name: (sample dir, text that shows the UI is up, what to tap, the text the tap brings, use OCR)
 SAMPLES = {
     "hello": ("rust/samples/hello-uikit", "Hello from Rust", "Tap me", "Taps: 1", False),
+    "tauri": ("rust/samples/tauri-hello", "Tauri on x86Sim", "Greet", "Hello from Rust, x86Sim!", False),
 }
 
 

@@ -717,7 +717,7 @@ x86sim dev reload                     # reload the JavaScript (r in Metro); x86s
 - **Rust apps**: a cargo package is built with cargo for `aarch64-apple-ios-sim` / `aarch64-apple-ios` with the same
   SDK and `ld64.lld` (the fork's `rust/`: `rust/setup.sh` adds the rustup targets, `rust/build.py` makes the `.app`);
   `x86sim dev run <crate dir>` builds, installs and launches it. Status per setup, checked by `tests/dev/rust_e2e.py`
-  on a phone: plain Rust (UIKit through objc2) runs. See `external/omarchy-apple-dev/rust/README.md`.
+  on a phone: plain Rust (UIKit through objc2) and Tauri 2 (its Swift half built with Linux Swift) run. See `external/omarchy-apple-dev/rust/README.md`.
 - **Run on a device**: `device-run.sh` (`x86sim dev device`) pairs an iPhone, installs and launches the app, attaches
   LLDB, streams its console and symbolicates crash reports.
 - **Publish**: `ship.sh` (`x86sim dev ship`) builds a release `.ipa`, creates certificates and profiles, signs it and
