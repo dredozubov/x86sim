@@ -726,11 +726,13 @@ impl Expect {
     }
 }
 
-/// The elements on screen a target matches for `expect`: as `find` (text: exact, id / value, prefix), plus, when the
+/// The elements on screen a target matches for `expect`: as `find` / tap (text: exact, id / value, prefix, then a part
+/// of the label or value), plus, when the
 /// conditions are about a field, the field beside a label that matches (`expect "Email" value=...`)
 fn expect_matches(snap: &Snapshot, target: &str, x: &Expect) -> Vec<El> {
     let t = ax::parse_target(target);
-    let mut v: Vec<El> = ax::find_all_q(snap, &t, 2).into_iter().filter(|e| !e.offscreen && !e.covered).cloned().collect();
+    // as tap matches: exact, then prefix, then a part of the label (or value), best first
+    let mut v: Vec<El> = ax::find_all(snap, &t).into_iter().filter(|e| !e.offscreen && !e.covered).cloned().collect();
     if (x.value.is_some() || x.focused.is_some()) && !v.iter().any(is_field) {
         if let Ok(f) = find_field(snap, target) {
             if is_field(&f) && !f.offscreen && !v.iter().any(|e| e.r == f.r) {
@@ -926,6 +928,8 @@ mod tests {
         let (ok, why) = expect_once(&s, "Sign Upp", &x(json!({})));
         assert!(!ok && why.contains("nearest") && why.contains("Sign Up"), "{why}");
         assert!(expect_once(&s, "Sign", &x(json!({"contains": "up"}))).0);
+        // a part of a label, as tap finds it
+        assert!(expect_once(&s, "ign U", &x(json!({"enabled": false}))).0);
     }
 
     #[test]

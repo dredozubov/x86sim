@@ -9,6 +9,7 @@ test app tests/apps/x86forms (tests/apps/build.sh x86forms):
   controls set_value on a slider (number, percentage), switch, stepper, segmented control, wheel picker, date and
            time pickers: the app's bindings see each value; a value a control does not take is an error naming them
   drag     a list row dragged by its reorder handle to another place; an item dragged (held to lift) onto a drop box
+  match    wait_for and expect find text as tap does: exact, then prefix, then a part of the label
   batch    a log-in-like flow in one call (relaunch, wait, type, expect, screenshot): one line per step, the image,
            the screen once at the end; stop_on_error stops at a failing expect, and false runs on
   expect   pass / fail on label, value (a field found by the label beside it), contains, enabled, focused, count,
@@ -188,6 +189,17 @@ class Run:
         text, _, err, _ = self.m.call("wait_for", target="id:submitted", contains="nobody", timeout=1.5)
         self.check("wait_for: a condition that never holds times out as an error", err and "FAIL" in text, text.split("\n")[0])
 
+    # -- match: wait_for / expect by a part of a label
+    def match(self):
+        if not self.launch():
+            return
+        text, _, err, _ = self.m.call("wait_for", target="ign u", timeout=5)
+        self.check("match: wait_for a part of a label", not err and "Sign up" in text, text.split("\n")[0])
+        text, _, err, _ = self.m.call("expect", target="password=0", exists=True)
+        self.check("match: expect a part of a label", not err, text.split("\n")[0])
+        text, _, err, _ = self.m.call("wait_for", target="ign u", gone=True, timeout=1)
+        self.check("match: gone waits while a part of a label still shows", err, text.split("\n")[0])
+
     # -- batch
     def batch(self):
         if not self.launch():
@@ -227,7 +239,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["focus", "fill", "controls", "drag", "expect", "batch"]:
+        for name in ["focus", "fill", "controls", "drag", "expect", "match", "batch"]:
             if want(name):
                 getattr(r, name)()
     finally:

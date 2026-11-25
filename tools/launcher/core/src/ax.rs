@@ -1982,7 +1982,8 @@ pub fn scroll_to(inst: &Instance, target: &str, direction: &str, max_steps: u32,
     bail!("{target:?} not found after {max_steps} scrolls {direction}")
 }
 
-/// Waits until a target is on screen (or, `gone`, no longer is). Wakes on new frames, not on a timer.
+/// Waits until a target is on screen (or, `gone`, no longer is), matched as tap matches it (exact, prefix, substring).
+/// Wakes on new frames, not on a timer.
 pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) -> Result<Outcome> {
     let t0 = Instant::now();
     let t = parse_target(target);
@@ -1991,7 +1992,8 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
         let seq = ring.seq();
         let snap = snapshot(inst, SnapOpts::default());
         if let Ok(snap) = &snap {
-            let hit = find_all_q(snap, &t, 2).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
+            // tap's rules: exact, then prefix, then a part of the label (or value), best first
+            let hit = find_all(snap, &t).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
             if hit.is_some() != gone {
                 let ms = t0.elapsed().as_millis();
                 let did = match hit {
