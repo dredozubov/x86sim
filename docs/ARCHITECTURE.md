@@ -186,8 +186,7 @@ metalhostd obtains the fd with syscall 599 and passes it with `SCM_RIGHTS`; mtlv
 (`VK_EXT_external_memory_host`). Render targets over IOSurfaces of the screen's size are the exception: mtlvk draws
 them in VRAM and copies them to the surface's pages once per command buffer (blending into host pages crossed PCIe
 for every layer). CoreAnimation's render server, the wallpaper and apps all use it
-(`X86SIM_METAL=all`, the launcher's default; `0` = software rendering, which is also boot-a64.sh's default when run
-by hand). Details: [METAL.md](METAL.md).
+(`X86SIM_METAL=all`, the default of the launcher and of boot-a64.sh run by hand; `0` = software rendering). Details: [METAL.md](METAL.md).
 
 ## Cross-process surfaces: iosurfaced
 
@@ -217,7 +216,8 @@ id, openat/mkdirat/... on behalf of extensions, package lookup, directory entrie
 
 `host/simaudio/arm64/libsimaudio.dylib`, injected into each process, provides the audio devices a Mac's CoreSimulator
 and coreaudiod would, and streams PCM over `simaudio.sock` to `cli/libexec/simaudio.py`, which boot-a64.sh starts on
-every boot. With `X86SIM_AUDIO=1` it plays the output on PipeWire and records the host's microphone; otherwise input
+every boot. With `X86SIM_AUDIO=1` it plays the output on PipeWire and records the host's microphone (`pw-cat -a`; with
+PipeWire before 1.4, whose pw-cat has no raw mode, `pacat`/`parec --raw` through pipewire-pulse); otherwise input
 streams get silence. Either way it offers the output streams on a tap, `simaudio-tap.sock` in the state dir, where
 `x86sim serve` (`tools/launcher/core/src/share/audio.rs`) mixes them for a browser (Opus or PCM on the page's
 WebSocket) and feeds a browser's microphone back to the input streams. `X86SIM_AUDIO_SOCKET=none` leaves the devices

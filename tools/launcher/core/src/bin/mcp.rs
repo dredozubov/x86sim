@@ -25,12 +25,15 @@ mod mcp_debug;
 // ---- CPU profiler (feat/r2-profiler): profile_start, profile_stop ----
 #[path = "mcp_parts/profile.rs"]
 mod mcp_profile;
+// ---- device services (simctl location / privacy / push / addmedia): sim_location, sim_privacy, sim_push, sim_addmedia ----
+#[path = "mcp_parts/services.rs"]
+mod mcp_services;
 
 fn tools() -> Value {
     let phone = json!({"type": "string", "description": "the device: its name (as in the hub, e.g. \"QA\"), folder (device-a64-qa) or path. Default: the only running device, else the configured one"});
     let after = json!({"type": "string", "enum": ["full", "diff", "none"], "description": "what to answer with after the action settled: the whole screen (default), only what changed, or nothing"});
     let mut t = json!([
-        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime.",
+        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime; responsive (SpringBoard answers; null while not known) and hung (running, but SpringBoard has not answered for 10 s or more: restart the device).",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "sim_status", "description": "Same as phones_list (kept for older clients).",
          "inputSchema": {"type": "object", "properties": {}}},
@@ -72,8 +75,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "path": {"type": "string", "description": "the .app directory on this machine"}}, "required": ["path"]}},
         {"name": "app_uninstall", "description": "Uninstall an app from a running device (simctl uninstall).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}}, "required": ["bundle_id"]}},
-        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app. Returns the pid.",
-         "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}}, "required": ["bundle_id"]}},
+        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app, env sets environment variables in its process (simctl's SIMCTL_CHILD_NAME, x86sim launch --env). Returns the pid.",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "environment variables for the app, e.g. {\"API_URL\": \"http://localhost:8080\"}"}, "after": after}, "required": ["bundle_id"]}},
         {"name": "app_list", "description": "Installed apps on a running device (simctl listapps).", "inputSchema": {"type": "object", "properties": {"phone": phone}}},
         // agents: the screen as text and actions on its elements (x86sim_core::ax, host/simax)
         {"name": "snapshot", "description": "The device's screen as text: the accessibility elements of the app(s) in front, SpringBoard (alerts, home screen icons, status bar, Control Center) and web pages (DOM: links, buttons, fields, headings, text). One line per element: @ref role \"label\" value= id= [states] (center x,y in points). Refs stay the same for the same element across snapshots, so act on them (tap ref=@e3). diff=true: only what changed since the last snapshot. all=true: also elements scrolled out of view. json=true: full records (frames, app, layer, window).",
@@ -82,7 +85,7 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "hold_ms": {"type": "integer"}, "after": after}}},
         {"name": "long_press", "description": "Touch and hold an element (target as tap) or a point, ms (default 800): context menus, icon editing.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
-        {"name": "type", "description": "Type text into the focused field (tap the field first, or pass target to tap it first), as the software keyboard does: any characters. clear: empty the field first; submit: press return after. keys=true: hardware key presses instead (US layout; for games / key handlers).",
+        {"name": "type", "description": "Type text into the focused field (tap the field first, or pass target to tap it first), as the software keyboard does: any characters. clear: empty the field first; submit: press the Return key after. A newline in text is a Return key press too (it submits a single-line field or web form, and is a new line in a multi-line text view). keys=true: hardware key presses instead (US layout; for games / key handlers).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "text": {"type": "string"}, "target": {"type": "string"}, "clear": {"type": "boolean"}, "submit": {"type": "boolean"}, "keys": {"type": "boolean"}, "after": after}, "required": ["text"]}},
         {"name": "key", "description": "Press a key on the hardware keyboard: return, tab, escape, delete, space, up, down, left, right, home, end, pageup, pagedown, a character, or a combination such as cmd+a, shift+tab.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "key": {"type": "string"}, "after": after}, "required": ["key"]}},
@@ -92,6 +95,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "direction": {"type": "string", "enum": ["up", "down", "left", "right"]}, "max_steps": {"type": "integer"}, "after": after}, "required": ["target"]}},
         {"name": "swipe", "description": "A quick swipe (with momentum): direction up/down/left/right from the middle of the screen, or a system gesture: home (up from the bottom edge), notifications, controlcenter, back (from the left edge); or from x1,y1 to x2,y2 in points over ms.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "direction": {"type": "string", "enum": ["up", "down", "left", "right", "home", "notifications", "controlcenter", "back"]}, "x1": {"type": "number"}, "y1": {"type": "number"}, "x2": {"type": "number"}, "y2": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
+        {"name": "pinch", "description": "A two-finger pinch (zoom a map, photo or web page): fingers on a line through the center (target as tap, or x and y in points; default the screen's middle), half their distance going from radius (default 60) to to_radius (larger zooms in, smaller zooms out; default radius*2.5) over ms (default 500). rotate: degrees the fingers turn (clockwise; a two-finger rotation, e.g. a map's heading; with to_radius = radius it only turns). iPhone and iPad.",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "radius": {"type": "number"}, "to_radius": {"type": "number"}, "rotate": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
         {"name": "wait_for", "description": "Wait until an element (target as tap: text, @ref, id:...) is on screen, or with gone=true until it is not; timeout seconds (default 20). Wakes on every new frame (no fixed polling). Answers with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "gone": {"type": "boolean"}, "timeout": {"type": "number"}}, "required": ["target"]}},
         {"name": "press", "description": "Press a hardware button (home, lock, side, volup, voldown, siri, action, ...; as sim_button) and answer with the screen after it.",
@@ -136,6 +141,10 @@ fn tools() -> Value {
     if let Value::Array(v) = &mut t {
         v.extend(mcp_profile::tools(&phone));
     }
+    // ---- device services ----
+    if let Value::Array(v) = &mut t {
+        v.extend(mcp_services::tools(&phone));
+    }
     t
 }
 
@@ -147,7 +156,7 @@ fn phone_of(a: &Value, cfg: &aot::Config) -> anyhow::Result<instance::Instance> 
             anyhow::anyhow!("no device {k:?} (devices: {})", instance::list().iter().map(|i| i.name.clone()).collect::<Vec<_>>().join(", "))
         });
     }
-    let running: Vec<_> = instance::summaries(0).into_iter().filter(|s| s.state != "off").collect();
+    let running: Vec<_> = instance::summaries_unprobed(0).into_iter().filter(|s| s.state != "off").collect();
     if running.len() == 1 {
         return instance::find(&running[0].id).ok_or_else(|| anyhow::anyhow!("device vanished"));
     }
@@ -165,6 +174,25 @@ enum Answer {
 
 fn ax_answer(o: ax::Outcome) -> Answer {
     Answer::Text(o.text(), None)
+}
+
+/// app_launch's env: an object of strings (a number or bool is taken as its text)
+fn launch_env(v: &Value) -> anyhow::Result<Vec<(String, String)>> {
+    let Some(m) = v.as_object() else {
+        anyhow::ensure!(v.is_null(), "env: an object of NAME: value strings");
+        return Ok(vec![]);
+    };
+    m.iter()
+        .map(|(k, x)| {
+            anyhow::ensure!(!k.is_empty() && !k.contains('='), "env name {k:?}: not empty, no '='");
+            let val = match x {
+                Value::String(s) => s.clone(),
+                Value::Number(_) | Value::Bool(_) => x.to_string(),
+                _ => anyhow::bail!("env {k}: a string value"),
+            };
+            Ok((k.clone(), val))
+        })
+        .collect()
 }
 
 fn call(name: &str, a: &Value) -> anyhow::Result<Answer> {
@@ -211,6 +239,9 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
     }
     if let Some(r) = mcp_profile::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(|(t, v)| Answer::Text(t, v));
+    }
+    if let Some(r) = mcp_services::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(Answer::Json);
     }
     if matches!(name, "phones_list" | "sim_status") {
         return Ok(Answer::Json(json!({"phones": instance::summaries(1000)})));
@@ -265,7 +296,8 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
         "app_uninstall" => json!({"phone": inst.name, "answer": apps::uninstall(&inst, a["bundle_id"].as_str().unwrap_or(""))?}),
         "app_launch" => {
             let args: Vec<String> = a["args"].as_array().map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-            return Ok(ax_answer(ax::launch(&inst, a["bundle_id"].as_str().unwrap_or(""), &args, after)?));
+            let env = launch_env(&a["env"])?;
+            return Ok(ax_answer(ax::launch_env(&inst, a["bundle_id"].as_str().unwrap_or(""), &args, &env, after)?));
         }
         "app_list" => json!({"phone": inst.name, "answer": apps::list(&inst)?}),
         "sim_restart" => json!({"phone": inst.name, "restarting": true, "pid": sim::restart(&device)?}),
@@ -427,6 +459,13 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
                 (Some(x1), Some(y1), Some(x2), Some(y2)) => ax::swipe(&inst, (x1, y1), (x2, y2), a["ms"].as_u64().unwrap_or(250), after)?,
                 _ => ax::swipe_dir(&inst, a["direction"].as_str().unwrap_or("up"), after)?,
             };
+            return Ok(ax_answer(o));
+        }
+        "pinch" => {
+            let r1 = a["radius"].as_f64().unwrap_or(60.0);
+            let r2 = a["to_radius"].as_f64().unwrap_or(r1 * 2.5);
+            let at = a["x"].as_f64().zip(a["y"].as_f64());
+            let o = ax::pinch(&inst, a["target"].as_str(), at, r1, r2, a["rotate"].as_f64().unwrap_or(0.0), a["ms"].as_u64().unwrap_or(500).min(10_000), after)?;
             return Ok(ax_answer(o));
         }
         "wait_for" => {

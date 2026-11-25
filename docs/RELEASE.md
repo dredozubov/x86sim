@@ -48,6 +48,7 @@ usr/share/x86sim/
                                +1.19 MiB on the AppImage (zstd squashfs: 236.1 -> 237.4 MB, +0.5%), 2026-11-24
   install-helper.sh            the privileged step (system mode)
   darling-userns.sh            the no-root Darling wrapper (userns mode)
+  darling-nonroot.sh           the no-root, no-namespace Darling wrapper (nonroot mode)
   licenses/                    Darling (GPL-3 / APSL parts), dynarmic (0BSD), metal2vulkan (GPL-2+/LGPL-3+), astcenc (Apache-2),
                                lzfse (BSD-3), omarchy-apple-dev (MIT), webinspector (BSD-2 + MIT); NOTICE lists them all
 ```
@@ -66,9 +67,9 @@ launcher, so AppRun copies the payload out once per version):
 
 ```
 ~/.local/share/x86sim/        X86SIM_ROOT, shaped like the checkout so every script and the launcher work unchanged
-  app/<version>/               payload copy (+ darling/ in userns mode); the newest two versions are kept
+  app/<version>/               payload copy (+ darling/ in userns / nonroot mode); the newest two versions are kept
   cli host linux tools tests   -> app/<version>/...      (relative links: Darling resolves them under /Volumes/SystemRoot)
-  darling-prefix               -> /opt/x86sim/darling (system mode) or app/<version>/darling-userns (userns mode)
+  darling-prefix               -> /opt/x86sim/darling (system mode) or app/<version>/darling-userns|darling-nonroot
   runtimes/ var/ setup.json    user data, kept across versions
 ~/.cache/x86sim/              X86SIM_SCRATCH: per-phone Darling prefixes, jc-<build> (AOT + JIT cache), logs
 /opt/x86sim/                  system mode only: darling-<id>/ (root-owned, bin/darling setuid), darling -> darling-<id>
@@ -78,7 +79,7 @@ AppRun sets `X86SIM_ROOT`, `X86SIM_SCRATCH`, `PATH` (bundled ipsw/7z), `X86SIM_P
 Darling build tree to heal from). Subcommands: `x86sim.AppImage [launcher|aot|mcp|dev|serve|x86sim|shell|version]`.
 In the checkout nothing changes: `repo_root()` is still the repo, `setup::needed()` is false, the Setup page only checks.
 
-## 3. Root: two modes
+## 3. Root: three modes
 
 Darling's `bin/darling` must be setuid root and its prefix is fixed; an AppImage can carry neither.
 
@@ -97,7 +98,19 @@ Darling's `bin/darling` must be setuid root and its prefix is fixed; an AppImage
   `/opt/x86sim/darling-<id>`, `chown -R root:root`, `chmod 4755 bin/darling`, atomically switch the
   `/opt/x86sim/darling` link (running phones keep their tree), keep the previous tree. `install-helper.sh uninstall`
   removes `/opt/x86sim`. Without pkexec the page shows the `sudo` command. Used automatically when that exact Darling
-  build is already installed there; force either with `X86SIM_DARLING_MODE=system|userns`.
+  build is already installed there; force one with `X86SIM_DARLING_MODE=system|userns|nonroot`.
+- **nonroot (no root, no namespaces).** `darling-nonroot.sh` runs the AppImage's Darling tree with
+  `DARLING_NONROOT=1`: the launcher takes its install prefix from its own path, each phone's prefix is a copy of the
+  system image (~690 MB, updated in place at later starts) instead of an overlay, and the container shares the host's
+  process table. AppRun picks it when user namespaces are blocked inside a container (`/run/.containerenv`,
+  `/.dockerenv`). Tested 2026-11-24: an iPhone 17 Pro (iOS 27.2) booted to the home screen and ran Settings (touches
+  work) in a bwrap sandbox standing in for a container: no user namespaces, a PID namespace of its own, the prefix on
+  overlayfs. Not tested on a bare host, where guests get the host's pids (above XNU's 99999; `ps` refuses them).
+
+Prefix filesystem: the kernel's overlayfs cannot take its upper layer on another overlay (a container's root file
+system) or a network file system and refuses with EINVAL. Darling's launcher then goes on by itself when nobody can
+be asked (no terminal, as for every phone): fuse-overlayfs if the tool and `/dev/fuse` are there, else the copy, and
+records the choice in the prefix's `.darling-fsmode`.
 
 Note: the staged copy and the helper script live in the user's own dirs, so whoever runs as the user could tamper
 with them between copy and `pkexec`; the password prompt is the user's own, so this gives nothing beyond what the user

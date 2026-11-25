@@ -8,6 +8,7 @@ pub mod axaudit;
 pub mod axinspect;
 pub mod appcache;
 pub mod apps;
+pub mod desktop;
 pub mod dev;
 pub mod devapp;
 pub mod discover;
@@ -17,7 +18,10 @@ pub mod hid;
 pub mod host;
 pub mod hot;
 pub mod instance;
+/// SpringBoard liveness: a phone whose shell stopped answering is "hung"
+pub mod liveness;
 pub mod key;
+pub mod keymap;
 pub mod logs;
 pub mod pool;
 pub mod profile;
@@ -26,6 +30,7 @@ pub mod ring;
 /// Web Inspector: Safari and WKWebView pages over webinspectord (RWI)
 pub mod rwi;
 pub mod rtdelete;
+pub mod rundir;
 pub mod setup;
 /// Share: phones in a browser (x86sim serve)
 pub mod share;

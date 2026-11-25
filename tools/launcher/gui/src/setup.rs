@@ -18,6 +18,8 @@ pub struct Setup {
     pub runtime_path: String,
     /// pre-translate was started automatically once iOS was there (it is on by default; the user can still stop it)
     pub aot_auto: bool,
+    /// the app menu entry: what the last add/remove said
+    pub desktop_msg: String,
 }
 
 impl Setup {
@@ -116,6 +118,7 @@ impl App {
         list_card(ui, |ui| {
             let detail = match &ds {
                 DarlingState::Ready if setup::userns() => "Ready, without root: it runs in a user namespace of your own. Nothing to install.".into(),
+                DarlingState::Ready if setup::nonroot() => "Ready, without root or namespaces (this system allows neither): each device's prefix is a copy of the system. Nothing to install.".into(),
                 DarlingState::Ready => format!("Installed in {}", setup::OPT_DARLING),
                 DarlingState::Outdated { .. } => "This version of x86Sim brings a newer build.".into(),
                 _ => format!("Copied to {} once, owned by root: its launcher must be setuid root to set up each device's container.", setup::OPT_DARLING),
@@ -267,6 +270,35 @@ impl App {
         });
         if add {
             self.open_add_dialog();
+        }
+
+        // 6. the app menu (AppImage only; optional): x86sim_core::desktop
+        if let Some(app) = x86sim_core::desktop::appimage() {
+            use x86sim_core::desktop::{self, State};
+            let st = desktop::state();
+            step_header(ui, 6, "In the app menu (optional)", st == State::Installed);
+            let (mut add_entry, mut remove_entry) = (false, false);
+            list_card(ui, |ui| {
+                let detail = match st {
+                    State::Installed => format!("x86Sim is in your desktop's app menu ({})", desktop::entry_path().display()),
+                    State::Foreign => format!("{} exists and wasn't written by x86Sim", desktop::entry_path().display()),
+                    State::Absent => "Start x86Sim from your desktop's app menu or launcher; it keeps working after updates.".into(),
+                };
+                list_row(ui, icon::APP_WINDOW, "App menu", &detail, |ui| match st {
+                    State::Installed => remove_entry = ui.add(Btn::secondary("Remove").icon(icon::TRASH)).clicked(),
+                    State::Absent => add_entry = ui.add(Btn::primary("Add").icon(icon::PLUS)).clicked(),
+                    State::Foreign => {}
+                });
+                if !self.setup.desktop_msg.is_empty() {
+                    note(ui, &self.setup.desktop_msg);
+                }
+            });
+            if add_entry {
+                self.setup.desktop_msg = desktop::install(&app).err().map(|e| format!("Didn't add it: {e:#}")).unwrap_or_default();
+            }
+            if remove_entry {
+                self.setup.desktop_msg = desktop::uninstall().err().map(|e| format!("Didn't remove it: {e:#}")).unwrap_or_default();
+            }
         }
         ui.add_space(S4);
         if !phones && ui.add(Btn::ghost("Skip setup for now")).clicked() {

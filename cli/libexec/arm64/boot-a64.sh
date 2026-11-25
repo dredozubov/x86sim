@@ -11,7 +11,7 @@
 # Shared boot sum VmRSS at home is ~8.4–9.4 GB (PSS/cgroup ~4.6 GB). Default 12G so MemoryMax does not
 # OOM on the sum-RSS guests (6–8G is too low for that accounting). Override with X86SIM_MEM_MAX.
 # Usage: SECS=120 cli/libexec/arm64/boot-a64.sh [extra jobs...]   (A64_JOBS=min|slim|std|full: the job list)
-#        X86SIM_METAL=0|1|backboardd|all  (default 0 = software; needs host/metalhostd/arm64/metalhostd)
+#        X86SIM_METAL=0|1|backboardd|all  (default all; 0 = software; needs host/metalhostd/arm64/metalhostd + mtlvk)
 X86SIM_ROOT=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
 export X86SIM_ARCH=arm64
 # Safari 1: absolute, as the launcher passes it. launchd_sim gets "/Volumes/SystemRoot$D/data/var/run/launchd_bootstrap.plist"
@@ -51,9 +51,12 @@ if [ -z "${X86SIM_A64_JITCACHE_DIR:-}" ] && [ -n "$A64_BUILD" ] && [ "$A64_BUILD
 fi
 export DPREFIX=${A64_DPREFIX:-$X86SIM_SCRATCH/a64prefix$A64_SFX}
 export X86SIM_DPREFIX=$DPREFIX
-# visionOS draws everything through wakeboardd's Metal compositor: without Metal it aborts in a loop ("Error creating
-# composite 0 layer render pipeline state") and SurfBoard never comes up, so Metal defaults on there (as the launcher)
-if [ "$A64_PLATFORM" = xros ]; then export X86SIM_METAL=${X86SIM_METAL-all}; else export X86SIM_METAL=${X86SIM_METAL-0}; fi
+# Metal for every process by default, as the launcher boots (instance.rs BootSettings) and as Apple's simulator always
+# has a device; it falls back to software rendering below when mtlvk does not start. The default was 0 (software) for
+# boots started here, and with no MTLDevice iconservicesagent crashed in CoreUI (sharedCIContext is nil without one),
+# so Settings showed gray row icons (a report against x86Sim 0.5.3), and WebGL had no context. X86SIM_METAL=0 still
+# turns it off. visionOS needs it (wakeboardd's Metal compositor; refused below without it).
+export X86SIM_METAL=${X86SIM_METAL-all}
 export X86SIM_MEM_MAX=${X86SIM_MEM_MAX-12G}
 X=$X86SIM_ROOT; cd "$X" || exit 1
 D=$X86SIM_DEVICE; ST=$X86SIM_STATE; SECS=${SECS:-90}
@@ -158,8 +161,9 @@ MIN="com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.appl
 	com.apple.cloudd com.apple.diagnosticd com.apple.nsurlsessiond com.apple.appprotectiond com.apple.logd com.apple.logd_helper"
 # x86Sim: lean UI set (every arm64 process costs 150-450 MB under the JIT). No chronod (widget extensions, +~0.8 GB);
 # A64_JOBS=full adds it (A64_KEEP_WIDGETS=1 keeps the home widgets).
-# A64_JOBS=slim drops sleepd + usernotificationsd (~400-450 MB RSS each under the JIT); home + one app
-# does not need them. Default std keeps them for cold-boot stability (BKS XPC). A64_SLIM=1 (default)
+# A64_JOBS=slim drops usernotificationsd (~400-450 MB RSS under the JIT); home + one app does not need it. It keeps
+# sleepd (~20-45 MB RSS measured 2026-11-25): without it SpringBoard retried its lookup without pause, ~0.6 core of
+# SpringBoard + ~0.35 of darlingserver at rest on the home screen (with it: 0.02 + 0.01). A64_SLIM=1 (default)
 # parks Spotlight / WidgetRenderer before dyld (X86SIM_A64_SLIM_PARK). Without cloudd+diagnosticd
 # in the job set, securityd busy-retries those Mach lookups (~1.9 cores idle). Those two stay
 # runnable (not parked): a parked MachServices daemon accepts the lookup then hangs clients forever.
@@ -309,7 +313,7 @@ UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd c
 	com.apple.telephonyutilities.callservicesd com.apple.UsageTrackingAgent com.apple.ScreenTimeAgent com.apple.dmd
 	com.apple.videosubscriptionsd com.apple.managedappdistributiond com.apple.shazamd com.apple.backgroundassets.user"
 UI_SLIM="com.apple.backboardd com.apple.SpringBoard com.apple.TextInput.kbd com.apple.FileCoordination com.apple.InputUI
-	com.apple.assistantd"
+	com.apple.assistantd com.apple.sleepd"
 FULLUI="com.apple.chronod"
 # FileProvider (Speed 16, on demand: started when Files opens): fileproviderd + the sim2host stand-in (host/fpsim2host) give Files its Browse locations (iCloud Drive, On My iPhone, Recently Deleted). Without them Files only
 # showed Recents. DesktopServicesHelper (Speed 17, on demand): Files lists On My iPhone (the LocalStorage domain, no

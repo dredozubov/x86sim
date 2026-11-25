@@ -8,7 +8,9 @@
 #     darling-prefix -> /opt/x86sim/darling             (installed by the setup wizard's privileged step)
 #     runtimes/  var/  x86sim.env                        (user data, kept across versions)
 #   $XDG_CACHE_HOME/x86sim (default ~/.cache/x86sim): X86SIM_SCRATCH (AOT images, logs, per-boot Darling prefixes)
-# Usage: x86sim.AppImage [launcher|aot|mcp|dev|serve|x86sim|shell|setup-helper|version] [args]
+#   $XDG_DATA_HOME/applications/x86sim.desktop: the app menu entry, on request (install-desktop / uninstall-desktop, or
+#     the setup page); it runs $DATA/x86sim.AppImage, a link to this AppImage re-pointed at every start
+# Usage: x86sim.AppImage [launcher|aot|mcp|dev|serve|x86sim|shell|setup-helper|install-desktop|uninstall-desktop|version] [args]
 set -e
 HERE=$(dirname "$(readlink -f "$0")")
 S=$HERE/usr/share/x86sim
@@ -51,9 +53,11 @@ for d in cli host linux tools tests external; do
 	if [ -L "$DATA/$d" ] || [ ! -e "$DATA/$d" ]; then ln -sfn "app/$VER/$d" "$DATA/$d"; fi
 done
 # Darling: "system" = installed by the setup wizard into /opt/x86sim (bin/darling setuid root, one password prompt);
-# "userns" = no root at all, through an unprivileged user namespace (darling-userns.sh). X86SIM_DARLING_MODE picks one;
-# auto: system when this build is installed there, else userns when the kernel allows it, else system (the wizard
-# then asks to install).
+# "userns" = no root at all, through an unprivileged user namespace (darling-userns.sh); "nonroot" = no root and no
+# namespaces (darling-nonroot.sh: Darling's DARLING_NONROOT mode, each prefix a copy of the system image).
+# X86SIM_DARLING_MODE picks one; auto: system when this build is installed there, else userns when the kernel allows
+# it, else nonroot in a container (which has a PID namespace of its own: guests see small pids, as XNU's are; on a bare
+# host they would get the host's, up to 4194304), else system (the wizard then asks to install).
 DID=$(cat "$S/DARLING_ID")
 mode=${X86SIM_DARLING_MODE:-auto}
 if [ "$mode" = auto ]; then
@@ -61,31 +65,41 @@ if [ "$mode" = auto ]; then
 		mode=system
 	elif unshare -r -m true 2>/dev/null; then
 		mode=userns
+	elif [ -e /run/.containerenv ] || [ -e /.dockerenv ]; then
+		mode=nonroot
 	else
 		mode=system
 	fi
 fi
-if [ "$mode" = userns ]; then
+case $mode in system|userns|nonroot) ;; *) echo "x86sim: X86SIM_DARLING_MODE=$mode: use system, userns or nonroot" >&2; exit 1 ;; esac
+if [ "$mode" = userns ] || [ "$mode" = nonroot ]; then
 	if [ ! -f "$APP/darling/.x86sim-copied" ]; then
 		rm -rf "$APP/darling.tmp"
 		cp -a "$S/darling" "$APP/darling.tmp"
 		touch "$APP/darling.tmp/.x86sim-copied"
 		mv "$APP/darling.tmp" "$APP/darling"
 	fi
-	U=$APP/darling-userns
+	U=$APP/darling-$mode
 	mkdir -p "$U/bin"
-	cp "$S/darling-userns.sh" "$U/bin/darling"
+	cp "$S/darling-$mode.sh" "$U/bin/darling"
 	ln -sfn ../../darling/bin/darlingserver "$U/bin/darlingserver"
 	ln -sfn ../darling/libexec "$U/libexec"
 	echo "$DID" > "$U/.x86sim-complete"
-	: > "$U/.x86sim-userns"
-	target=app/$VER/darling-userns
+	: > "$U/.x86sim-$mode"
+	target=app/$VER/darling-$mode
 else
 	target=$(realpath -m --relative-to="$DATA" /opt/x86sim/darling)
 fi
 # relative (as every link here): Darling sees these paths under /Volumes/SystemRoot, where an absolute target would
 # resolve against the container's own root
 if [ -L "$DATA/darling-prefix" ] || [ ! -e "$DATA/darling-prefix" ]; then ln -sfn "$target" "$DATA/darling-prefix"; fi
+# the app menu entry (tools/launcher/core/src/desktop.rs) runs $DATA/x86sim.AppImage: follow this AppImage wherever it
+# is now (moved, renamed, a newer version started from elsewhere), when the entry is x86Sim's
+if [ -n "${APPIMAGE:-}" ] && [ -f "$APPIMAGE" ] && [ -L "$DATA/x86sim.AppImage" ] &&
+	grep -qx 'X-X86Sim-Managed=true' "${XDG_DATA_HOME:-$HOME/.local/share}/applications/x86sim.desktop" 2>/dev/null &&
+	[ "$(readlink "$DATA/x86sim.AppImage")" != "$APPIMAGE" ]; then
+	ln -sfn "$APPIMAGE" "$DATA/x86sim.AppImage.new" && mv -Tf "$DATA/x86sim.AppImage.new" "$DATA/x86sim.AppImage"
+fi
 export X86SIM_DARLING_MODE=$mode
 export X86SIM_ROOT="$DATA" X86SIM_SCRATCH="$CACHE" X86SIM_APP="$APP" X86SIM_VERSION="$VER"
 export X86SIM_DARLING_ID="$(cat "$APP/DARLING_ID")" X86SIM_DARLING_STAGE="$S/darling" X86SIM_PYLIB="$APP/pylib"
@@ -102,6 +116,7 @@ mcp) shift; exec "$B/x86sim-mcp" "$@" ;;
 dev) shift; exec "$B/x86sim-dev" "$@" ;;
 serve) shift; exec "$B/x86sim-serve" "$@" ;;
 x86sim) shift; exec "$APP/cli/x86sim" "$@" ;;
+install-desktop | uninstall-desktop) exec "$B/x86sim-launcher" "$cmd" ;;
 shell) shift; cd "$DATA"; exec "${SHELL:-/bin/sh}" "$@" ;;
 version) echo "x86Sim $VER (Darling $X86SIM_DARLING_ID, $mode mode)"; echo "data $DATA"; echo "cache $CACHE" ;;
 *) exec "$B/x86sim-launcher" "$@" ;;

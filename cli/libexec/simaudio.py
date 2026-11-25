@@ -6,7 +6,10 @@ here for each running stream: a 16-byte header ("x86A", u32 direction 0=output/1
 then float32 interleaved PCM. With X86SIM_AUDIO_PLAYBACK=1 (boot-a64.sh: X86SIM_AUDIO=1) output streams are played
 with `pw-cat --playback` (PipeWire, or PulseAudio through pipewire-pulse), one PipeWire stream per simulator stream,
 so PipeWire mixes them, and input streams get the default source through `pw-cat --record`; otherwise input streams
-get silence.
+get silence. pw-cat's raw mode (-a) is PipeWire 1.4 and later; an older pw-cat (Ubuntu 24.04: 1.0.5) refuses it, and
+then `pacat`/`parec --raw` (PulseAudio's tools, through pipewire-pulse) play and record instead. A player that fails
+(its stderr goes to this log) leaves its stream connected: output is consumed and dropped, input gets silence, so a
+simulator stream never reconnects in a loop.
 
 The tap (SOCKET's folder/simaudio-tap.sock): a second consumer, x86sim-serve (tools/launcher/core/src/share/audio.rs),
 which mixes the phone's output for a browser and feeds a browser's microphone back. Messages both ways: u8 op,
@@ -17,7 +20,8 @@ u32 stream id, u32 payload length (little endian), payload.
 A tap that falls behind loses data (its queue is bounded); it never slows a simulator stream.
 
 usage: simaudio.py SOCKET     env: X86SIM_AUDIO_PLAYBACK (1: PipeWire, default 1), X86SIM_AUDIO_VOLUME (0..1,
-                                   default 0.5), X86SIM_AUDIO_MIC=0 (no host microphone: input streams get silence)
+                                   default 0.5), X86SIM_AUDIO_MIC=0 (no host microphone: input streams get silence),
+                                   X86SIM_AUDIO_PLAYER (pw-cat | pacat; default: pw-cat when it has raw mode)
 """
 import array, os, queue, socket, struct, subprocess, sys, threading, time
 
@@ -33,9 +37,70 @@ def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
-def pwcat(mode, rate, ch, name):
-    return ["pw-cat", mode, "-a", "--format", "f32", "--rate", str(rate), "--channels", str(ch),
-            "--latency", "40ms", "-P", "{ node.name = \"%s\" media.name = \"iOS Simulator\" application.name = \"x86sim\" }" % name]
+def pick_player():
+    """pw-cat when it has raw mode (-a, --raw: PipeWire 1.4+), else pacat/parec (pipewire-pulse), else none"""
+    want = os.environ.get("X86SIM_AUDIO_PLAYER", "")
+    if want in ("pw-cat", "pacat"):
+        return want
+    try:
+        h = subprocess.run(["pw-cat", "--help"], capture_output=True, text=True, timeout=5)
+        if "--raw" in h.stdout + h.stderr:
+            return "pw-cat"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for tool in ("pacat", "parec"):
+        if subprocess.run(["sh", "-c", "command -v " + tool], capture_output=True).returncode:
+            log("no audio player: pw-cat has no raw mode (PipeWire < 1.4) and %s is missing" % tool)
+            return None
+    return "pacat"
+
+
+def player(output, rate, ch, name):
+    """the command that plays (output) or records float32 interleaved PCM on stdin/stdout"""
+    if PLAYER == "pw-cat":
+        cmd = ["pw-cat", "--playback" if output else "--record", "-a", "--format", "f32", "--rate", str(rate),
+               "--channels", str(ch), "--latency", "40ms",
+               "-P", "{ node.name = \"%s\" media.name = \"iOS Simulator\" application.name = \"x86sim\" }" % name]
+        return cmd + (["--volume", VOLUME, "-"] if output else ["-"])
+    cmd = ["pacat" if output else "parec", "--raw", "--format=float32le", "--rate=%d" % rate, "--channels=%d" % ch,
+           "--latency-msec=40", "--client-name=x86sim", "--stream-name=iOS Simulator", "--property=node.name=" + name,
+           "--property=state.restore-props=false"]
+    if output:
+        # the volume goes into the samples (serve(), GAIN), the stream's own is 100% and opts out of WirePlumber's
+        # stream restore: that keeps a stream volume per application.name (x86sim) and puts it on later streams, so
+        # pw-cat's --volume would land on pacat's too (twice the attenuation) and a pacat --volume on pw-cat's
+        cmd.append("--volume=65536")
+    return cmd
+
+
+def spawn(n, output, rate, ch):
+    """start the player for connection n, its stderr copied to this log; None when there is none or it can't start"""
+    if not PLAYER:
+        return None
+    cmd = player(output, rate, ch, "x86sim-%s-%d" % ("out" if output else "in", n))
+    try:
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE if output else subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL if output else subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as e:
+        log("conn %d: %s: %s" % (n, cmd[0], e))
+        return None
+
+    def errors():
+        for line in p.stderr:
+            log("conn %d: %s: %s" % (n, cmd[0], line.decode(errors="replace").rstrip()))
+        p.stderr.close()
+
+    threading.Thread(target=errors, daemon=True).start()
+    return p
+
+
+def ended(n, p, what):
+    """log a player that stopped while its stream still ran (once a connection)"""
+    try:
+        rc = p.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        rc = None
+    log("conn %d: %s stopped (exit %s); the stream goes on without it" % (n, what, rc))
 
 
 # ---- the tap: output streams out, a browser's microphone in ----
@@ -151,6 +216,11 @@ class MicFeed:
 
 TAPS = Taps()
 MICFEED = MicFeed()
+PLAYER = pick_player() if PLAYBACK else None
+try:
+    GAIN = max(0.0, min(1.0, float(VOLUME)))    # pacat: the volume, applied to the samples (pw-cat: --volume)
+except ValueError:
+    GAIN = 0.5
 
 
 def mic_frames(pos, rate, ch, nframes):
@@ -181,22 +251,36 @@ def serve(conn, n):
             return
         log("conn %d: %s %d Hz %d ch" % (n, "input" if direction else "output", rate, ch))
         if direction == 0:
-            p = subprocess.Popen(pwcat("--playback", rate, ch, "x86sim-out-%d" % n) + ["--volume", VOLUME, "-"],
-                                 stdin=subprocess.PIPE, stderr=subprocess.DEVNULL) if PLAYBACK else None
+            p = spawn(n, True, rate, ch) if PLAYBACK else None
             TAPS.send(OPEN, n, struct.pack("<II", rate, ch))
             frame = 4 * ch
             rest = b""
             total = 0
+            scale = PLAYER == "pacat" and GAIN != 1.0
+            odd = b""
             while True:
                 b = conn.recv(65536)
                 if not b:
                     break
                 total += len(b)
                 if p:
+                    out = b
+                    if scale:
+                        out = odd + b
+                        cut = len(out) // 4 * 4
+                        odd = out[cut:]
+                        a = array.array("f")
+                        a.frombytes(out[:cut])
+                        out = array.array("f", map(GAIN.__mul__, a)).tobytes()
                     try:
-                        p.stdin.write(b)
+                        p.stdin.write(out)
                         p.stdin.flush()
-                    except BrokenPipeError:
+                    except (BrokenPipeError, ValueError):
+                        ended(n, p, "player")
+                        try:
+                            p.stdin.close()
+                        except OSError:
+                            pass        # what it still buffered goes nowhere
                         p = None
                 # the tap gets whole frames only
                 b = rest + b
@@ -213,33 +297,34 @@ def serve(conn, n):
                     pass
                 p.terminate()
         else:
-            # 10 ms blocks: the browser's microphone while it sends, else the host's (pw-cat), else silence
+            # 10 ms blocks: the browser's microphone while it sends, else the host's (the recorder), else silence
             block = rate // 100
             pos = None
-            p = subprocess.Popen(pwcat("--record", rate, ch, "x86sim-in-%d" % n) + ["-"],
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) if MIC else None
+            p = spawn(n, False, rate, ch) if MIC else None
             try:
                 if p:
                     while True:
                         b = p.stdout.read1(4096)
                         if not b:
+                            # the recorder failed or quit: silence from here (closing would have the simulator
+                            # reconnect at once, and again, many times a second)
+                            ended(n, p, "recorder")
                             break
                         if MICFEED.active():
                             b, pos = mic_frames(pos, rate, ch, len(b) // (4 * ch))
                         else:
                             pos = None
                         conn.sendall(b)
-                else:
-                    silence = bytes(4 * ch * block)
-                    t = time.monotonic()
-                    while True:
-                        if MICFEED.active():
-                            b, pos = mic_frames(pos, rate, ch, block)
-                        else:
-                            b, pos = silence, None
-                        conn.sendall(b)
-                        t += 0.01
-                        time.sleep(max(0.0, t - time.monotonic()))
+                silence = bytes(4 * ch * block)
+                t = time.monotonic()
+                while True:
+                    if MICFEED.active():
+                        b, pos = mic_frames(pos, rate, ch, block)
+                    else:
+                        b, pos = silence, None
+                    conn.sendall(b)
+                    t += 0.01
+                    time.sleep(max(0.0, t - time.monotonic()))
             except (BrokenPipeError, ConnectionResetError):
                 pass
             log("conn %d: input ended" % n)
@@ -276,7 +361,7 @@ def main():
             threading.Thread(target=TAPS.add, args=(c,), daemon=True).start()
 
     threading.Thread(target=taps, daemon=True).start()
-    log("listening on", path, "tap", tap_path, "playback", PLAYBACK, "volume", VOLUME, "mic", MIC)
+    log("listening on", path, "tap", tap_path, "playback", PLAYBACK, "player", PLAYER, "volume", VOLUME, "mic", MIC)
     n = 0
     while True:
         c, _ = s.accept()

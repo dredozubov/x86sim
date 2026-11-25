@@ -849,7 +849,7 @@ fn x86sim_cli(args: &[&std::ffi::OsStr]) -> Result<String> {
 
 /// The phone's state from the monitor: (state, home)
 fn phone_state(inst: &Instance) -> (String, bool) {
-    crate::instance::summaries(0).into_iter().find(|s| s.id == inst.id).map(|s| (s.state, s.home)).unwrap_or(("off".into(), false))
+    crate::instance::summaries_unprobed(0).into_iter().find(|s| s.id == inst.id).map(|s| (s.state, s.home)).unwrap_or(("off".into(), false))
 }
 
 /// Waits until the phone runs (its home screen, or for runtimes the detector doesn't know, just running)
@@ -1006,7 +1006,7 @@ pub fn pick_phone(key: Option<&str>) -> Result<Instance> {
     if let Some(k) = key.filter(|k| !k.is_empty()) {
         return crate::instance::find(k).ok_or_else(|| anyhow::anyhow!("no device {k:?} (devices: {})", names()));
     }
-    let running: Vec<_> = crate::instance::summaries(0).into_iter().filter(|s| s.state != "off").collect();
+    let running: Vec<_> = crate::instance::summaries_unprobed(0).into_iter().filter(|s| s.state != "off").collect();
     if running.len() == 1 {
         return crate::instance::find(&running[0].id).context("device vanished");
     }

@@ -115,14 +115,10 @@ fn env_of(dir: &Path) -> HashMap<String, String> {
         .collect()
 }
 
-fn uid() -> u32 {
-    unsafe { libc::getuid() }
-}
-
-/// The ring path this instance should publish frames to (unique per phone)
+/// The ring path a phone started from here publishes frames to (unique per phone, in rundir::run_dir()); a booted
+/// phone's actual ring is its Instance::ring (sim.env)
 pub fn ring_for(id: &str) -> PathBuf {
-    let tag = id.strip_prefix("device-").unwrap_or(id);
-    PathBuf::from(format!("/run/user/{}/x86sim-{tag}-simfb.ring", uid()))
+    crate::rundir::run_dir().join(crate::rundir::ring_name(id))
 }
 
 /// A name for a phone made without one: "" -> "Main device", "-probe" -> "Probe", "b" -> "Device B"
@@ -166,9 +162,10 @@ pub fn load(dir: &Path) -> Instance {
     let w = env.get("SIMULATOR_MAINSCREEN_WIDTH").and_then(|v| v.parse().ok()).unwrap_or(1206);
     let h = env.get("SIMULATOR_MAINSCREEN_HEIGHT").and_then(|v| v.parse().ok()).unwrap_or(2622);
     let scale = env.get("SIMULATOR_MAINSCREEN_SCALE").and_then(|v| v.parse().ok()).unwrap_or(3.0);
-    // always the per-phone ring (sim.env may hold a ring copied from another phone; passing it on at start
-    // kept that phone drawing into the other one's ring)
-    let ring = ring_for(&id);
+    // the ring the last boot wrote (sim.env), wherever the CLI, the MCP server or this launcher put it (rundir.rs), but
+    // only this phone's own: sim.env may hold a ring copied from another phone (passing it on at start kept that phone
+    // drawing into the other one's ring)
+    let ring = crate::rundir::ring_from_env(&id, &env, ring_for(&id));
     let inner = inner_display(&model_id, &ring);
     let prefix_sfx = if is_default { String::new() } else if sfx.starts_with('-') { sfx.to_string() } else { format!("-{sfx}") };
     Instance {
@@ -267,10 +264,29 @@ pub struct Summary {
     pub processes: usize,
     pub uptime_s: Option<f64>,
     pub path: PathBuf,
+    /// its SpringBoard answers (crate::liveness): None while not known (booting, or the shell never answered)
+    pub responsive: Option<bool>,
+    /// running, but SpringBoard has not answered for a while: the phone needs a restart
+    pub hung: bool,
+    /// why the last check failed (empty when it answered)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hung_reason: String,
 }
 
-/// Every phone's state; samples CPU over `sample_ms` (0: memory and state only).
+/// Every phone's state; samples CPU over `sample_ms` (0: memory and state only). Probes each phone's SpringBoard
+/// (`responsive` / `hung`, up to [`crate::liveness`]'s probe timeout on a busy or stuck phone): callers that only want
+/// the list or the state use [`summaries_unprobed`].
 pub fn summaries(sample_ms: u64) -> Vec<Summary> {
+    summaries_with(sample_ms, true)
+}
+
+/// [`summaries`] without the SpringBoard probe (`responsive` None, `hung` false): picking a phone, waiting for a
+/// state. With the probe, every MCP call that named no phone waited out the probe timeout on a busy phone.
+pub fn summaries_unprobed(sample_ms: u64) -> Vec<Summary> {
+    summaries_with(sample_ms, false)
+}
+
+fn summaries_with(sample_ms: u64, probe: bool) -> Vec<Summary> {
     // one Monitor for the process: a fresh one forgot which phones had reached home, so a phone with a dark app open
     // (every watchOS app) was reported "starting" again by the MCP server's phones_list
     static MON: std::sync::Mutex<Option<Monitor>> = std::sync::Mutex::new(None);
@@ -282,10 +298,23 @@ pub fn summaries(sample_ms: u64) -> Vec<Summary> {
         std::thread::sleep(std::time::Duration::from_millis(sample_ms));
         st = m.poll(&insts);
     }
+    // SpringBoard liveness of the phones at their home screen, in parallel (a stuck one costs one probe timeout)
+    let live: Vec<Option<crate::liveness::Liveness>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = insts
+            .iter()
+            .zip(&st)
+            .map(|(i, s)| {
+                let boot = s.boot_time.filter(|_| probe && s.phase == Phase::Running && s.home);
+                sc.spawn(move || boot.map(|b| crate::liveness::check(i, b)))
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
     insts
         .iter()
         .zip(st)
-        .map(|(i, s)| Summary {
+        .zip(live)
+        .map(|((i, s), l)| Summary {
             id: i.id.clone(),
             name: i.name.clone(),
             model: i.model.clone(),
@@ -300,6 +329,9 @@ pub fn summaries(sample_ms: u64) -> Vec<Summary> {
             processes: s.procs.len(),
             uptime_s: s.uptime_s.map(|u| u.round()),
             path: i.dir.clone(),
+            responsive: l.as_ref().and_then(|l| l.responsive),
+            hung: l.as_ref().is_some_and(|l| l.hung),
+            hung_reason: l.map(|l| l.why).unwrap_or_default(),
         })
         .collect()
 }
@@ -847,11 +879,12 @@ pub fn delete_plan(inst: &Instance) -> Vec<PathBuf> {
     if inst.state_dir == own_state && inst.state_dir.exists() {
         v.push(inst.state_dir.clone());
     }
-    let ring = ring_for(&inst.id);
-    if ring.exists() {
-        v.push(ring.clone());
+    for ring in [inst.ring.clone(), ring_for(&inst.id)] {
+        if ring.exists() && !v.contains(&ring) {
+            v.push(ring);
+        }
     }
-    let link = PathBuf::from("/dev/shm").join(ring.file_name().unwrap_or_default());
+    let link = PathBuf::from("/dev/shm").join(crate::rundir::ring_name(&inst.id));
     if link.symlink_metadata().is_ok() {
         v.push(link);
     }

@@ -454,6 +454,9 @@ x86sim pool down --delete
   command reaps them. Taking is atomic across processes (a lock around the pool's state in `var/pool/`).
 - **Reset on release** (`--reset` at take or release): `apps` (default: uninstall the apps installed during the
   lease, with their data, then Home), `restart` (a fresh boot), `erase` (re-cloned from the template), `none`.
+- **Hung devices**: a device whose SpringBoard stops answering (its simax reader, asked on SpringBoard's main
+  thread, silent for 3 checks in a row over 10 s or more) shows `hung` in `pool status` and `"hung": true` in MCP
+  `phones_list`; it is not handed out, and a free one is restarted (an `apps` reset of a hung device restarts it).
 - **Fast creation**: members are clones of `<pool>-template`, a device of the pool's model booted once and stopped,
   copied with `cp --reflink=auto` (instant and sharing disk on btrfs / XFS) and given their own paths and UDID.
 - **Memory**: `pool up` boots a device only while available memory stays above a reserve (3 GB, `--reserve-mb`)
@@ -585,13 +588,14 @@ else the configured one. Erase, clone and keychain reset need it.
 |---|---|
 | Devices | `phones_list` (`sim_status` is the same), `sim_devices`, `sim_add_device`, `sim_start`, `sim_stop`, `sim_restart`, `runtime_delete`, `aot_status` |
 | Feature sets | `features_list`, `feature_get`, `feature_set`, `features_preset` |
-| Apps | `app_install` (simulator or device builds), `app_uninstall`, `app_launch`, `app_terminate`, `app_list`, `app_logs` |
+| Apps | `app_install` (simulator or device builds), `app_uninstall`, `app_launch` (with `args` and `env`), `app_terminate`, `app_list`, `app_logs` |
 | Tests | `xctest_run` (XCTest / XCUITest: an `.xctestrun` or bundles; per-test results, see [Tests](#tests-xctest-xcuitest)) |
 | Debugging | `debug_start`, `debug_command`, `debug_stop` (an lldb session on an app, see [Debugging (LLDB)](#debugging-lldb)) |
 | Profiling | `profile_start`, `profile_stop` (CPU profile of an app, see [Profiling (CPU)](#profiling-cpu)) |
-| Screen as text and actions | `snapshot`, `tap`, `long_press`, `type`, `key`, `scroll`, `scroll_to`, `swipe`, `wait_for`, `press`, `open_url`, `screenshot` |
+| Screen as text and actions | `snapshot`, `tap`, `long_press`, `type`, `key`, `scroll`, `scroll_to`, `swipe`, `pinch`, `wait_for`, `press`, `open_url`, `screenshot` |
 | Accessibility Inspector | `ax_inspect`, `ax_audit`, `ax_action` |
 | Hardware | `sim_button`, `sim_crown`, `sim_fold`, `sim_shake`, `sim_orientation`, `sim_biometric`, `sim_gamepad`, `sim_pointer`, `sim_system`, `sim_keyboard`, `sim_memory_warning` |
+| Device services (as simctl) | `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia` |
 | Settings (as simctl) | `sim_ui`, `sim_status_bar`, `sim_pasteboard`, `sim_keychain_reset`, `sim_locale`, `sim_timezone`, `sim_fidelity`, `sim_erase`, `sim_clone` |
 | Capture | `sim_screenshot` (a PNG file), `sim_record_video` |
 | Pool | `pool_status`, `phone_take`, `phone_release` |
@@ -755,7 +759,7 @@ above work. These are the known gaps:
   build-for-testing`); only Swift package tests build on Linux.
 - **Maps** shows no map tiles: the map data comes from a Mac and is not part of a release.
 - **Audio** is not played on the host unless `X86SIM_AUDIO=1` sends it to PipeWire (which also records the host's
-  microphone); the browser view plays it either way. Apps always see audio devices.
+  microphone; PipeWire before 1.4 needs `pacat`/`parec`, from pulseaudio-utils); the browser view plays it either way. Apps always see audio devices.
 - **Sensors and accessories**: no accelerometer, Apple Pencil, external displays or CarPlay.
 - **Pairing** an Apple Watch with an iPhone is not supported.
 - **Networking**: ordinary DNS and sockets work; Bonjour works between apps on one device but not with the network

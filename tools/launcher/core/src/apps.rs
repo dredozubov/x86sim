@@ -69,7 +69,21 @@ pub fn uninstall(inst: &Instance, bundle_id: &str) -> Result<String> {
 
 /// Opens an app (simctl launch); extra arguments go to the app
 pub fn launch(inst: &Instance, bundle_id: &str, args: &[String]) -> Result<String> {
-    let mut a = vec!["launch", bundle_id];
+    launch_env(inst, bundle_id, args, &[])
+}
+
+/// `launch` with environment variables for the app (simctl launch's SIMCTL_CHILD_*, `x86sim launch --env K=V`)
+pub fn launch_env(inst: &Instance, bundle_id: &str, args: &[String], env: &[(String, String)]) -> Result<String> {
+    for (k, _) in env {
+        anyhow::ensure!(!k.is_empty() && !k.contains('=') && !k.contains('\0'), "environment variable name {k:?}: not empty, no '='");
+    }
+    let kv: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    let mut a = vec!["launch"];
+    for e in &kv {
+        a.extend(["--env", e.as_str()]);
+    }
+    // a bundle id that starts with '-' must not be read as an option
+    a.extend(["--", bundle_id]);
     a.extend(args.iter().map(|s| s.as_str()));
     helper(inst, &a)
 }

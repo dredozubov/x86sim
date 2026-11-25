@@ -105,7 +105,7 @@ fn run(a: &mut Vec<String>) -> anyhow::Result<()> {
                     (Some(h), Some(e)) => format!(" held by {h}{} for {e} s more, reset {}", m.holder_pid.map(|p| format!(" (pid {p})")).unwrap_or_default(), m.reset.clone().unwrap_or_default()),
                     _ => String::new(),
                 };
-                println!("  {:<14} {:<9} {:<8} {:>6.0} MB{}{}", m.phone, m.state, if m.ready { "home" } else { &m.phase }, m.memory_mb, lease, if m.note.is_empty() { String::new() } else { format!("  [{}]", m.note) });
+                println!("  {:<14} {:<9} {:<8} {:>6.0} MB{}{}", m.phone, m.state, if m.ready { "home" } else if m.hung { "hung" } else { &m.phase }, m.memory_mb, lease, if m.note.is_empty() { String::new() } else { format!("  [{}]", m.note) });
             }
             println!(
                 "memory: {:.0} MB available, ~{:.0} MB per device: room for {} more; KSM {}{}; clones: {}",

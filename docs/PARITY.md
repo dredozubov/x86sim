@@ -55,15 +55,15 @@ entitlement-gated services) is not counted as an x86Sim gap.
 
 | Feature | x86Sim | Rating | Verified |
 |---|---|---|---|
-| Touch, multi-touch, edge gestures | mouse in the launcher; real multi-touch in the browser; `tap` / `swipe` / `pinch` / `pan2` from the CLI | same | inputs.sh |
+| Touch, multi-touch, edge gestures | mouse in the launcher; real multi-touch in the browser; `tap` / `swipe` / `pinch` / `pan2` from the CLI, MCP `pinch` (also two-finger rotation) | same | inputs.sh |
 | Hardware keyboard, paste | yes; Ctrl+V types the Linux clipboard | same | |
 | Toggle Software Keyboard, Connect Hardware Keyboard (I/O > Keyboard, Cmd-K / Shift-Cmd-K) | `x86sim keyboard software on\|off\|toggle`, `keyboard hardware connect\|disconnect`, MCP `sim_keyboard`, launcher Simulate section and Ctrl+K / Ctrl+Shift+K, browser viewer; Apple's mechanisms (the on-screen-keyboard key on the keyboard service; GraphicsServices' hardware-keyboard state, as CoreSimulatorBridge sets it); the connection is kept across boots | same | wt-kbd 2026-11-24: shown with the hardware keyboard connected, disconnected = software keyboard on focus and while typing, `type` both ways, snapshot lists the keys; compared with Apple's iOS 27.2 simulator; 2026-11-24: `type` and `sim_keyboard` on iPad, Apple TV (edits in its full-screen keyboard), Apple Watch (its input sheet; `type keys=true` does not reach it, unchecked against Apple's) and Vision Pro |
 | Buttons (Home, Lock, side, volume, Siri, Action, Apple Pay) | `x86sim button`, MCP `sim_button` | same | inputs.sh |
 | Shake, rotate, orientation, memory warning | `shake`, `rotate`, `orientation`, `memwarn`; MCP `sim_shake`, `sim_orientation`, `sim_memory_warning` | same | inputs.sh |
 | Face ID / Touch ID / Optic ID | `biometric enroll\|unenroll\|match\|nomatch`, MCP `sim_biometric` | same | inputs.sh |
-| Location (point, route, scenarios) | `x86sim location`, as `simctl location` | same | sdkcov location checks |
-| Push notifications | `x86sim push` | same | inputs.sh push |
-| Privacy grants | `x86sim privacy` | same | |
+| Location (point, route, scenarios) | `x86sim location`, as `simctl location`; MCP `sim_location` | same | sdkcov location checks |
+| Push notifications | `x86sim push`, MCP `sim_push` | same | inputs.sh push |
+| Privacy grants | `x86sim privacy`, MCP `sim_privacy` | same | |
 | Game controller | `x86sim gamepad`, MCP `sim_gamepad` | same | inputs.sh |
 | iPad pointer and trackpad | `pointer`, `trackpad on\|off`, MCP `sim_pointer`, `sim_system` | close: trackpad gestures are not simulated (as Apple's "Simulate Trackpad"; pinch / pan2 instead) | GCMouse input unreachable on Apple's side too |
 | Digital Crown, watch side button, hand gestures | `crown`, `button side`, `gesture doubletap\|wristflick` | same | |

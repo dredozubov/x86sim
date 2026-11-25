@@ -165,6 +165,8 @@ pub fn install(rel: &Release, target: &Path, done: Arc<AtomicU64>) -> Result<Pat
     if dest != target {
         let _ = std::fs::remove_file(target);
     }
+    // the app menu's entry runs a link to the AppImage: it follows the new name (desktop.rs)
+    crate::desktop::follow(&dest);
     Ok(dest)
 }
 

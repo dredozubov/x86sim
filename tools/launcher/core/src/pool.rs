@@ -163,8 +163,20 @@ fn live() -> BTreeMap<String, instance::Summary> {
     instance::summaries(0).into_iter().map(|s| (s.id.clone(), s)).collect()
 }
 
+/// booted, at its home screen, and its SpringBoard answers (a hung phone is no use to a taker)
 fn ready(s: Option<&instance::Summary>) -> bool {
-    s.is_some_and(|s| s.state == "running" && s.home)
+    s.is_some_and(|s| s.state == "running" && s.home && !s.hung)
+}
+
+/// Free members whose SpringBoard stopped answering (instance::Summary::hung) are restarted. Under the lock.
+fn recycle_hung(st: &mut State, lv: &BTreeMap<String, instance::Summary>) {
+    let hung: Vec<String> = st.members.values().filter(|m| m.state == "free" && lv.get(&m.id).is_some_and(|s| s.hung)).map(|m| m.id.clone()).collect();
+    for id in hung {
+        let why = format!("SpringBoard does not answer ({})", lv[&id].hung_reason);
+        if let Err(e) = spawn_reset(st, &id, "restart", &why) {
+            st.members.get_mut(&id).unwrap().note = format!("{why}; restart failed to start: {e:#}");
+        }
+    }
 }
 
 /// Bundle ids of the apps installed on a phone (its Containers/Bundle/Application/*/*.app), read from the files
@@ -608,6 +620,7 @@ pub fn take(pool: &str, o: &TakeOpts) -> Result<Taken> {
         let lv = live();
         let got = with_state(pool, |st| {
             reap(st);
+            recycle_hung(st, &lv);
             let id = st.members.values().find(|m| m.state == "free" && ready(lv.get(&m.id))).map(|m| m.id.clone());
             let Some(id) = id else {
                 return Ok(None);
@@ -691,6 +704,12 @@ pub fn reset_worker(pool: &str, id: &str, mode: &str, apps_at_take: &[String]) -
     opt_in_ksm();
     let inst = instance::find(id).context("device vanished")?;
     let say = |s: &str| println!("[{}] {id}: {s}", now());
+    // a phone whose SpringBoard stopped answering is restarted whatever the mode: uninstalling and Home need it
+    let hung = instance::summaries(0).into_iter().any(|s| s.id == id && s.hung);
+    if hung {
+        say("SpringBoard does not answer: restarting");
+    }
+    let mode = if hung && mode == "apps" { "restart" } else { mode };
     match mode {
         "apps" => {
             let now_apps = installed_apps(&inst.dir);
@@ -753,8 +772,10 @@ pub struct MemberStatus {
     pub id: String,
     /// free | leased | resetting
     pub state: String,
-    /// booted and at its home screen
+    /// booted, at its home screen and its SpringBoard answers
     pub ready: bool,
+    /// running but its SpringBoard does not answer (it is restarted when free)
+    pub hung: bool,
     /// off | starting | running | stopping
     pub phase: String,
     pub memory_mb: f64,
@@ -784,6 +805,7 @@ pub fn status(pool: &str) -> Result<PoolStatus> {
     let lv = live();
     let st = with_state(pool, |st| {
         reap(st);
+        recycle_hung(st, &lv);
         let m = measure(st, &lv);
         if m > 0.0 {
             st.cost_mb = m;
@@ -801,6 +823,7 @@ pub fn status(pool: &str) -> Result<PoolStatus> {
                 id: m.id.clone(),
                 state: m.state.clone(),
                 ready: ready(s),
+                hung: s.is_some_and(|s| s.hung),
                 phase: s.map(|s| s.state.clone()).unwrap_or_else(|| "missing".into()),
                 memory_mb: s.map(|s| s.memory_mb).unwrap_or(0.0),
                 holder: m.lease.as_ref().map(|l| l.holder.clone()),

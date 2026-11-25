@@ -214,6 +214,9 @@ static BOOL appRunning(NSString* bid) {
 // bundle record for com.x86sim.openurl"), so every terminate took ~6 s. The answer is given as soon as RunningBoard
 // no longer has the process (polled every 20 ms), and RunningBoard terminates it directly
 // (com.apple.runningboard.terminateprocess) when FrontBoard has not within 1.5 s.
+// Once RunningBoard has dropped the process, FrontBoard may still be ending its scene: an open of the same app in that
+// window completed with no process and no error, and nothing started (5 of 7 such quick relaunches, 0 of 36 once
+// FrontBoard had answered). So the answer also waits for FrontBoard's completion, up to 1 s more.
 static NSDictionary* terminateApp(NSString* bid) {
 	if (!appRunning(bid)) return @{ @"ok": @NO, @"error": @"not running" };
 	dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
@@ -233,8 +236,14 @@ static NSDictionary* terminateApp(NSString* bid) {
 		usleep(20000);
 		uint64_t ms = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1000000;
 		if (!appRunning(bid)) {
-			fprintf(logf_, "terminate %s: gone after %llu ms (%s)\n", bid.UTF8String, (unsigned long long)ms,
-				rbsTried ? "RunningBoard" : answered ? "FrontBoard answered" : "FrontBoard");
+			uint64_t gone = ms;
+			while (!answered && !rbsTried && ms < gone + 1000) {
+				usleep(20000);
+				ms = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1000000;
+			}
+			fprintf(logf_, "terminate %s: gone after %llu ms (%s), answered %s\n", bid.UTF8String, (unsigned long long)gone,
+				rbsTried ? "RunningBoard" : answered ? "FrontBoard answered" : "FrontBoard",
+				answered ? [NSString stringWithFormat:@"after %llu ms", (unsigned long long)ms].UTF8String : "not in 1 s");
 			fflush(logf_);
 			return @{ @"ok": @YES };
 		}
@@ -279,12 +288,23 @@ static NSDictionary* launchApp(NSDictionary* q) {
 		}
 		dispatch_semaphore_signal(done);
 	};
-	MSG(void, id, SEL, id, id, id)(svc, sel_getUid("openApplication:withOptions:completion:"), bid, opts, completion);
 	// x86Sim: with __WaitForDebugger FrontBoard answers only once the app runs (after a debugger resumed it): don't
 	// hold the helper; the caller finds the waiting process itself (cli/libexec/simctl.py)
 	BOOL waits = [q[@"waitForDebugger"] boolValue];
-	if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (waits ? 5 : 30) * NSEC_PER_SEC)) && waits)
-		return @{ @"ok": @YES, @"pid": @(-1), @"waiting": @YES };
+	// An open that FrontBoard completes without error and without a process started nothing: it arrived while
+	// FrontBoard was still ending the app's previous process (a terminate + launch in a row). Asked again after a
+	// pause, up to 3 s, it starts the app.
+	for (int attempt = 0;; attempt++) {
+		MSG(void, id, SEL, id, id, id)(svc, sel_getUid("openApplication:withOptions:completion:"), bid, opts, completion);
+		if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (waits ? 5 : 30) * NSEC_PER_SEC)) && waits)
+			return @{ @"ok": @YES, @"pid": @(-1), @"waiting": @YES };
+		if (waits || ![r[@"ok"] boolValue] || [r[@"pid"] intValue] > 0 || attempt >= 12) break;
+		usleep(250000);
+		if (appRunning(bid)) break;
+		fprintf(logf_, "launch %s: opened without a process (attempt %d): again\n", bid.UTF8String, attempt + 1);
+		fflush(logf_);
+		r = @{ @"ok": @NO, @"error": @"no reply in 30 s" };
+	}
 	return r;
 }
 

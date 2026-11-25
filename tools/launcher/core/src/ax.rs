@@ -26,7 +26,7 @@ const SPRINGBOARD: &str = "com.apple.springboard";
 /// alerts), Carousel (watchOS: the app grid, the time over apps), visionOS's SurfBoard; the homes that are apps of
 /// their own: tvOS's HeadBoard (TVSystemUIService: its clock corner), a watch face (com.apple.clockface), visionOS's
 /// Home View (RealityLauncher; RealityHUD: the Home / Control Center buttons)
-const SHELLS: &[&str] = &[SPRINGBOARD, "com.apple.PineBoard", "com.apple.Carousel", "com.apple.SurfBoard"];
+pub(crate) const SHELLS: &[&str] = &[SPRINGBOARD, "com.apple.PineBoard", "com.apple.Carousel", "com.apple.SurfBoard"];
 const TV_HOME: &str = "com.apple.HeadBoard";
 const WATCH_FACE: &str = "com.apple.clockface";
 const XR_HOME: &str = "com.apple.RealityLauncher";
@@ -173,6 +173,9 @@ pub struct Snapshot {
     pub front: Vec<String>,
     /// SpringBoard shows something over the apps (an alert, a banner, Control Center, the app switcher)
     pub overlay: bool,
+    /// the device is locked: the Lock Screen (Cover Sheet) is up and apps are behind it
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub locked: bool,
     pub elements: Vec<El>,
     /// processes on screen that did not answer in time (busy main thread)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -243,6 +246,9 @@ impl Snapshot {
             if self.front.is_empty() { "?".into() } else { self.front.join(", ") },
             if self.overlay { " · system overlay on top" } else { "" }
         );
+        if self.locked {
+            out += "locked: the Lock Screen is up (press home or swipe up from the bottom edge to unlock)\n";
+        }
         let layer_rank = |l: &str| match l {
             "system" => 0,
             "window" => 1,
@@ -346,12 +352,12 @@ impl Snapshot {
 // Talking to the guest
 
 /// A process's reader: its socket and whether it is on screen (its .fg marker)
-struct Endpoint {
-    sock: PathBuf,
-    fg: bool,
+pub(crate) struct Endpoint {
+    pub sock: PathBuf,
+    pub fg: bool,
 }
 
-fn endpoints(inst: &Instance) -> Vec<Endpoint> {
+pub(crate) fn endpoints(inst: &Instance) -> Vec<Endpoint> {
     let dir = inst.ring.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/tmp"));
     let pre = format!("x86sim-ax-{}-", if inst.udid.is_empty() { "phone" } else { &inst.udid });
     let mut v = Vec::new();
@@ -399,7 +405,7 @@ fn connect_nb(sock: &Path) -> std::io::Result<UnixStream> {
 }
 
 /// One request to one process; Ok(None): the process is gone (its socket removed)
-fn ask(sock: &Path, req: &Value, timeout: Duration) -> Result<Option<Value>> {
+pub(crate) fn ask(sock: &Path, req: &Value, timeout: Duration) -> Result<Option<Value>> {
     let mut s = match connect_nb(sock) {
         Ok(s) => s,
         Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => {
@@ -760,7 +766,7 @@ pub fn interface_rot(o: u64) -> u32 {
 }
 
 /// The bundle id a process's `.fg` marker names (simax writes it), for messages about a process that did not answer
-fn fg_bundle(sock: &Path) -> String {
+pub(crate) fn fg_bundle(sock: &Path) -> String {
     std::fs::read_to_string(sock.with_extension("fg")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "?".into())
 }
 
@@ -796,13 +802,23 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     let geo = Geometry::of(inst);
     let mut silent: Vec<String> = Vec::new();
     let n_answers = answers.len();
+    // SpringBoard's word on the device: locked, and the processes FrontBoard suspended
+    let sb = answers.iter().filter_map(|a| a.1.as_ref().ok()).find(|v| v["bundle"] == SPRINGBOARD);
+    snap.locked = sb.and_then(|v| v["locked"].as_bool()).unwrap_or(false);
+    let suspended: HashSet<u32> = sb.and_then(|v| v["suspended"].as_array()).into_iter().flatten().filter_map(|p| p.as_u64()).map(|p| p as u32).collect();
     for (sock, r) in answers {
         let v = match r {
             Ok(v) => v,
             Err(e) => {
+                let pid = pid_of_sock(&sock);
+                if suspended.contains(&pid) {
+                    // suspended (a view service such as SafariViewService after its app closed it keeps a foreground
+                    // scene): not on screen. Its marker goes; simax makes it again when the process comes back.
+                    let _ = std::fs::remove_file(sock.with_extension("fg"));
+                    continue;
+                }
                 // no answer at all: hung, or suspended (an extension RunningBoard suspended keeps its .fg: it draws
                 // nothing either). Said once (the first time), then it gets a short timeout until it answers again.
-                let pid = pid_of_sock(&sock);
                 st.stuck.insert(pid);
                 let who = format!("{} (pid {pid}: {})", fg_bundle(&sock), if was_stuck.contains(&pid) { "still no answer".to_string() } else { format!("no answer in {:.1} s", timeout.as_secs_f64()) });
                 if std::env::var_os("X86SIM_AX_DEBUG").is_some() {
@@ -1591,7 +1607,8 @@ pub fn type_text(inst: &Instance, text: &str, clear: bool, submit: bool, keys: b
         }
         let mut h = Hid::new(&inst.sock);
         for c in text.chars() {
-            let (u, shift) = key_usage(c).ok_or_else(|| anyhow!("no US key for {c:?} (type without keys)"))?;
+            let crate::keymap::Stroke { usage: u, shift } =
+                crate::keymap::us_stroke(c).ok_or_else(|| anyhow!("no US key for {c:?} (type without keys)"))?;
             if shift {
                 h.key(true, 225);
             }
@@ -1608,14 +1625,70 @@ pub fn type_text(inst: &Instance, text: &str, clear: bool, submit: bool, keys: b
         }
         return Ok(outcome(inst, format!("typed {} keys", text.chars().count()), before, after));
     }
-    let v = type_in_app(inst, &json!({"op": "type", "text": text, "clear": clear, "submit": submit}))?;
+    // Return goes as a key press: insertText:"\n" is a space in a SwiftUI TextField (onSubmit never runs) and does not
+    // submit a web form; the Return key submits a single-line field and is a newline in a text view, as on a keyboard
+    let mut v = Value::Null;
+    let mut returns = 0;
+    let mut h: Option<Hid> = None;
+    let steps = type_steps(text, clear, submit);
+    for (i, st) in steps.iter().enumerate() {
+        match st {
+            TypeStep::Text { text, clear } => {
+                v = type_in_app(inst, &json!({"op": "type", "text": text, "clear": clear, "submit": false}))?;
+            }
+            TypeStep::Return => {
+                let h = h.get_or_insert_with(|| Hid::new(&inst.sock));
+                h.key(true, 0x28);
+                h.key(false, 0x28);
+                returns += 1;
+                // simhid can hold a key for up to ~1 s (the keyboard's attach settle, its guard after a touch's lift)
+                // and says nothing when it went out: text after it, or the screen after, waits for it
+                std::thread::sleep(Duration::from_millis(if i + 1 < steps.len() { 1200 } else { 1000 }));
+            }
+        }
+    }
     let did = format!(
-        "typed {} into {}{}",
+        "typed {} into {}{}{}",
         quote(text),
         v["field"].as_str().unwrap_or("the focused field"),
-        v["value"].as_str().map(|s| format!(" (now {})", quote(s))).unwrap_or_default()
+        v["value"].as_str().map(|s| format!(" (now {})", quote(s))).unwrap_or_default(),
+        match returns {
+            0 => String::new(),
+            1 => ", Return pressed".into(),
+            n => format!(", Return pressed {n} times"),
+        }
     );
     Ok(outcome(inst, did, before, after))
+}
+
+#[derive(Debug, PartialEq)]
+enum TypeStep<'a> {
+    /// insertText: into the focused field (clear: empty it first)
+    Text { text: &'a str, clear: bool },
+    /// the Return key (HID usage 0x28)
+    Return,
+}
+
+/// What `type` does: the text's lines through the app (insertText:), a Return key press between them, and one at the
+/// end for `submit`. `clear` goes with the first insert (an empty one when the text starts with a newline).
+fn type_steps(text: &str, clear: bool, submit: bool) -> Vec<TypeStep<'_>> {
+    let mut v = Vec::new();
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            v.push(TypeStep::Return);
+        }
+        if !line.is_empty() || (i == 0 && clear) {
+            v.push(TypeStep::Text { text: line, clear: i == 0 && clear });
+        }
+    }
+    if submit {
+        v.push(TypeStep::Return);
+    }
+    if v.is_empty() {
+        // nothing to type: still asked, so "no focused text field" comes back as before
+        v.push(TypeStep::Text { text: "", clear });
+    }
+    v
 }
 
 /// A type request to the process with the focused text field: apps first, SpringBoard (Spotlight, alerts' fields)
@@ -1642,26 +1715,6 @@ fn type_in_app(inst: &Instance, req: &Value) -> Result<Value> {
     }
 }
 
-/// HID usage (keyboard page) and shift for a character, US layout
-pub fn key_usage(c: char) -> Option<(u32, bool)> {
-    let lower = "abcdefghijklmnopqrstuvwxyz";
-    if let Some(i) = lower.find(c) {
-        return Some((4 + i as u32, false));
-    }
-    if let Some(i) = lower.find(c.to_ascii_lowercase()) {
-        return Some((4 + i as u32, true));
-    }
-    if let Some(i) = "1234567890".find(c) {
-        return Some((0x1e + i as u32, false));
-    }
-    if let Some(i) = "!@#$%^&*()".find(c) {
-        return Some((0x1e + i as u32, true));
-    }
-    let plain = [(' ', 0x2c), ('\n', 0x28), ('\t', 0x2b), ('-', 0x2d), ('=', 0x2e), ('[', 0x2f), (']', 0x30), ('\\', 0x31), (';', 0x33), ('\'', 0x34), ('`', 0x35), (',', 0x36), ('.', 0x37), ('/', 0x38)];
-    let shifted = [('_', 0x2d), ('+', 0x2e), ('{', 0x2f), ('}', 0x30), ('|', 0x31), (':', 0x33), ('"', 0x34), ('~', 0x35), ('<', 0x36), ('>', 0x37), ('?', 0x38)];
-    plain.iter().find(|k| k.0 == c).map(|k| (k.1, false)).or_else(|| shifted.iter().find(|k| k.0 == c).map(|k| (k.1, true)))
-}
-
 /// A named key (return, tab, escape, delete, space, up/down/left/right, home/end/pageup/pagedown) or a usage number
 pub fn key_named(name: &str) -> Option<u32> {
     let n = name.to_lowercase();
@@ -1682,7 +1735,7 @@ pub fn key_named(name: &str) -> Option<u32> {
         "forwarddelete" => 0x4c,
         _ => {
             if n.chars().count() == 1 {
-                return key_usage(n.chars().next()?).map(|k| k.0);
+                return crate::keymap::us_stroke(n.chars().next()?).map(|k| k.usage);
             }
             return n.strip_prefix("0x").map(|h| u32::from_str_radix(h, 16).ok()).unwrap_or_else(|| n.parse().ok());
         }
@@ -1776,6 +1829,58 @@ pub fn swipe(inst: &Instance, from: (f64, f64), to: (f64, f64), ms: u64, after: 
     let before = last(inst);
     drag(inst, front_space(inst), from, to, ms.max(50), 0);
     Ok(outcome(inst, format!("swiped ({:.0},{:.0}) -> ({:.0},{:.0})", from.0, from.1, to.0, to.1), before, after))
+}
+
+/// Two fingers on the screen around (cx, cy) in points: their half-spacing goes from r1 to r2 (r2 > r1 zooms in)
+/// while the line through them turns by `rotate_deg` (clockwise; a two-finger rotation), over `ms`
+pub fn pinch(inst: &Instance, center: Option<&str>, at: Option<(f64, f64)>, r1: f64, r2: f64, rotate_deg: f64, ms: u64, after: After) -> Result<Outcome> {
+    anyhow::ensure!(!matches!(inst.platform.as_str(), "tvos" | "watchos" | "xros"), "{}: pinch needs a touch screen (iPhone, iPad)", inst.name);
+    anyhow::ensure!([r1, r2, rotate_deg].iter().all(|v| v.is_finite()) && r1 >= 1.0 && r2 >= 1.0, "radius and to_radius: half the distance between the fingers in points, at least 1");
+    let before = last(inst);
+    let (cx, cy, what, sp) = match (center, at) {
+        (Some(t), _) => {
+            let (e, snap) = resolve(inst, t)?;
+            let sp = snap.space_of(&e);
+            let (x, y) = e.center(sp.size);
+            (x, y, format!("@{} {} ", e.r, e.role), sp)
+        }
+        (None, Some((x, y))) => (x, y, String::new(), front_space(inst)),
+        (None, None) => {
+            let sp = front_space(inst);
+            (sp.size.0 / 2.0, sp.size.1 / 2.0, String::new(), sp)
+        }
+    };
+    let (w, h) = sp.size;
+    let a0 = 0f64;
+    let a1 = rotate_deg.to_radians();
+    let fingers = |r: f64, ang: f64| ((cx - r * ang.cos(), cy - r * ang.sin()), (cx + r * ang.cos(), cy + r * ang.sin()));
+    for (r, ang) in [(r1, a0), (r2, a1)] {
+        let ((x1, y1), (x2, y2)) = fingers(r, ang);
+        for (x, y) in [(x1, y1), (x2, y2)] {
+            anyhow::ensure!((0.0..=w).contains(&x) && (0.0..=h).contains(&y), "a finger at ({x:.0},{y:.0}) would be off the screen ({w:.0}x{h:.0} points): a smaller radius or another center");
+        }
+    }
+    anyhow::ensure!(simhid_up(inst), "{}: its touch input (host/simhid) does not answer (is the device still starting?)", inst.name);
+    let mut hd = hid_for(inst, sp);
+    let n = (ms.max(50) / 16).clamp(4, 200);
+    let send = |hd: &mut Hid, phase: &str, t: f64| {
+        let ((x1, y1), (x2, y2)) = fingers(r1 + (r2 - r1) * t, a0 + (a1 - a0) * t);
+        let (p, q) = (sp.norm(x1, y1), sp.norm(x2, y2));
+        hd.touch2(phase, p.0, p.1, q.0, q.1);
+    };
+    send(&mut hd, "down", 0.0);
+    for i in 1..=n {
+        std::thread::sleep(Duration::from_millis(ms.max(50) / n));
+        send(&mut hd, "move", i as f64 / n as f64);
+    }
+    // the fingers rest a moment before they lift, so the gesture ends without a fling
+    std::thread::sleep(Duration::from_millis(50));
+    send(&mut hd, "up", 1.0);
+    let mut did = format!("pinched {what}at ({cx:.0},{cy:.0}) from radius {r1:.0} to {r2:.0}");
+    if rotate_deg != 0.0 {
+        did += &format!(", turned {rotate_deg:.0} degrees");
+    }
+    Ok(outcome(inst, did, before, after))
 }
 
 fn tv_arrow(direction: &str) -> Result<u32> {
@@ -1946,8 +2051,13 @@ pub fn open_url(inst: &Instance, url: &str, after: After) -> Result<Outcome> {
 }
 
 pub fn launch(inst: &Instance, bundle: &str, args: &[String], after: After) -> Result<Outcome> {
+    launch_env(inst, bundle, args, &[], after)
+}
+
+/// `launch` with environment variables for the app (KEY, VALUE)
+pub fn launch_env(inst: &Instance, bundle: &str, args: &[String], env: &[(String, String)], after: After) -> Result<Outcome> {
     let before = last(inst);
-    let a = crate::apps::launch(inst, bundle, args)?;
+    let a = crate::apps::launch_env(inst, bundle, args, env)?;
     if after != After::None {
         wait_front_is(inst, bundle, Duration::from_secs(20));
     }
@@ -2236,11 +2346,23 @@ mod tests {
 
     #[test]
     fn keys() {
-        assert_eq!(key_usage('a'), Some((4, false)));
-        assert_eq!(key_usage('Z'), Some((29, true)));
-        assert_eq!(key_usage('@'), Some((0x1f, true)));
         assert_eq!(key_named("return"), Some(0x28));
         assert_eq!(key_named("0x2a"), Some(0x2a));
+    }
+
+    #[test]
+    fn type_returns_are_key_presses() {
+        use TypeStep::*;
+        assert_eq!(type_steps("hello", false, false), vec![Text { text: "hello", clear: false }]);
+        assert_eq!(type_steps("hello", true, true), vec![Text { text: "hello", clear: true }, Return]);
+        assert_eq!(
+            type_steps("a\nb\n", false, false),
+            vec![Text { text: "a", clear: false }, Return, Text { text: "b", clear: false }, Return]
+        );
+        assert_eq!(type_steps("\nx", true, false), vec![Text { text: "", clear: true }, Return, Text { text: "x", clear: false }]);
+        assert_eq!(type_steps("", false, true), vec![Return]);
+        assert_eq!(type_steps("", false, false), vec![Text { text: "", clear: false }]);
+        assert_eq!(type_steps("a\n\nb", false, false), vec![Text { text: "a", clear: false }, Return, Return, Text { text: "b", clear: false }]);
     }
 }
 

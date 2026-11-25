@@ -7,7 +7,7 @@ use eframe::egui;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use x86sim_core::{hid, instance::Instance, ring::Ring};
+use x86sim_core::{hid, instance::Instance, keymap, ring::Ring};
 
 pub const OFF: u8 = 0;
 pub const THUMB: u8 = 1;
@@ -665,7 +665,7 @@ impl Viewer {
                 self.shift_held = shift_now;
             }
             for c in paste.chars().take(2000) {
-                if let Some((u, sh)) = char_usage(c) {
+                if let Some(keymap::Stroke { usage: u, shift: sh }) = keymap::us_stroke(c) {
                     if sh {
                         self.hid.key(true, 225);
                     }
@@ -798,52 +798,6 @@ fn usage(k: egui::Key) -> Option<(u32, bool)> {
         K::End => (0x4d, false),
         K::PageUp => (0x4b, false),
         K::PageDown => (0x4e, false),
-        _ => return None,
-    })
-}
-
-/// A typed character -> (HID usage, needs shift), US layout
-fn char_usage(c: char) -> Option<(u32, bool)> {
-    Some(match c {
-        'a'..='z' => (4 + (c as u32 - 'a' as u32), false),
-        'A'..='Z' => (4 + (c as u32 - 'A' as u32), true),
-        '1'..='9' => (0x1e + (c as u32 - '1' as u32), false),
-        '0' => (0x27, false),
-        '\n' => (0x28, false),
-        '\t' => (0x2b, false),
-        ' ' => (0x2c, false),
-        '-' => (0x2d, false),
-        '_' => (0x2d, true),
-        '=' => (0x2e, false),
-        '+' => (0x2e, true),
-        '[' => (0x2f, false),
-        '{' => (0x2f, true),
-        ']' => (0x30, false),
-        '}' => (0x30, true),
-        '\\' => (0x31, false),
-        '|' => (0x31, true),
-        ';' => (0x33, false),
-        ':' => (0x33, true),
-        '\'' => (0x34, false),
-        '"' => (0x34, true),
-        '`' => (0x35, false),
-        '~' => (0x35, true),
-        ',' => (0x36, false),
-        '<' => (0x36, true),
-        '.' => (0x37, false),
-        '>' => (0x37, true),
-        '/' => (0x38, false),
-        '?' => (0x38, true),
-        '!' => (0x1e, true),
-        '@' => (0x1f, true),
-        '#' => (0x20, true),
-        '$' => (0x21, true),
-        '%' => (0x22, true),
-        '^' => (0x23, true),
-        '&' => (0x24, true),
-        '*' => (0x25, true),
-        '(' => (0x26, true),
-        ')' => (0x27, true),
         _ => return None,
     })
 }
