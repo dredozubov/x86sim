@@ -333,6 +333,10 @@ MIN="com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.appl
 # simulator answers .developerTokenRequestFailed and MPErrorDomain 2 (P27_Services.swift func:MusicKit.p27-requests).
 # sensorkitd (iOS, on demand, sdkcov P27): SensorKit's reader/writer service. Without it SRSensorReader.fetchDevices failed
 # NSCocoaErrorDomain 4099, where Apple answers SRErrorDomain 1 (no authorization) (func:SensorKit.p27-sensors-readers).
+# biomed (iOS, on demand, sdkcov P28): Biome's daemon, also CascadeSets' com.apple.cascade.SetChangeRelayService. Without it
+# AppIntents' RelevantEntities.updateEntities failed com.apple.CascadeSets.Set 3, where Apple's 27.2 simulator takes them
+# (P28_Intents.swift func:AppIntents.p28-shortcuts-schemas). Mach services only (no RunAtLoad / KeepAlive, pressured exit);
+# idle it costs ~100 MB RSS (44 MB anonymous) and no CPU.
 UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd com.apple.SpringBoard com.apple.sleepd com.apple.TextInput.kbd com.apple.FileCoordination
 	com.apple.usernotificationsd com.apple.InputUI com.apple.assistantd com.apple.assetsd com.apple.geod com.apple.navd com.apple.Maps.mapssyncd
 	com.apple.campo com.apple.FileProvider com.apple.DesktopServicesHelper com.apple.revisiond com.apple.PosterBoard com.apple.financed
@@ -352,7 +356,7 @@ UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd c
 	com.apple.linkd com.apple.mediaanalysisd com.apple.mediaanalysisd.service com.apple.translationd
 	com.apple.telephonyutilities.callservicesd com.apple.UsageTrackingAgent com.apple.ScreenTimeAgent com.apple.dmd
 	com.apple.videosubscriptionsd com.apple.managedappdistributiond com.apple.shazamd com.apple.backgroundassets.user
-	com.apple.merchantd com.apple.itunescloudd com.apple.sensorkitd"
+	com.apple.merchantd com.apple.itunescloudd com.apple.sensorkitd com.apple.biomed"
 UI_SLIM="com.apple.backboardd com.apple.SpringBoard com.apple.TextInput.kbd com.apple.FileCoordination com.apple.InputUI
 	com.apple.assistantd com.apple.sleepd"
 FULLUI="com.apple.chronod"
