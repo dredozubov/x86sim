@@ -5,6 +5,8 @@ tests/dev/dotnet/HelloCounter (UIKit in C#: a label and a button) is copied to W
 x86sim dev sees its net10.0-ios .csproj and builds it with omarchy-apple-dev's dotnet/build.sh (the iOS workload's
 MSBuild tasks against the Darwin SDK, NativeAOT for iossimulator-arm64, clang + ld64.lld). Then, on the phone:
   ui     the app's UI is in the snapshot ("Count: 0", the "Add one" button)
+  nre    the app's null dereferences became NullReferenceExceptions it caught ("NRE caught": NativeAOT's SIGSEGV
+         handler moves the pc to a throw helper)
   tap    tapping "Add one" makes it "Count: 1"
 
 Needs dotnet/setup.sh run once (OAD_DOTNET, as for build.sh).
@@ -64,6 +66,9 @@ def main():
             print("built / installed / launched in %.0f s" % (time.monotonic() - t0), flush=True)
             text, err = m.call("wait_for", target="Count: 0", timeout=60)
             check("ui", not err and "Add one" in text, "" if not err else text.strip()[-300:])
+            snap, _ = m.call("snapshot")
+            nre = [ln.strip() for ln in snap.splitlines() if "NRE caught" in ln]
+            check("nre", bool(nre) and not any("of 8" in ln for ln in nre), (nre or [snap.strip()[-200:]])[0])
             if not err:
                 text, err = m.call("tap", target="Add one")
                 text2, err2 = m.call("wait_for", target="Count: 1", timeout=20)

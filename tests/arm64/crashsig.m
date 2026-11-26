@@ -4,7 +4,11 @@
 //   ran / on the alt stack / si_signo / si_code / si_addr / pc (exact = the labeled faulting instruction, else the
 //   symbol) / sp, fp, x10 marker (guest registers at the fault) / lr / far, then the child's wait status.
 // Modes: exit (handler _exits 42), skip (the handler moves the pc past a faulting instruction: RETURNED), reraise
-// (SIG_DFL + re-raise / return to re-fault: dies with that signal), none (no handler: x86Sim's own diagnostics). Usage: crashsig.sim [exit|skip|reraise|none] [case...]
+// (SIG_DFL + re-raise / return to re-fault: dies with that signal), none (no handler: x86Sim's own diagnostics),
+// redirect (.NET NativeAOT's: SA_SIGINFO | SA_RESTART, no altstack; the handler sends the pc to a throw helper with
+// x0 = code, x1 = faulting pc: REDIRECTED, exit 0). Case nullchk is RyuJIT's implicit null check, ldr wzr, [xN]: a
+// load whose value is unused must still fault; spframe, the guest sp at a fault between two writes of sp in a block.
+// Usage: crashsig.sim [exit|skip|reraise|none|redirect] [case...]
 //   tests/arm64/run.sh tests/arm64/crashsig.sim                       (Apple: xcrun simctl spawn <dev> crashsig.sim)
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
@@ -20,7 +24,7 @@
 #include <unistd.h>
 
 extern char **environ;
-extern char pc_null[], pc_unmapped[], pc_prot[], pc_ro[], pc_align[], pc_brk[], pc_udf[];
+extern char pc_null[], pc_nullchk[], pc_spframe[], pc_unmapped[], pc_prot[], pc_ro[], pc_align[], pc_brk[], pc_udf[];
 
 static char *alt_lo, *alt_hi;
 static const char *g_case = "?", *g_mode = "exit";
@@ -32,6 +36,15 @@ static void sym(unsigned long a, char *out, size_t n) {
     Dl_info di;
     if (dladdr((void *)a, &di) && di.dli_sname) snprintf(out, n, "%s+%#lx", di.dli_sname, a - (unsigned long)di.dli_saddr);
     else snprintf(out, n, "%#lx", a);
+}
+
+// where mode redirect sends a fault (NativeAOT: RhpThrowHwEx), on the thread's own stack
+static void redirected(unsigned long code, unsigned long ip) {
+    volatile char here;
+    printf("case %-10s REDIRECTED code=%#lx ip=%s onalt=%d\n", g_case, code, ip == (unsigned long)g_exact ? "exact" : "WRONG",
+           (char *)&here >= alt_lo && (char *)&here < alt_hi);
+    fflush(stdout);
+    _exit(0);
 }
 
 static void handler(int sig, siginfo_t *si, void *ctx) {
@@ -57,6 +70,12 @@ static void handler(int sig, siginfo_t *si, void *ctx) {
         uc->uc_mcontext->__ss.__pc += 4;
         return;
     }
+    if (!strcmp(g_mode, "redirect") && g_exact) {  // as NativeAOT's RedirectNativeContext: pc, x0, x1
+        uc->uc_mcontext->__ss.__x[0] = 0xc0000005;
+        uc->uc_mcontext->__ss.__x[1] = pc;
+        uc->uc_mcontext->__ss.__pc = (unsigned long)redirected;
+        return;
+    }
     if (!strcmp(g_mode, "reraise")) {
         signal(sig, SIG_DFL);
         if (!g_exact) raise(sig);   // abort-like: re-raise; a fault re-executes the instruction on return
@@ -75,7 +94,7 @@ static void install(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = handler;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sa.sa_flags = !strcmp(g_mode, "redirect") ? SA_SIGINFO | SA_RESTART : SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     int sigs[] = {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE};
     for (unsigned i = 0; i < sizeof sigs / sizeof *sigs; i++) sigaction(sigs[i], &sa, NULL);
@@ -89,6 +108,16 @@ static void install(void) {
                      :: "r"(addr), "r"(&g_sp), "r"(&g_fp) : "x9", "x10", "x11", "memory")
 
 __attribute__((noinline)) static void c_null(void) { g_addr = 0; g_exact = pc_null; FAULT(pc_null, "str x10, [x9]", (void *)0); }
+__attribute__((noinline)) static void c_nullchk(void) { g_addr = 0; g_exact = pc_nullchk; FAULT(pc_nullchk, "ldr wzr, [x9]", (void *)0); }
+// sp is written before the faulting access and again after it, in one block (a prologue's sub, an epilogue's add): the
+// handler must see the sp in between (X86SIM_A64_INTERP=0: translated code, where the first write could be dropped)
+__attribute__((noinline)) static void c_spframe(void) {
+    g_addr = 0; g_exact = pc_spframe;
+    __asm__ volatile("mov x9, #0\n mov x10, #0x1234\n movk x10, #0x5a5a, lsl #16\n"
+                     "sub sp, sp, #32\n mov x11, sp\n str x11, [%0]\n str x29, [%1]\n"
+                     ".globl _pc_spframe\n_pc_spframe:\n ldr x11, [x9]\n add sp, sp, #32\n"
+                     :: "r"(&g_sp), "r"(&g_fp) : "x9", "x10", "x11", "memory");
+}
 __attribute__((noinline)) static void c_unmapped(void) {
     char *p = mmap(0, 0x4000, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     munmap(p, 0x4000);
@@ -143,9 +172,10 @@ static void c_stackovf(void) {
 }
 
 static const struct { const char *name; void (*fn)(void); } cases[] = {
-    {"abort", c_abort}, {"raise", c_raise}, {"null", c_null}, {"unmapped", c_unmapped}, {"prot", c_prot},
-    {"ro", c_ro}, {"align", c_align}, {"trap", c_trap}, {"brk", c_brk}, {"udf", c_udf}, {"fpe", c_fpe},
-    {"nsexc", c_nsexc}, {"stackovf", c_stackovf}, {"callnull", c_callnull}, {"strlen", c_strlen},
+    {"abort", c_abort}, {"raise", c_raise}, {"null", c_null}, {"nullchk", c_nullchk}, {"spframe", c_spframe},
+    {"unmapped", c_unmapped}, {"prot", c_prot}, {"ro", c_ro}, {"align", c_align}, {"trap", c_trap}, {"brk", c_brk},
+    {"udf", c_udf}, {"fpe", c_fpe}, {"nsexc", c_nsexc}, {"stackovf", c_stackovf}, {"callnull", c_callnull},
+    {"strlen", c_strlen},
 };
 
 int main(int argc, char **argv) {
