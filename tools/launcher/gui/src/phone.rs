@@ -588,7 +588,8 @@ impl App {
             });
         });
         ui.spacing_mut().slider_width = 250.0;
-        let r = ui.add(egui::Slider::new(&mut v, 0.0..=180.0).show_value(false));
+        // smart_aim off: egui pulls a dragged value onto round numbers (0, 45, 90, 180: the presets' angles)
+        let r = ui.add(egui::Slider::new(&mut v, 0.0..=180.0).smart_aim(false).show_value(false));
         ui.data_mut(|d| d.insert_temp(held_key, r.dragged() && !r.drag_stopped()));
         let (mut sent_at, mut sent) = (sent_at, sent);
         if r.changed() || r.drag_stopped() {
