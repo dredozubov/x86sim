@@ -162,9 +162,22 @@ static void shim_print_cfstring(const char* label, CFStringRef s)
 static void shim_objc_exception_throw(id exception) __attribute__((noreturn));
 static void shim_objc_exception_throw(id exception)
 {
+	// any object can be thrown (CIBarcode throws an NSError and catches it itself): ask only what it answers, else
+	// the hook's own "unrecognized selector" exception escapes the thrower's @catch and kills the app
 	CFStringRef (*msg)(id, SEL) = (CFStringRef (*)(id, SEL)) objc_msgSend;
-	shim_print_cfstring("name", msg(exception, sel_registerName("name")));
-	shim_print_cfstring("reason", msg(exception, sel_registerName("reason")));
+	SEL nameSel = sel_registerName("name"), reasonSel = sel_registerName("reason");
+	Class cls = exception ? object_getClass(exception) : NULL;
+	if (cls && class_respondsToSelector(cls, nameSel) && class_respondsToSelector(cls, reasonSel))
+	{
+		shim_print_cfstring("name", msg(exception, nameSel));
+		shim_print_cfstring("reason", msg(exception, reasonSel));
+	}
+	else
+	{
+		char line[256];
+		int n = snprintf(line, sizeof(line), "simshim: exception object of class %s\n", cls ? class_getName(cls) : "nil");
+		write(2, line, n);
+	}
 	void* frames[48];
 	int n = backtrace(frames, 48);
 	for (int i = 0; i < n; i++)
