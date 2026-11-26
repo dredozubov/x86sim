@@ -9,7 +9,7 @@ use x86sim_core::{features, instance, instance::Phase, logs};
 
 /// Enter pressed while no text field has it (a dialog's confirm)
 fn ui_enter(ctx: &egui::Context) -> bool {
-    !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+    !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
 }
 
 /// The inspector's folds and their keys (the device page; main.rs shortcuts acts on them, the `?` list shows them).
@@ -39,7 +39,8 @@ const GESTURES_TV: &str = "The keyboard is the remote: arrow keys move, Return s
 const GESTURES_WATCH: &str = "Click the screen to tap, drag to swipe.\nThe mouse wheel (over the screen or the crown) or a drag on the crown turns it; a click on the crown presses it.\nF1 presses the crown (watch face / apps) · F2 sleeps / wakes the screen; the side button opens Control Center";
 
 impl App {
-    pub fn phone_view(&mut self, ctx: &egui::Context, id: &str) {
+    pub fn phone_view(&mut self, ui: &mut egui::Ui, id: &str) {
+        let ctx = &ui.ctx().clone();
         let Some(inst) = self.inst(id).cloned() else {
             self.view = View::Home;
             return;
@@ -50,7 +51,7 @@ impl App {
             self.settings = Some((id.to_string(), instance::load_settings(&inst.dir)));
         }
 
-        egui::TopBottomPanel::top("phone-head").frame(egui::Frame::new().fill(pal().canvas).inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 10 })).show(ctx, |ui| {
+        egui::Panel::top("phone-head").frame(egui::Frame::new().fill(pal().canvas).inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 10 })).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.set_min_height(32.0);
                 // the actions first, at the right; the breadcrumb then has what they leave, and its model line is
@@ -162,19 +163,19 @@ impl App {
         // (Apple TV) a 200-point strip between it and the remote
         let content_w = ctx.content_rect().width() - crate::NAV_W;
         let side_max = (content_w * 0.42).clamp(340.0, 720.0);
-        egui::SidePanel::right("phone-side")
+        egui::Panel::right("phone-side")
             .resizable(true)
-            .default_width(392.0_f32.min(side_max))
-            .width_range(340.0..=side_max)
+            .default_size(392.0_f32.min(side_max))
+            .size_range(340.0..=side_max)
             .frame(egui::Frame::new().fill(pal().window).inner_margin(egui::Margin { left: 16, right: 12, top: 16, bottom: 12 }))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.set_width(ui.available_width() - 4.0);
                     self.side_panel(ui, &inst, st.as_ref());
                 });
             });
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(pal().canvas).inner_margin(egui::Margin { left: 24, right: 24, top: 20, bottom: 16 })).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(pal().canvas).inner_margin(egui::Margin { left: 24, right: 24, top: 20, bottom: 16 })).show(ui, |ui| {
             if !inst.runtime_present {
                 let busy = self.fetching.contains_key(&inst.build);
                 let h = ui.available_height();
@@ -202,7 +203,7 @@ impl App {
             let watch = inst.platform == "watchos";
             let edge = if watch { WATCH_EDGE } else { 0.0 };
             let avail = ui.available_size() - egui::vec2(toolbar_w(&inst.platform) + S3 + edge, 0.0);
-            let rid = egui::Id::new(("screen-row", id));
+            let rid = egui::Id::unique(("screen-row", id));
             let w: f32 = ui.data(|d| d.get_temp(rid)).unwrap_or(avail.x);
             let r = ui.horizontal_top(|ui| {
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
@@ -567,13 +568,13 @@ impl App {
     /// sets the orientation it names. Shows the angle simhid last set (<device>/data/hinge) unless just moved here.
     fn hinge_panel(&mut self, ui: &mut egui::Ui, id: &str) {
         use x86sim_core::hid::{hinge_state, HINGE_POSES};
-        let key = egui::Id::new(("hinge-slider", id));
+        let key = egui::Id::unique(("hinge-slider", id));
         let now = ui.input(|i| i.time);
         // (value shown, when it was last sent, the value last sent)
         let (mut v, sent_at, sent) = ui.data(|d| d.get_temp::<(f64, f64, f64)>(key)).unwrap_or((f64::NAN, f64::NEG_INFINITY, f64::NAN));
         let file = self.inst(id).and_then(|i| i.hinge()).unwrap_or(0.0);
         // held: the slider is being dragged (last frame's answer); it never follows simhid then
-        let held_key = egui::Id::new(("hinge-slider-held", id));
+        let held_key = egui::Id::unique(("hinge-slider-held", id));
         let held = ui.data(|d| d.get_temp::<bool>(held_key)).unwrap_or(false);
         // after a move from here the file is the truth once it has caught up with the angle sent (whole degrees,
         // written as a move ends), or 3 s on; else at once (a preset's move takes up to 600 ms; MCP / CLI moves too)
@@ -634,7 +635,7 @@ impl App {
             let x = x_of(85.0);
             p.line_segment([egui::pos2(x, scale.top()), egui::pos2(x, scale.top() + 7.0)], egui::Stroke::new(1.5_f32, pal().active));
             let at = egui::Rect::from_center_size(egui::pos2(x, scale.top() + 4.0), egui::vec2(8.0, 10.0));
-            ui.interact(at, egui::Id::new(("hinge-swap", id)), egui::Sense::hover()).on_hover_text("85°: the inner screen takes over above this, the outer one below");
+            ui.interact(at, egui::Id::unique(("hinge-swap", id)), egui::Sense::hover()).on_hover_text("85°: the inner screen takes over above this, the outer one below");
         }
         ui.add_space(S2);
         let icons = [icon::DEVICE_MOBILE, icon::BOOK_OPEN, icon::LAPTOP, icon::DEVICE_TABLET];
@@ -682,7 +683,7 @@ impl App {
             let (d, gap_x, gap_y) = (38.0_f32, 12.0_f32, 10.0_f32);
             let (grid, _) = ui.allocate_exact_size(egui::vec2(2.0 * d + gap_x, 3.0 * d + 2.0 * gap_y), egui::Sense::hover());
             let cell = |col: f32, row: f32| egui::Rect::from_min_size(grid.min + egui::vec2(col * (d + gap_x), row * (d + gap_y)), egui::vec2(d, d));
-            let bid = egui::Id::new(("remote", id));
+            let bid = egui::Id::unique(("remote", id));
             if remote::round_button(ui, cell(0.0, 0.0), bid.with("back"), icon::CARET_LEFT, "Back (Esc)", live) {
                 press = Some("menu");
             }
@@ -728,7 +729,7 @@ impl App {
         let side_h = (h * 0.27).clamp(36.0, 130.0);
         let side_c = case.top() + h * 0.62;
         let side = egui::Rect::from_min_size(egui::pos2(x - 1.0, side_c - side_h / 2.0), egui::vec2((crown_w * 0.45).max(5.0), side_h));
-        let bid = egui::Id::new(("watch-edge", id));
+        let bid = egui::Id::unique(("watch-edge", id));
         let ev = remote::crown(ui, crown, bid.with("crown"), live);
         let pressed = remote::side_button(ui, side, bid.with("side"), live);
         if let Some(v) = self.viewer(id) {

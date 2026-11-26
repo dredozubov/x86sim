@@ -37,7 +37,7 @@ fn app_name(apps: &[x86sim_core::apps::AppEntry], id: &str) -> String {
 type Shared = Arc<Mutex<NetState>>;
 
 fn state(ctx: &egui::Context, id: &str) -> Shared {
-    ctx.data_mut(|d| d.get_temp_mut_or_insert_with(egui::Id::new(("netcap", id)), || Arc::new(Mutex::new(NetState::default()))).clone())
+    ctx.data_mut(|d| d.get_temp_mut_or_insert_with(egui::Id::unique(("netcap", id)), || Arc::new(Mutex::new(NetState::default()))).clone())
 }
 
 fn reload(inst: &Instance, s: &mut NetState) {

@@ -384,7 +384,8 @@ impl Viewer {
 
     /// Inputs 2: the host mouse as the iPad's mouse: the pointer kept under the cursor, buttons, the wheel as scroll
     fn pointer_input(&mut self, ctx: &egui::Context, resp: &egui::Response, screen: egui::Rect) {
-        let (pressed, released, hover, delta) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.hover_pos(), i.raw_scroll_delta));
+        let delta = raw_scroll_delta(ctx);
+        let (pressed, released, hover) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.hover_pos()));
         let Some(p) = hover.filter(|p| screen.contains(*p)) else {
             self.last_hover = None;
             return;
@@ -473,7 +474,7 @@ impl Viewer {
             }
             // the wheel / touchpad as the remote's touch surface: an arrow key a notch (40 points of scroll)
             if live {
-                let (delta, hover) = ctx.input(|i| (i.raw_scroll_delta, i.pointer.hover_pos()));
+                let (delta, hover) = (raw_scroll_delta(&ctx), ctx.input(|i| i.pointer.hover_pos()));
                 if delta != egui::Vec2::ZERO && hover.is_some_and(|p| map.hit(p).is_some()) {
                     self.wheel_acc += delta;
                     const NOTCH: f32 = 40.0;
@@ -520,7 +521,7 @@ impl Viewer {
         // Platforms 1: on an Apple Watch the wheel turns the Digital Crown (as Apple's Simulator and simview.py do):
         // wheel down / content up = crown towards the bottom (positive)
         if live && self.crown {
-            let (delta, hover) = ctx.input(|i| (i.raw_scroll_delta, i.pointer.hover_pos()));
+            let (delta, hover) = (raw_scroll_delta(&ctx), ctx.input(|i| i.pointer.hover_pos()));
             if delta.y != 0.0 && hover.is_some_and(|p| map.hit(p).is_some()) {
                 // ~60 a notch: half a Settings row (a step of ~120 scrolls one; 0.16 a pixel barely moved)
                 self.hid.crown(-delta.y * 1.2);
@@ -528,7 +529,7 @@ impl Viewer {
         }
         // mouse wheel / touchpad scroll over the screen: a finger dragging the content (lifted after a short pause)
         if live && !self.touching && !self.crown && !self.remote && !self.pointer_mode {
-            let (delta, hover) = ctx.input(|i| (i.raw_scroll_delta, i.pointer.hover_pos()));
+            let (delta, hover) = (raw_scroll_delta(&ctx), ctx.input(|i| i.pointer.hover_pos()));
             let over = hover.and_then(|p| map.hit(p));
             if delta != egui::Vec2::ZERO && (over.is_some() || self.wheel.is_some()) {
                 // a scroll carries on on the screen it began on

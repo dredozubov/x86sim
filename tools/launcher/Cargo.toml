@@ -10,3 +10,7 @@ license = "GPL-3.0-or-later"
 [profile.release]
 opt-level = 3
 debug = false
+
+# egui-phosphor has no release for egui 0.37 yet (vendor/egui-phosphor/Cargo.toml says what changed)
+[patch.crates-io]
+egui-phosphor = { path = "vendor/egui-phosphor" }

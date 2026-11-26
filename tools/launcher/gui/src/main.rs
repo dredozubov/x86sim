@@ -461,7 +461,7 @@ impl App {
             return;
         }
         let phone_typing = matches!(&self.view, View::Phone(id) if self.viewers.get(id).is_some_and(|v| v.focused));
-        if phone_typing || ctx.wants_keyboard_input() || self.add.is_some() || self.dialog.is_some() {
+        if phone_typing || ctx.egui_wants_keyboard_input() || self.add.is_some() || self.dialog.is_some() {
             nav::begin_frame(0, 0, false);
             return;
         }
@@ -702,34 +702,18 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// The work that doesn't draw. eframe calls this before every `ui`, and also while the window is hidden (another
+    /// workspace), where it skips `ui`: syncing phones, AOT upkeep and the first-boot restart keep going there.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Share: a finished share operation's message (share.rs)
         self.share_note();
         // self-update: at start and every 6 hours (cheap when not due)
         if self.hub.check_updates {
             self.updater.check(ctx, false, &self.hub.channel);
         }
-        // X86SIM_LAUNCHER_FPS=1: frames per second on stderr (idle cost checks)
-        static FPS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *FPS.get_or_init(|| std::env::var_os("X86SIM_LAUNCHER_FPS").is_some()) {
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            static T: Mutex<Option<Instant>> = Mutex::new(None);
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut t = T.lock().unwrap();
-            let t0 = *t.get_or_insert_with(Instant::now);
-            if t0.elapsed() >= Duration::from_secs(5) {
-                eprintln!("frames/s {:.1} ({:?})", N.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / t0.elapsed().as_secs_f64(), self.view_name());
-                *t = Some(Instant::now());
-            }
-        }
-        theme::poll(ctx);
         self.sync();
         self.devctl_poll();
         self.extras_poll();
-        self.cursor_device = None;
-        self.shortcuts(ctx);
-        // drag-and-drop installs (.app / .ipa / .xcarchive) and the pool section's background work (pool.rs)
-        self.pool_frame(ctx);
         if self.last_slow.elapsed() > Duration::from_secs(10) {
             self.last_slow = Instant::now();
             self.disk = host::disk(&x86sim_core::aot::scratch());
@@ -774,17 +758,39 @@ impl eframe::App for App {
                 v.shared.mode.store(viewer::OFF, std::sync::atomic::Ordering::Relaxed);
             }
         }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
+        // X86SIM_LAUNCHER_FPS=1: frames per second on stderr (idle cost checks)
+        static FPS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *FPS.get_or_init(|| std::env::var_os("X86SIM_LAUNCHER_FPS").is_some()) {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            static T: Mutex<Option<Instant>> = Mutex::new(None);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut t = T.lock().unwrap();
+            let t0 = *t.get_or_insert_with(Instant::now);
+            if t0.elapsed() >= Duration::from_secs(5) {
+                eprintln!("frames/s {:.1} ({:?})", N.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / t0.elapsed().as_secs_f64(), self.view_name());
+                *t = Some(Instant::now());
+            }
+        }
+        theme::poll(ctx);
+        self.cursor_device = None;
+        self.shortcuts(ctx);
+        // drag-and-drop installs (.app / .ipa / .xcarchive) and the pool section's background work (pool.rs)
+        self.pool_frame(ctx);
 
         // under Hyprland the compositor draws the frame (see compositor_decorates); elsewhere our own title bar
         if !compositor_decorates() {
-            title_bar(ctx);
+            title_bar(ui);
         }
         let (nrun, mb) = self.running_summary();
-        egui::SidePanel::left("nav")
+        egui::Panel::left("nav")
             .resizable(false)
-            .exact_width(NAV_W)
+            .exact_size(NAV_W)
             .frame(egui::Frame::new().fill(pal().window).inner_margin(egui::Margin { left: 8, right: 8, top: 10, bottom: 12 }))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 let n = self.insts.len();
                 let on_phones = matches!(self.view, View::Home | View::Phone(_));
@@ -845,9 +851,9 @@ impl eframe::App for App {
 
         let view = self.view.clone();
         match view {
-            View::Phone(id) => self.phone_view(ctx, &id),
+            View::Phone(id) => self.phone_view(ui, &id),
             _ => {
-                egui::CentralPanel::default().frame(egui::Frame::new().fill(pal().canvas)).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(pal().canvas)).show(ui, |ui| {
                     egui::ScrollArea::vertical().id_salt(match &view { View::Home => "home", View::Ios => "ios", View::Aot => "aot", View::Setup => "setup", View::Develop => "develop", _ => "settings" }).auto_shrink([false, false]).show(ui, |ui| {
                         // the page owns its margins so the scrollbar sits in the gutter, not on the content
                         egui::Frame::new().inner_margin(egui::Margin { left: S5 as i8, right: S5 as i8, top: S4 as i8, bottom: S5 as i8 }).show(ui, |ui| {
@@ -872,7 +878,7 @@ impl eframe::App for App {
         self.quit_dialog(ctx);
         self.help_overlay(ctx);
         if !self.message.is_empty() && self.message_at.elapsed() < Duration::from_secs(6) {
-            egui::Area::new("toast".into()).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(NAV_W / 2.0, -20.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Area::new(egui::Id::unique("toast")).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(NAV_W / 2.0, -20.0)).order(egui::Order::Foreground).show(ctx, |ui| {
                 // a flyout as Omarchy's: the canvas with Hyprland's active border, no shadow
                 egui::Frame::new()
                     .fill(pal().toast)
@@ -894,19 +900,20 @@ impl eframe::App for App {
 
 /// The window's own title bar (the app is undecorated: tiling compositors such as Hyprland draw none): drag to move,
 /// double-click to maximize, and minimize / maximize / close buttons on the right.
-fn title_bar(ctx: &egui::Context) {
+fn title_bar(ui: &mut egui::Ui) {
     const H: f32 = 40.0;
+    let ctx = &ui.ctx().clone();
     // no frame stroke and no panel separator: either leaves a 1 px gap above the content; one bottom rule instead
-    egui::TopBottomPanel::top("title-bar")
-        .exact_height(H)
+    egui::Panel::top("title-bar")
+        .exact_size(H)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(pal().window).inner_margin(0).outer_margin(0))
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let rect = ui.max_rect();
             ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0_f32, pal().border));
             // the whole bar drags the window; the buttons, added after, take their clicks first
-            let bar = ui.interact(rect, egui::Id::new("title-bar-drag"), egui::Sense::click_and_drag());
+            let bar = ui.interact(rect, egui::Id::unique("title-bar-drag"), egui::Sense::click_and_drag());
             let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
             // the window manager must get the move request on the press itself (winit drag_window), not once egui
             // has seen the pointer travel; and not over the three buttons on the right
@@ -935,7 +942,7 @@ fn title_bar(ctx: &egui::Context) {
             let mut button = |icon: Icon, hover: egui::Color32, id: &str, tip: &str| -> bool {
                 x -= bw;
                 let r = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(bw, rect.height()));
-                let resp = ui.interact(r, egui::Id::new(id), egui::Sense::click());
+                let resp = ui.interact(r, egui::Id::unique(id), egui::Sense::click());
                 if resp.hovered() {
                     ui.painter().rect_filled(r, 0.0, hover);
                 }
