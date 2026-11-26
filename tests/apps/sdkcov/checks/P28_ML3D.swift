@@ -1090,7 +1090,12 @@ extension Registry {
                 #endif
                 // video player component on an AVPlayer (no item: no video size yet)
                 let vp = VideoPlayerComponent(avPlayer: AVPlayer())
-                try expect(vp.avPlayer != nil && vp.desiredViewingMode == .mono, "video player \(vp.desiredViewingMode)")
+                #if os(visionOS)
+                let wantMode: VideoPlaybackController.ViewingMode = .stereo   // Apple's visionOS simulator: stereo by default
+                #else
+                let wantMode: VideoPlaybackController.ViewingMode = .mono
+                #endif
+                try expect(vp.avPlayer != nil && vp.desiredViewingMode == wantMode, "video player \(vp.desiredViewingMode)")
                 got.append("video \(vp.screenVideoDimension) \(vp.playerScreenSize)")
                 // instanced mesh: 3 transforms
                 let data = try LowLevelInstanceData(instanceCount: 3)
