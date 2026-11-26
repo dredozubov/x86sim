@@ -52,12 +52,13 @@ O=$X/external/omarchy-apple-dev
 [ -f "$O/install-toolchain.sh" ] || { echo "appimage: external/omarchy-apple-dev is not checked out (git submodule update --init external/omarchy-apple-dev)" >&2; exit 1; }
 mkdir -p "$P/external/omarchy-apple-dev"
 git -C "$O" ls-files -z -- install-toolchain.sh ship.sh ship-mac.sh device-run.sh tools sdk-free flutter kmp patches compat \
+	swiftbuild linux-bin cocoapods carthage xcodegen tuist rust dotnet shells fastlane \
 	LICENSE README.md CHANGELOG.md docs/DISTROS.md | (cd "$O" && xargs -0 cp --parents -t "$P/external/omarchy-apple-dev")
 echo "  omarchy-apple-dev $(git -C "$O" describe --tags --always), $(du -sh "$P/external/omarchy-apple-dev" | cut -f1)"
 # build outputs at the paths the scripts and the launcher expect (repo-relative)
 mkdir -p "$P/linux/mtlvk/target/release" "$P/tools/launcher/target/release"
 cp "$OUT/cargo-mtlvk/release/mtlvk" "$P/linux/mtlvk/target/release/"
-for b in x86sim-launcher x86sim-aot x86sim-mcp x86sim-dev x86sim-ax x86sim-serve x86sim-pool x86sim-devapp; do cp "$OUT/cargo-launcher/release/$b" "$P/tools/launcher/target/release/"; done
+for b in x86sim-launcher x86sim-aot x86sim-mcp x86sim-dev x86sim-ax x86sim-serve x86sim-pool x86sim-devapp x86sim-account; do cp "$OUT/cargo-launcher/release/$b" "$P/tools/launcher/target/release/"; done
 strip --strip-debug "$P/linux/mtlvk/target/release/mtlvk" "$P/tools/launcher/target/release/"*
 echo "$VERSION" > "$S/VERSION"
 
