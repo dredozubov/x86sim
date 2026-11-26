@@ -1,6 +1,6 @@
 //! The phone's geometry, in inner-screen pixels: two rounded halves (filleted edges, smooth normals) on a hinge
-//! spine, the inner screen as one panel across both halves that creases at the hinge, the outer screen on the right
-//! half's back.
+//! spine, the inner screen as one panel across both halves that creases at the hinge, the outer screen on the left
+//! half's back (as on Apple's model, x86sim_core::devicemodel, drawn instead when this machine has it).
 //!
 //! A half's own space: x from the hinge (0) out, y up, the front (inner screen) at z = 0, the back at -THICK. The
 //! left half is that space mirrored (x -> -x); the right half is turned about the hinge axis (the y axis) by phi =
@@ -260,7 +260,7 @@ pub fn build(deg: f32) -> Mesh {
     let (w, h) = (half_w(), half_h());
     let mut m = Mesh::default();
     let radii = [CORNER, CORNER, HINGE_CORNER, HINGE_CORNER];
-    for (at, back) in [(Place::Left, BACK), (Place::Right(phi), FRONT)] {
+    for (at, back) in [(Place::Left, FRONT), (Place::Right(phi), BACK)] {
         slab(&mut m, at, (0.0, w, -h / 2.0, h / 2.0), radii, (0.0, -THICK), FILLET, (ALU, FRONT, back), 10);
     }
     spine(&mut m, phi);
@@ -278,12 +278,22 @@ pub fn build(deg: f32) -> Mesh {
             (v3(0.0, y, 0.0), v3(0.0, 0.0, 1.0).add(rot_y(v3(0.0, 0.0, 1.0), phi)).norm())
         }
     }, |x, y| ((x + sw / 2.0) / sw, (sh / 2.0 - y) / sh));
-    // the outer screen on the right half's back; seen from behind, so its x runs from the far edge
+    // the outer screen on the left half's back (its own x runs out from the hinge: seen from behind, left to right)
     let (ow, oh) = OUTER;
     let cx = w / 2.0;
     let (ox0, ox1) = (cx - ow / 2.0, cx + ow / 2.0);
-    screen(&mut m, (ox0, ox1, -oh / 2.0, oh / 2.0), r, (20, 28), OUTER_SCREEN, |x, y| (rot_y(v3(x, y, -THICK), phi), rot_y(v3(0.0, 0.0, -1.0), phi)), |x, y| ((ox1 - x) / ow, (oh / 2.0 - y) / oh));
+    screen(&mut m, (ox0, ox1, -oh / 2.0, oh / 2.0), r, (20, 28), OUTER_SCREEN, |x, y| (v3(-x, y, -THICK), v3(0.0, 0.0, -1.0)), |x, y| ((x - ox0) / ow, (oh / 2.0 - y) / oh));
     m
+}
+
+impl Mesh {
+    /// The touch surfaces (x86sim_core::devicemodel::HitMesh): the body hides, the screens are touched; a screen
+    /// vertex's uv is its picture point with y up, as a model's st
+    pub fn hit_mesh(&self) -> x86sim_core::devicemodel::HitMesh {
+        let kind = |m: f32| if m == INNER_SCREEN { 1 } else if m == OUTER_SCREEN { 2 } else { 0 };
+        let tris = self.i.chunks(3).map(|t| ([t[0], t[1], t[2]], kind(self.v[t[0] as usize].m))).collect();
+        x86sim_core::devicemodel::HitMesh { p: self.v.iter().map(|v| v.p).collect(), uv: self.v.iter().map(|v| [v.uv[0], 1.0 - v.uv[1]]).collect(), tris }
+    }
 }
 
 #[cfg(test)]
