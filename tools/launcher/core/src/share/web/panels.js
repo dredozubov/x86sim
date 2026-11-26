@@ -10,6 +10,7 @@ window.PANELS = (() => {
 
   function attach(o) {
     const { id, control, api, h, toast, fmtMem, fmtUp } = o;
+    const copy = o.copy || ((t) => navigator.clipboard.writeText(t).then(() => toast("Copied")));
     const base = `/api/phones/${encodeURIComponent(id)}/`;
     let alive = true, detail = null;
     const timers = [];
@@ -136,7 +137,18 @@ window.PANELS = (() => {
     const logSel = h("select", { "aria-label": "Which logs" }, h("option", { value: "", text: "All logs" }), ...GROUPS.map((g) => h("option", { value: g, text: g })));
     const pauseBtn = h("button", { type: "button", class: "btn small", text: "Pause", title: "Stop following new lines" });
     const clearBtn = h("button", { type: "button", class: "btn small ghost", text: "Clear", title: "Clear the lines shown here (the log files stay)" });
-    const logs = control ? fold("logs", "Logs", [h("div", { class: "logbar" }, logFilter, logSel, pauseBtn, clearBtn), logBox], (open) => { if (open) { resetLogs(); pollLogs(); } else logBox.replaceChildren(); logs.sum.textContent = ""; }) : null;
+    // the lines shown, as text: copied, or saved as a file (selecting lines with the mouse works too)
+    const shownText = () => [...logBox.querySelectorAll(".ll")].map((l) => `${l.querySelector(".ls").textContent}: ${l.querySelector(".lm").textContent}`).join("\n");
+    const copyBtn = h("button", { type: "button", class: "btn small", text: "Copy", title: "Copy the lines shown" });
+    const saveBtn = h("button", { type: "button", class: "btn small", text: "Save", title: "Save the lines shown as a text file" });
+    copyBtn.onclick = () => copy(shownText());
+    saveBtn.onclick = () => {
+      const a = h("a", { download: `x86Sim logs ${o.name || id} ${new Date().toISOString().slice(0, 19).replace(/:/g, ".")}.txt` });
+      a.href = URL.createObjectURL(new Blob([shownText() + "\n"], { type: "text/plain" }));
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    };
+    const logs = control ? fold("logs", "Logs", [h("div", { class: "logbar" }, logFilter, logSel, pauseBtn, copyBtn, saveBtn, clearBtn), logBox], (open) => { if (open) { resetLogs(); pollLogs(); } else logBox.replaceChildren(); logs.sum.textContent = ""; }) : null;
     function resetLogs() { logLast = 0; logGen++; logBox.replaceChildren(h("div", { class: "muted lempty", text: "Reading…" })); }
     let filterT = 0;
     logFilter.oninput = () => { clearTimeout(filterT); filterT = setTimeout(() => { logQ = logFilter.value.trim(); resetLogs(); pollLogs(); }, 250); };

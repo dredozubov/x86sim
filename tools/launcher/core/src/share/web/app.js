@@ -72,14 +72,23 @@ async function copy(text) {
   try {
     await navigator.clipboard.writeText(text);
     toast("Copied");
-  } catch {
-    prompt("Copy this:", text);
-  }
+    return;
+  } catch {}
+  // no async clipboard (plain HTTP from another machine): a hidden text area and the copy command
+  const ta = h("textarea", { class: "offscreen", readonly: "" });
+  ta.value = text;
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch {}
+  ta.remove();
+  if (ok) toast("Copied");
+  else prompt("Copy this:", text.length > 2000 ? text.slice(-2000) : text);
 }
 
 // ---------- the look: Desktop (this machine's Omarchy theme, live), System, Dark or Light ----------
-// The server pushes the theme's generation (Server-Sent Events: once at once, then at every theme switch, no
-// polling); theme.css holds its colours and the page applies them only in the Desktop look.
+// The server pushes the theme's generation (a WebSocket: once at once, then at every theme switch, no polling);
+// theme.css holds its colours and the page applies them only in the Desktop look.
 const LOOKS = [["desktop", "\uE560", "Desktop theme (this machine's Omarchy theme, live)"], ["system", "\uE18C", "System light / dark"],
   ["dark", "\uE330", "Dark"], ["light", "\uE472", "Light"]];
 let look = (() => { try { return localStorage.getItem("x86sim.look") || "desktop"; } catch { return "desktop"; } })();
@@ -654,7 +663,7 @@ function phoneView(id) {
   function buildSide() {
     const p = info.platform;
     // the launcher's panels (panels.js): overview, Features, Logs, Performance, Simulate
-    if (!pan && window.PANELS) pan = PANELS.attach({ id, control, platform: p, api, h, toast, fmtMem, fmtUp, send, fps: () => curFps, restart,
+    if (!pan && window.PANELS) pan = PANELS.attach({ id, control, platform: p, api, h, toast, copy, name: info.name || id, fmtMem, fmtUp, send, fps: () => curFps, restart,
       onDetail: (d) => { needsRestart = !!d.needs_restart; head(); } });
     const fold = (key, title, body, open) => pan ? pan.fold(key, title, body, null, open) : h("div", {}, h("h4", { text: title }), body);
 
