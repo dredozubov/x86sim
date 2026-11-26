@@ -707,7 +707,8 @@ pub struct Project {
     /// xtool (Package.swift + xtool.yml: builds here), dotnet (a net*-ios .csproj: builds here), flutter, expo /
     /// reactnative (package.json: CocoaPods workspace built by the fork's xcbuild.py), rust (a cargo package: builds
     /// here with rust/build.py), carthage / xcodegen / tuist / bazel (devgen.rs), swiftpm (no xtool.yml), xcodeproj
-    /// (an .xcodeproj / .xcworkspace: Swift Build)
+    /// (an .xcodeproj / .xcworkspace: Swift Build), capacitor, cordova, nativescript, godot, unity (shell apps and
+    /// engine exports: their tool writes the Xcode project, devweb.rs)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
@@ -727,6 +728,8 @@ pub fn project(dir: &Path) -> Result<Project> {
         "xtool"
     } else if dir.join("pubspec.yaml").exists() {
         "flutter"
+    } else if let Some(k) = crate::devweb::detect(&dir) {
+        k
     } else if let Some(k) = crate::devpods::js_kind(&dir) {
         k
     } else if let Some(r) = crate::devrust::detect(&dir) {
@@ -753,6 +756,8 @@ pub fn project(dir: &Path) -> Result<Project> {
         crate::devpods::last_app(&dir)
     } else if matches!(kind, "xcodeproj" | "carthage" | "xcodegen" | "tuist") {
         crate::devxcode::last_app(&dir)
+    } else if crate::devweb::is_shell(kind) {
+        crate::devweb::last_app(&dir, kind)
     } else {
         std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"))
     };
@@ -851,7 +856,7 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
         "rust" => {}
         "bazel" => bail!("{}: {}", p.dir.display(), crate::devgen::bazel_blocker()),
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
-        "xcodeproj" | "carthage" | "xcodegen" | "tuist" => {
+        k if matches!(k, "xcodeproj" | "carthage" | "xcodegen" | "tuist") || crate::devweb::is_shell(k) => {
             let _lock = BuildLock::take(say)?;
             let log_path = work_dir().join(format!("build-{}.log", p.name));
             let mut log = std::fs::File::create(&log_path).ok();
@@ -861,8 +866,13 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
                 }
                 say(l);
             };
-            // Cartfile: the dependencies first (carthage bootstrap), then the project with Swift Build
-            let r = crate::devgen::prepare(&p.dir, &o.platform, &mut out).and_then(|_| crate::devxcode::build(&p.dir, &o.platform, o.release, &mut out));
+            // shell apps and engine exports: their own tool writes the Xcode project (devweb.rs); Cartfile: the
+            // dependencies first (carthage bootstrap), then the project with Swift Build
+            let r = if crate::devweb::is_shell(k) {
+                crate::devweb::build(&p.dir, k, &o.platform, o.release, &mut out)
+            } else {
+                crate::devgen::prepare(&p.dir, &o.platform, &mut out).and_then(|_| crate::devxcode::build(&p.dir, &o.platform, o.release, &mut out))
+            };
             let app = r.with_context(|| format!("log: {}", log_path.display()))?;
             remember(&p.dir, None);
             say(&format!("app: {}", app.display()));

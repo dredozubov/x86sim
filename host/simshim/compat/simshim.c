@@ -1146,21 +1146,45 @@ __attribute__((constructor)) static void shim_app_stderr_init(void)
 // server's snapshot / tap tools), runs in every process with UIKit: apps, SpringBoard, view services. It links UIKit
 // and WebKit, so it is not inserted everywhere: processes that have UIKitCore at launch dlopen it here
 // (X86SIM_AX_DYLIB, set by mksimdevice.py; X86SIM_AX_OFF=1 turns it off).
+static void shim_ax_load(void* ax)
+{
+	if (!dlopen((const char*) ax, RTLD_NOW | RTLD_LOCAL)) {
+		char b[512]; int k = snprintf(b, sizeof b, "simshim: simax: %s\n", dlerror() ?: "dlopen failed"); write(2, b, k);
+	}
+}
+
+static int shim_is_uikitcore(const char* n)
+{
+	size_t l = n ? strlen(n) : 0;
+	return l >= 10 && !strcmp(n + l - 10, "/UIKitCore");
+}
+
+// UIKit loaded after launch: a Unity app's executable links no UIKit; its main() loads UnityFramework, which does.
+// dlopen is not allowed inside dyld's add-image callback, so it waits for the main queue (UIApplicationMain's run loop);
+// simax then starts itself in the running app.
+static void shim_ax_added(const struct mach_header* mh, intptr_t slide)
+{
+	static int queued;
+	Dl_info di;
+	(void) slide;
+	if (queued || !dladdr(mh, &di) || !shim_is_uikitcore(di.dli_fname))
+		return;
+	queued = 1;
+	dispatch_async_f(dispatch_get_main_queue(), (void*) getenv("X86SIM_AX_DYLIB"), shim_ax_load);
+}
+
 __attribute__((constructor)) static void shim_ax_init(void)
 {
 	const char* ax = getenv("X86SIM_AX_DYLIB");
 	if (!ax || !*ax || getenv("X86SIM_AX_OFF"))
 		return;
 	for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-		const char* n = _dyld_get_image_name(i);
-		size_t l = n ? strlen(n) : 0;
-		if (l >= 10 && !strcmp(n + l - 10, "/UIKitCore")) {
-			if (!dlopen(ax, RTLD_NOW | RTLD_LOCAL)) {
-				char b[512]; int k = snprintf(b, sizeof b, "simshim: simax: %s\n", dlerror() ?: "dlopen failed"); write(2, b, k);
-			}
+		if (shim_is_uikitcore(_dyld_get_image_name(i))) {
+			shim_ax_load((void*) ax);
 			return;
 		}
 	}
+	_dyld_register_func_for_add_image(shim_ax_added);
 }
 
 // x86Sim (Web Inspector): webinspectord's debugger socket. The job (com.apple.webinspectord) declares a launchd socket

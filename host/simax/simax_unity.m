@@ -69,6 +69,7 @@ static struct {
 	Obj* (*array_new)(Klass*, uintptr_t);
 	void (*field_get_value)(Obj*, void*, void*);
 	void (*free_fn)(void*);
+	void* (*resolve_icall)(const char*);
 } U;
 
 static const size_t kArrayData = 32;   // Il2CppArray: klass, monitor, bounds, max_length, then the elements (64-bit)
@@ -91,6 +92,7 @@ static BOOL u_init(void) {
 	S(type_get_name); S(type_get_object); S(object_get_class); S(object_get_virtual_method); S(object_unbox);
 	S(runtime_invoke); S(string_new); S(string_chars); S(string_length); S(array_length); S(array_new); S(field_get_value);
 	*(void**)&U.free_fn = dlsym(h, "il2cpp_free");
+	*(void**)&U.resolve_icall = dlsym(h, "il2cpp_resolve_icall");
 #undef S
 	U.ok = U.domain_get && U.domain_get_assemblies && U.assembly_get_image && U.class_from_name && U.class_get_methods &&
 		U.class_get_parent && U.class_get_type && U.class_is_assignable_from && U.method_get_name && U.method_get_param_count &&
@@ -205,6 +207,23 @@ static NSArray* u_find(Klass* k, BOOL* stripped) {
 		void* a1[] = { t };
 		m = u_method(object, "FindObjectsOfType", 1, "System.Type");
 		if (m) arr = u_invoke(m, NULL, a1, &ok);
+	}
+	if (!ok) {
+		// the managed wrappers stripped (a game that never calls them): the engine still registers the native call
+		// behind FindObjectsByType, which IL2CPP resolves by name; a static icall takes its arguments as they are
+		typedef Obj* (*FindFn)(Obj* type, int32_t inactive, int32_t sort);
+		static FindFn find;
+		static BOOL looked;
+		if (!looked && U.resolve_icall) {
+			looked = YES;
+			find = (FindFn)U.resolve_icall("UnityEngine.Object::FindObjectsByType(System.Type,UnityEngine.FindObjectsInactive,UnityEngine.FindObjectsSortMode)");
+			simax_log("unity: FindObjectsByType icall %s", find ? "found" : "missing");
+		}
+		if (find) {
+			arr = find(t, 0, 0);
+			ok = YES;
+			m = (UMethod*)1;
+		}
 	}
 	if (!m) *stripped = YES;
 	NSMutableArray* out = [NSMutableArray array];

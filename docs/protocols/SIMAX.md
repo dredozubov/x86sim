@@ -9,8 +9,10 @@ elements. The host side is `tools/launcher/core/src/ax.rs`: the MCP tools `snaps
 `mksimdevice.py` sets `X86SIM_AX_DYLIB` in every simulator process's environment. libsimshim's `shim_ax_init`
 dlopens that dylib only when UIKitCore is among the images loaded at launch, so daemons never load it. Its
 constructor waits for `UIApplicationDidFinishLaunchingNotification`, which means many daemons that link UIKit
-(sharingd, mobileassetd and others) never open a socket. `X86SIM_AX_OFF=1` turns it off, and `X86SIM_AX_LOG=1`
-logs to stderr.
+(sharingd, mobileassetd and others) never open a socket. An app whose executable links no UIKit and loads it later
+(a Unity app: its `main` loads UnityFramework, which links UIKit) gets it too: libsimshim watches image loads and
+dlopens it from the main queue once UIKitCore arrives, and the reader, finding the application already running,
+starts at once. `X86SIM_AX_OFF=1` turns it off, and `X86SIM_AX_LOG=1` logs to stderr.
 
 The first `tree` request in a process loads UIKit's accessibility bundles by turning accessibility automation on,
 as XCUITest does (`_AXSApplicationAccessibilitySetEnabled`, `_AXSSetAutomationEnabled`, `_UIAccessibilityInitialize`).
@@ -235,8 +237,11 @@ exports (`il2cpp_*`), on the main thread, where Unity's player loop runs:
 - Game objects: active ones with a name and an enabled renderer that a camera sees (`isVisible`) or an enabled
   collider (3D or 2D) are `node` elements, as SpriteKit's and SceneKit's: their `bounds` projected with `Camera.main`,
   corners behind it dropped.
-- Objects are found with `Object.FindObjectsByType` (2023.1+) or `FindObjectsOfType`. When code stripping removed both,
-  the loaded scenes' root objects are walked down their transforms (`SceneManager.GetSceneAt`,
+- Objects are found with `Object.FindObjectsByType` (2023.1+) or `FindObjectsOfType`. A game that never calls them
+  has both managed wrappers stripped (a real Unity 6.3 IL2CPP build); the engine still registers the native call
+  behind them, which `il2cpp_resolve_icall` finds by name
+  (`UnityEngine.Object::FindObjectsByType(System.Type,UnityEngine.FindObjectsInactive,UnityEngine.FindObjectsSortMode)`).
+  Without that too, the loaded scenes' root objects are walked down their transforms (`SceneManager.GetSceneAt`,
   `Scene.GetRootGameObjects`, `GetComponents`).
 - `key` is `unity:<instance id>` (`GetInstanceID`: the object's for its life), `uitk:<document id>/<child indexes>` for
   UI Toolkit; `oid` is the component (the game object for a node).
