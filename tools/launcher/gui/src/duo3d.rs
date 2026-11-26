@@ -362,7 +362,7 @@ impl Duo3d {
     /// double click) resets both. Otherwise the left button and the wheel are the phone's (the caller passes the
     /// response to the viewer with `screen_map`). Returns the response of the area.
     pub fn paint(&mut self, ui: &mut egui::Ui, rect: Rect, inst: &Instance) -> egui::Response {
-        let resp = ui.interact(rect, ui.id().with("duo3d"), egui::Sense::click_and_drag());
+        let resp = ui.interact(rect, ui.scope_id().with("duo3d"), egui::Sense::click_and_drag());
         let orient = if self.orient.is_empty() { orientation(inst) } else { self.orient.clone() };
         let phi = ((180.0 - self.shown) as f32).to_radians();
         let moving = ui.input(|i| i.modifiers.alt || i.pointer.secondary_down() || i.pointer.middle_down());

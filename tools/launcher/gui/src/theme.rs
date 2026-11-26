@@ -514,11 +514,38 @@ fn set_fonts(ctx: &egui::Context, mono: Option<&(std::path::PathBuf, Option<std:
     ctx.set_fonts(fonts);
 }
 
+/// This frame's mouse wheel / touchpad scroll in points, before egui's smoothing: what egui ≤ 0.33 called
+/// `InputState::raw_scroll_delta` (gone in 0.37). The device screens pass wheel steps on as they come.
+pub fn raw_scroll_delta(ctx: &egui::Context) -> egui::Vec2 {
+    let o = ctx.options(|o| o.input_options.clone());
+    ctx.input(|i| {
+        let mut sum = egui::Vec2::ZERO;
+        for e in &i.events {
+            if let egui::Event::MouseWheel { unit, delta, modifiers, .. } = e {
+                let mut d = match unit {
+                    egui::MouseWheelUnit::Point => *delta,
+                    egui::MouseWheelUnit::Line => o.line_scroll_speed * *delta,
+                    egui::MouseWheelUnit::Page => i.viewport_rect().height() * *delta,
+                };
+                let horizontal = modifiers.matches_any(o.horizontal_scroll_modifier);
+                let vertical = modifiers.matches_any(o.vertical_scroll_modifier);
+                if horizontal && !vertical {
+                    d = egui::vec2(d.x + d.y, 0.0);
+                } else if vertical && !horizontal {
+                    d = egui::vec2(0.0, d.x + d.y);
+                }
+                sum += d;
+            }
+        }
+        sum
+    })
+}
+
 fn style(ctx: &egui::Context, p: &Palette) {
     use egui::TextStyle;
     ctx.set_theme(if p.light { egui::Theme::Light } else { egui::Theme::Dark });
     let p = *p;
-    ctx.style_mut(|s| {
+    ctx.global_style_mut(|s| {
         s.text_styles = [
             (TextStyle::Heading, font_sb(T_H1)),
             (TextStyle::Body, font(T_BODY)),
@@ -907,7 +934,7 @@ pub fn list_card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> 
 /// Page title row: title on the left, actions on the right.
 pub fn page_header(ui: &mut egui::Ui, title: &str, actions: impl FnOnce(&mut egui::Ui)) {
     // the title keeps clear of the actions (their width as last drawn)
-    let aw_id = ui.id().with(("page-header-actions", title));
+    let aw_id = ui.scope_id().with(("page-header-actions", title));
     let aw: f32 = ui.data(|d| d.get_temp(aw_id)).unwrap_or(0.0);
     ui.horizontal(|ui| {
         let tw = (ui.available_width() - aw - S4).max(160.0);
@@ -1024,11 +1051,11 @@ pub fn kv_text(ui: &mut egui::Ui, label_w: f32, label: &str, value: impl Into<St
 /// Settings-style row: label on the left (`tip`: more about it on hover), control on the right, hairline below unless
 /// last. A row of the keyboard cursor: Enter goes to its first control.
 pub fn form_row(ui: &mut egui::Ui, label: &str, tip: &str, last: bool, control: impl FnOnce(&mut egui::Ui)) {
-    let row = nav::row(ui.id().with(("form-row", label)));
+    let row = nav::row(ui.scope_id().with(("form-row", label)));
     let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         // the label keeps to what the control leaves (its width as last drawn)
-        let cw_id = ui.id().with(("form-row-control", label));
+        let cw_id = ui.scope_id().with(("form-row-control", label));
         let cw: f32 = ui.data(|d| d.get_temp(cw_id)).unwrap_or(160.0);
         ui.horizontal(|ui| {
             ui.set_min_height(H_MD);
@@ -1151,7 +1178,7 @@ pub fn segmented(ui: &mut egui::Ui, items: &[&str], sel: Option<usize>, enabled:
     for (i, g) in gs.into_iter().enumerate() {
         let iw = g.size().x + 2.0 * pad;
         let r = Rect::from_min_size(egui::pos2(x, rect.top() + 2.0), egui::vec2(iw, H_MD - 4.0));
-        let resp = ui.interact(r, ui.id().with(("seg", items[i], i)), if enabled { Sense::click() } else { Sense::hover() });
+        let resp = ui.interact(r, ui.scope_id().with(("seg", items[i], i)), if enabled { Sense::click() } else { Sense::hover() });
         let on = sel == Some(i);
         if on {
             p.rect(r, radius_sm(), if enabled { alpha(pal.accent, 0.22) } else { pal.raised }, Stroke::new(1.0_f32, if enabled { alpha(pal.accent, 0.6) } else { pal.border }), egui::StrokeKind::Inside);
@@ -1321,8 +1348,8 @@ pub fn galley_trunc(ui: &egui::Ui, text: &str, f: FontId, col: Color32, max_w: f
 
 /// A search field with a leading magnifier; `/` focuses it.
 pub fn search(ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32) -> egui::Response {
-    let id = ui.id().with(("search", hint));
-    let r = ui.add(egui::TextEdit::singleline(text).id(id).hint_text(RichText::new(hint).color(pal().ink_3)).desired_width(w - 34.0 - 2.0).margin(egui::Margin { left: 24, right: 8, top: 5, bottom: 5 }).vertical_align(egui::Align::Center));
+    let id = ui.scope_id().with(("search", hint));
+    let r = ui.add(egui::TextEdit::singleline(text).id(id).hint_text(RichText::new(hint).color(pal().ink_3)).desired_width(w - 34.0 - 2.0).margin(egui::Margin { left: 24, right: 8, top: 5, bottom: 5 }).align(egui::Align2::LEFT_CENTER));
     ui.painter().text(r.rect.left_center() + egui::vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, icon::MAGNIFYING_GLASS, ifont(12.0), pal().ink_3);
     if nav::take_search() {
         r.request_focus();
@@ -1407,7 +1434,7 @@ pub fn modal_frame() -> egui::Frame {
 
 /// A modal with the theme's scrim behind it.
 pub fn modal(id: &'static str) -> egui::Modal {
-    egui::Modal::new(egui::Id::new(id)).backdrop_color(pal().scrim).frame(modal_frame())
+    egui::Modal::new(egui::Id::unique(id)).backdrop_color(pal().scrim).frame(modal_frame())
 }
 
 /// A menu row: icon, label, optional shortcut hint on the right. Returns true when clicked.

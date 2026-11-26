@@ -32,7 +32,7 @@ type Shared = Arc<Mutex<AxState>>;
 
 pub fn state(ctx: &egui::Context, id: &str) -> Shared {
     ctx.data_mut(|d| {
-        d.get_temp_mut_or_insert_with(egui::Id::new(("axinspect", id)), || {
+        d.get_temp_mut_or_insert_with(egui::Id::unique(("axinspect", id)), || {
             // scripted screenshots: X86SIM_LAUNCHER_OPEN=ax starts inspecting; X86SIM_AX_SELECT=<label> picks that element,
             // X86SIM_AX_AUDIT=1 runs the audit
             let on = std::env::var("X86SIM_LAUNCHER_OPEN").is_ok_and(|v| v.split(',').any(|k| k == "ax"));
@@ -135,7 +135,7 @@ pub fn overlay(ui: &mut egui::Ui, inst: &Instance, screen: egui::Rect) {
     if on {
         ui.ctx().request_repaint_after(Duration::from_millis(500));
     }
-    let resp = ui.interact(screen, egui::Id::new(("axinspect-screen", &inst.id)), if on { egui::Sense::click() } else { egui::Sense::hover() });
+    let resp = ui.interact(screen, egui::Id::unique(("axinspect-screen", &inst.id)), if on { egui::Sense::click() } else { egui::Sense::hover() });
     let mut s = st.lock().unwrap();
     let Some(snap) = s.snap.clone() else { return };
     if snap.platform == "xros" {

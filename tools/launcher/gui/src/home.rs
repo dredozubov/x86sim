@@ -161,7 +161,7 @@ impl App {
                 });
                 for id in ids {
                     let Some(inst) = self.inst(id).cloned() else { continue };
-                    let row = nav::row(egui::Id::new(("waiting", id)));
+                    let row = nav::row(egui::Id::unique(("waiting", id)));
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
                     if row.current {
                         self.cursor_device = Some(id.clone());
@@ -184,7 +184,7 @@ impl App {
                     }
                     p.text(rect.right_center() - egui::vec2(20.0, 0.0), egui::Align2::RIGHT_CENTER, icon::CARET_RIGHT, ifont(13.0), if resp.hovered() { pal().ink_2 } else { pal().ink_3 });
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        nav::select(egui::Id::new(("waiting", id)));
+                        nav::select(egui::Id::unique(("waiting", id)));
                         open = Some(id.clone());
                     }
                 }
@@ -205,7 +205,7 @@ impl App {
         let phase = st.as_ref().map(|s| s.phase).unwrap_or(Phase::Off);
         let thumbs = self.hub.thumbnails;
         let mut open = false;
-        let row_id = egui::Id::new(("card", id));
+        let row_id = egui::Id::unique(("card", id));
         let row = nav::row(row_id);
         if row.current {
             self.cursor_device = Some(id.to_string());

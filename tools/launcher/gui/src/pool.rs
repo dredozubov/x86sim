@@ -25,7 +25,7 @@ impl App {
             self.say(m);
         }
         let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
-        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         let target = match &self.view {
             View::Phone(id) => Some(id.clone()),
             _ => {
@@ -38,7 +38,7 @@ impl App {
                 Some(i) => format!("Drop an .app, .ipa or .xcarchive to install it on {}", i.name),
                 None => "Open a running device to install an app on it".into(),
             };
-            egui::Area::new("drop-hint".into()).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Area::new(egui::Id::unique("drop-hint")).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
                 card(ui, |ui| {
                     ui.label(strong(text));
                 });

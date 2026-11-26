@@ -80,7 +80,7 @@ pub fn clickpad(ui: &mut egui::Ui, d: f32, live: bool) -> KeyEvents {
     }
     ui.data_mut(|m| m.insert_temp(held_id, held));
     if live && resp.hovered() {
-        let w = ui.ctx().input(|i| i.raw_scroll_delta);
+        let w = raw_scroll_delta(ui.ctx());
         let acc_id = resp.id.with("wheel");
         let mut acc: Vec2 = ui.data(|m| m.get_temp(acc_id)).unwrap_or_default();
         acc += w;
@@ -186,7 +186,7 @@ pub fn crown(ui: &mut egui::Ui, rect: Rect, id: egui::Id, live: bool) -> Option<
             ev = Some(CrownEvent::Turn(dy * 3.0));
         }
         if resp.hovered() {
-            let w = ui.ctx().input(|i| i.raw_scroll_delta.y);
+            let w = raw_scroll_delta(ui.ctx()).y;
             if w != 0.0 {
                 phase -= w * 0.3;
                 ev = Some(CrownEvent::Turn(-w * 1.2));

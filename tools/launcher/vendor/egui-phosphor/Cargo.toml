@@ -1,0 +1,20 @@
+# egui-phosphor 0.14.0 (crates.io, MIT OR Apache-2.0: LICENSE-MIT, LICENSE-APACHE) with one change: egui 0.36 -> 0.37,
+# as in the crate's open upstream PR (amPerl/egui-phosphor#49). Only the regular variant is kept (the launcher's
+# icons); the other weights (their fonts and code), the subset module, examples and tests are left out. Drop this copy, and the
+# [patch.crates-io] entry in ../../Cargo.toml, once egui-phosphor releases a version for egui 0.37.
+[package]
+edition = "2021"
+name = "egui-phosphor"
+version = "0.14.0"
+description = "Phosphor icons for egui"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/amPerl/egui-phosphor"
+
+[lib]
+name = "egui_phosphor"
+path = "src/lib.rs"
+
+[dependencies.egui]
+version = "0.37"
+default-features = false

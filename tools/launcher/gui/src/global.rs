@@ -622,7 +622,7 @@ impl App {
         let need = st_ok.as_ref().map(|s| s.stale + s.missing).unwrap_or(0);
 
         // ---- status + actions (a row of the cursor: Enter presses Start / Update / Finish)
-        let srow = nav::row(egui::Id::new("aot-status"));
+        let srow = nav::row(egui::Id::unique("aot-status"));
         let sr = card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -1005,7 +1005,7 @@ impl App {
 /// A list row: icon tile, title + detail, trailing controls (right to left).
 /// Returns the title + detail's response (a tooltip with more about it goes there).
 pub(crate) fn list_row(ui: &mut egui::Ui, ic: &str, title_text: &str, detail: &str, trailing: impl FnOnce(&mut egui::Ui)) -> egui::Response {
-    let row = nav::row(ui.id().with(("list-row", title_text, detail)));
+    let row = nav::row(ui.scope_id().with(("list-row", title_text, detail)));
     let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
