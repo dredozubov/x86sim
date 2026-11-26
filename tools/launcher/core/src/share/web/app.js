@@ -77,6 +77,48 @@ async function copy(text) {
   }
 }
 
+// ---------- the look: Desktop (this machine's Omarchy theme, live), System, Dark or Light ----------
+// The server pushes the theme's generation (Server-Sent Events: once at once, then at every theme switch, no
+// polling); theme.css holds its colours and the page applies them only in the Desktop look.
+const LOOKS = [["desktop", "\uE560", "Desktop theme (this machine's Omarchy theme, live)"], ["system", "\uE18C", "System light / dark"],
+  ["dark", "\uE330", "Dark"], ["light", "\uE472", "Light"]];
+let look = (() => { try { return localStorage.getItem("x86sim.look") || "desktop"; } catch { return "desktop"; } })();
+let desktopTheme = false;
+function applyLook() {
+  const root = document.documentElement;
+  const useDesktop = look === "desktop" && desktopTheme;
+  if (useDesktop) root.dataset.hostTheme = ""; else delete root.dataset.hostTheme;
+  if (look === "dark" || look === "light") root.dataset.theme = look; else delete root.dataset.theme;
+  const shown = look === "desktop" && !desktopTheme ? LOOKS[1] : LOOKS.find((l) => l[0] === look) || LOOKS[1];
+  const b = document.getElementById("lookBtn");
+  if (b) {
+    b.firstChild.textContent = shown[1];
+    b.title = (look === "desktop" && !desktopTheme ? "System light / dark (no Omarchy theme on this machine)" : shown[2]) + " · click for the next look";
+    b.setAttribute("aria-label", b.title);
+  }
+}
+document.getElementById("lookBtn").addEventListener("click", () => {
+  const order = LOOKS.map((l) => l[0]).filter((l) => l !== "desktop" || desktopTheme);
+  const cur = look === "desktop" && !desktopTheme ? "system" : look;
+  look = order[(order.indexOf(cur) + 1) % order.length];
+  try { localStorage.setItem("x86sim.look", look); } catch {}
+  applyLook();
+});
+applyLook();
+try {
+  const ev = new EventSource("api/theme/events");
+  let gen = null;
+  ev.onmessage = (m) => {
+    const t = JSON.parse(m.data);
+    desktopTheme = !!t.available;
+    if (t.generation !== gen) {
+      if (gen !== null) document.getElementById("themecss").href = "theme.css?g=" + encodeURIComponent(t.generation);
+      gen = t.generation;
+    }
+    applyLook();
+  };
+} catch {}
+
 // ---------- routing ----------
 let cleanup = null;
 function route() {

@@ -25,8 +25,10 @@
   font-family: var(--mono); font-size: 13px; line-height: 1.45;
 }
 /* palette: Palette::default_light() */
+/* the light look: the system's preference unless the viewer picked Dark, or Light whatever the system says
+   (the header's look button: data-theme); the Desktop look (theme.css, :root[data-host-theme]) comes after both */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
     --canvas: #f6f6f7; --window: #ededef; --well: #e4e4e7; --card: #f6f6f7;
     --ink: #1d1f23; --ink-2: #4d4e52; --ink-3: #747578; --line: #d8d8d9;
     --raised: rgb(29 31 35 / .04); --hover: rgb(29 31 35 / .08); --pressed: rgb(29 31 35 / .22);
@@ -36,6 +38,16 @@
     --scrim: rgb(246 246 247 / .6); --bezel: #1a1b1d;
     color-scheme: light;
   }
+}
+:root[data-theme="light"] {
+    --canvas: #f6f6f7; --window: #ededef; --well: #e4e4e7; --card: #f6f6f7;
+    --ink: #1d1f23; --ink-2: #4d4e52; --ink-3: #747578; --line: #d8d8d9;
+    --raised: rgb(29 31 35 / .04); --hover: rgb(29 31 35 / .08); --pressed: rgb(29 31 35 / .22);
+    --selected: rgb(29 31 35 / .18); --edge: rgb(29 31 35 / .4);
+    --accent: #b98500; --accent-ink: #1d1f23; --on-accent: #1d1f23;
+    --active: #6b7078; --good: #2e7d43; --warn: #9a6700; --crit: #c0392b; --blue: #2f6fb5; --cyan: #1f7f86;
+    --scrim: rgb(246 246 247 / .6); --bezel: #1a1b1d;
+    color-scheme: light;
 }
 @media (min-width: 761px) {
   :root { font-size: 12px; --h-md: 28px; --h-sm: 24px; }

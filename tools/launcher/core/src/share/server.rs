@@ -579,6 +579,28 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
 
         "/panels.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], PANELS_JS.as_bytes()),
         "/icons.ttf" => return respond(&mut s, 200, "font/ttf", &[], ICONS_TTF),
+        // this machine's Omarchy theme as the page's CSS variables (empty without Omarchy) and its generation, for the
+        // page's Desktop look (share/theme.rs): colours only, no data
+        "/theme.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], super::theme::css().unwrap_or_default().as_bytes()),
+        // pushed, not polled: one event with the generation now, then one per theme switch (Server-Sent Events;
+        // a comment line every 25 s keeps proxies and tunnels from closing an idle stream)
+        "/api/theme/events" => {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n");
+            let (mut last, mut first) = (String::new(), true);
+            loop {
+                let g = super::theme::wait_change(if first { "" } else { &last }, Duration::from_secs(25));
+                let msg = if first || g != last { format!("data: {}\n\n", json!({"available": !g.is_empty(), "generation": g})) } else { ": idle\n\n".to_string() };
+                if s.write_all(msg.as_bytes()).and_then(|_| s.flush()).is_err() || srv.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                last = g;
+                first = false;
+            }
+        }
+        "/api/theme" => {
+            let gen = super::theme::generation();
+            return json_resp(&mut s, 200, &json!({"available": !gen.is_empty(), "generation": gen}));
+        }
         "/netpanel.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], NET_JS.as_bytes()),
         "/axinspect.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], AX_CSS.as_bytes()),
         "/mic.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], MIC_JS.as_bytes()),
@@ -602,6 +624,19 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
     // server-wide: tunnels, the main tokens, links. A link (however broad) never manages the server or other links
     let owner = control && g.owner;
     match (req.method.as_str(), seg.as_slice()) {
+        // the Desktop look's font (theme.css names it): this machine's monospace font, for the token's holders only
+        ("GET", ["theme-font"]) => match super::theme::mono_font().and_then(|(_, f)| std::fs::read(&f).ok().map(|b| (f, b))) {
+            Some((f, b)) => {
+                let ct = match f.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+                    Some("otf") => "font/otf",
+                    Some("woff2") => "font/woff2",
+                    Some("woff") => "font/woff",
+                    _ => "font/ttf",
+                };
+                respond(&mut s, 200, ct, &[], &b)
+            }
+            None => json_resp(&mut s, 404, &json!({"error": "no monospace font"})),
+        },
         ("GET", ["api", "me"]) => json_resp(&mut s, 200, &json!({"role": g.role, "phone": g.phone, "expires": g.expires, "local": g.token.is_none(), "owner": owner, "server": {"started": srv.started, "version": env!("CARGO_PKG_VERSION")}})),
         ("GET", ["api", "phones"]) => {
             let all = srv.phones();
