@@ -137,9 +137,14 @@
   function spine(m, phi) {
     const deg = Math.min(180, Math.max(0, 180 - phi * 180 / Math.PI)), f = deg / 22.5;
     const i = Math.min(7, Math.floor(f)), t = f - Math.min(7, Math.floor(f)), a = SPINE_AT[i], b = SPINE_AT[Math.min(i + 1, 8)];
-    const c = [a[0] + (b[0] - a[0]) * t, 0, a[1] + (b[1] - a[1]) * t];
-    const at = place([rotY([1, 0, 0], phi / 2), rotY([0, 0, 1], phi / 2), [0, -1, 0]], c);
-    const [w, h, len] = SPINE, rr = h / 2 - 0.01;
+    let c = [a[0] + (b[0] - a[0]) * t, 0, a[1] + (b[1] - a[1]) * t];
+    const u = rotY([1, 0, 0], phi / 2), v = rotY([0, 0, 1], phi / 2), [w, h, len] = SPINE, rr = h / 2 - 0.01;
+    // kept behind the crease (Apple's bent panel covers it; the crease here is sharp)
+    const dot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    const inside = [-Math.sin(phi / 2), 0, Math.cos(phi / 2)], crease = scale(RIGHT(phi).p([0, 0, 0]), 0.5);
+    const reach = dot(c, inside) + w / 2 * Math.abs(dot(u, inside)) + h / 2 * Math.abs(dot(v, inside));
+    c = sub(c, scale(inside, Math.max(0, reach - dot(crease, inside) + 2)));
+    const at = place([u, v, [0, -1, 0]], c);
     slab(m, at, [-w / 2, w / 2, -h / 2, h / 2], [rr, rr, rr, rr], [len, -len], 1.5, [HINGE, HINGE, HINGE], 6);
   }
 

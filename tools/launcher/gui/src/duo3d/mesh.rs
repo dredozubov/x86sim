@@ -297,10 +297,16 @@ fn spine(m: &mut Mesh, phi: f32) {
     let f = deg / 22.5;
     let (i, t) = ((f.floor() as usize).min(7), f - f.floor().min(7.0));
     let (a, b) = (SPINE_AT[i], SPINE_AT[(i + 1).min(8)]);
-    let c = v3(a.0 + (b.0 - a.0) * t, 0.0, a.1 + (b.1 - a.1) * t);
+    let mut c = v3(a.0 + (b.0 - a.0) * t, 0.0, a.1 + (b.1 - a.1) * t);
     // local x: across the hinge, local y: through the body, local z: along the hinge
-    let at = Place::axes(rot_y(v3(1.0, 0.0, 0.0), phi / 2.0), rot_y(v3(0.0, 0.0, 1.0), phi / 2.0), v3(0.0, -1.0, 0.0), c);
+    let (u, v) = (rot_y(v3(1.0, 0.0, 0.0), phi / 2.0), rot_y(v3(0.0, 0.0, 1.0), phi / 2.0));
     let (w, h, len) = SPINE;
+    // kept behind the crease (Apple's bent panel covers it; the crease here is sharp): `inside` points into the fold
+    let inside = v3(-(phi / 2.0).sin(), 0.0, (phi / 2.0).cos());
+    let crease = Place::right(phi).p(v3(0.0, 0.0, 0.0)).scale(0.5);
+    let reach = c.dot(inside) + w / 2.0 * u.dot(inside).abs() + h / 2.0 * v.dot(inside).abs();
+    c = c.sub(inside.scale((reach - crease.dot(inside) + 2.0).max(0.0)));
+    let at = Place::axes(u, v, v3(0.0, -1.0, 0.0), c);
     slab(m, at, (-w / 2.0, w / 2.0, -h / 2.0, h / 2.0), [h / 2.0 - 0.01; 4], (len, -len), 1.5, (HINGE, HINGE, HINGE), 6);
 }
 
