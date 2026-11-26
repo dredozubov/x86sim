@@ -160,7 +160,7 @@ pub fn load_meta() -> Option<Meta> {
 
 fn save(s: &Session) -> Result<Meta> {
     let store = store_session(s)?;
-    let m = Meta { apple_id: s.apple_id.clone(), name: s.name.clone(), store: store.into(), signed_in: s.signed_in, trusted_until: trust_expiry(&s.cookies) };
+    let m = Meta { apple_id: s.apple_id.clone(), name: String::new(), store: store.into(), signed_in: s.signed_in, trusted_until: trust_expiry(&s.cookies) };
     write_private(&meta_path(), &serde_json::to_vec_pretty(&m)?)?;
     Ok(m)
 }
@@ -542,11 +542,9 @@ fn login_inner(apple_id: &str, password: &str, xtool: bool, ask: &mut dyn Ask) -
         _ => bail!("{}", sign_in_error(&done, apple_id)),
     }
     // who it is (App Store Connect's session; a plain Apple ID without a developer account still gets one)
-    let me = http.req("GET", &format!("{OLYMPUS}/session"), &[("Accept", "application/json")], None)?;
-    let mv = me.json();
-    let name = mv.pointer("/user/fullName").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let provider = mv.pointer("/provider/name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let s = Session { apple_id: apple_id.to_string(), cookies: http.cookies(), signed_in: now(), name, provider };
+    // (the person's and team's names are not kept: nothing here needs them and they aren't ours to show)
+    let _ = http.req("GET", &format!("{OLYMPUS}/session"), &[("Accept", "application/json")], None)?;
+    let s = Session { apple_id: apple_id.to_string(), cookies: http.cookies(), signed_in: now(), name: String::new(), provider: String::new() };
     drop(http);
     let m = save(&s)?;
     ask.say(&format!("Session kept in the {}", if m.store == "keyring" { "Secret Service keyring" } else { "0600 file ~/.config/x86sim/apple-account.session (no keyring found)" }));
@@ -825,7 +823,7 @@ pub fn status(live: bool) -> Result<Status> {
     };
     st.signed_in = true;
     st.apple_id = m.apple_id.clone();
-    st.name = m.name.clone();
+    st.name = String::new();
     st.store = m.store.clone();
     st.signed_in_on = date(m.signed_in);
     if m.trusted_until > 0 {

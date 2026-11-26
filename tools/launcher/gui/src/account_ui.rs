@@ -233,7 +233,7 @@ impl App {
                 None => busy(ui, "Checking the Apple Account…"),
                 Some(Err(e)) => note(ui, e),
                 Some(Ok(s)) if s.signed_in => {
-                    let who = if s.name.is_empty() { s.apple_id.clone() } else { format!("{} · {}", s.apple_id, s.name) };
+                    let who = s.apple_id.clone();
                     let mut detail = format!("Signed in {}", s.signed_in_on);
                     if s.session_ok == Some(false) && !s.expired {
                         detail += " · Not working";

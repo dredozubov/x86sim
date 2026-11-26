@@ -127,7 +127,7 @@ fn print_status(s: &account::Status) {
     if !s.signed_in {
         println!("Apple Account: not signed in (x86sim account login)");
     } else {
-        println!("Apple Account: {}{}", s.apple_id, if s.name.is_empty() { String::new() } else { format!(" ({})", s.name) });
+        println!("Apple Account: {}", s.apple_id);
         println!("  signed in:    {} (session kept in the {})", s.signed_in_on, if s.store == "keyring" { "Secret Service keyring" } else { "0600 file in ~/.config/x86sim" });
         if let Some(ok) = s.session_ok {
             println!("  session:      {}", if ok { "works" } else { "expired" });
