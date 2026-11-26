@@ -19,6 +19,7 @@ import Charts
 import CoreData
 #endif
 import UniformTypeIdentifiers
+import Accessibility
 
 // MARK: helpers
 
@@ -768,6 +769,282 @@ private final class P28Doc: Document {
     @MainActor func snapshot(contentType: UTType) async throws -> String { text }
 }
 
+// MARK: Charts: custom plottable, symbol shape, axis content, scroll target behavior; every mark / plot type
+
+#if canImport(Charts)
+private struct P28Pt: Identifiable { let id: Int; let x: Double; let y: Double }
+private let p28Pts = (0..<6).map { P28Pt(id: $0, x: Double($0), y: Double($0 % 3 + 1)) }
+/// a Plottable enum (its primitive is a String)
+private enum P28Cat: String, Plottable, CaseIterable {
+    case a, b, c
+    var primitivePlottable: String { rawValue }
+    init?(primitivePlottable: String) { self.init(rawValue: primitivePlottable) }
+}
+private func p28Primitive<P: PrimitivePlottableProtocol>(_ p: P) -> P.PrimitivePlottable { p.primitivePlottable }
+/// a diamond chart symbol
+private struct P28Diamond: ChartSymbolShape {
+    var perceptualUnitRect: CGRect { CGRect(x: 0, y: 0, width: 1, height: 1) }
+    func path(in r: CGRect) -> Path {
+        Path { p in p.move(to: CGPoint(x: r.midX, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.midY)); p.addLine(to: CGPoint(x: r.midX, y: r.maxY)); p.addLine(to: CGPoint(x: r.minX, y: r.midY)); p.closeSubpath() }
+    }
+}
+/// a custom axis (AxisContent's requirement is underscored: apps build axis content with the builder): grid lines +
+/// labels at 0, 2, 4
+@AxisContentBuilder private func p28XAxis() -> some AxisContent {
+    AxisMarks(values: [0.0, 2.0, 4.0]) { _ in
+        p28GridMark()
+        AxisValueLabel(collisionResolution: AxisValueLabelCollisionResolution.greedy, orientation: AxisValueLabelOrientation.verticalReversed)
+    }
+}
+@AxisMarkBuilder private func p28GridMark() -> some AxisMark { AnyAxisMark(AxisGridLine()) }
+@AxisContentBuilder private func p28YAxis(_ hidden: Bool) -> some AxisContent {
+    if hidden { AnyAxisContent(AxisMarks(values: [Double]())) } else { AnyAxisContent(AxisMarks(position: .leading)) }
+}
+/// snaps a horizontal chart scroll to whole x units through the chart proxy
+private struct P28ChartSnap: ChartScrollTargetBehavior {
+    let log: P6Log
+    func updateTarget(_ target: inout ScrollTarget, context: ChartScrollTargetBehaviorContext) {
+        let ctx: ChartScrollTargetBehaviorContext = context
+        let x: Double? = ctx.chartProxy.value(atX: target.rect.minX)
+        log.add("chart snap from x \(String(format: "%.2f", x ?? -1)) container \(p28S(ctx.containerSize))")
+        if let x, let px = ctx.chartProxy.position(forX: x.rounded()) { target.rect.origin.x = px }
+    }
+}
+private func p28Domain<D: ScaleDomain>(_ d: D) -> D { d }
+private func p28Range<R: PositionScaleRange>(_ r: R) -> R { r }
+private func p28Vector<V: VectorizedChartContent>(_ v: V) -> String { "\(type(of: v))".components(separatedBy: "<").first ?? "" }
+@ChartContentBuilder private func p28Either(_ bar: Bool) -> some ChartContent {
+    if bar { BarMark(x: .value("x", 1), y: .value("y", 2)) } else { LineMark(x: .value("x", 1), y: .value("y", 2)) }
+}
+private struct P28ChartRoot: View {
+    let log: P6Log
+    var body: some View {
+        VStack(spacing: 0) {
+            Chart {
+                ForEach(p28Pts) { p in
+                    AreaMark(x: .value("x", p.x), y: .value("y", p.y)).foregroundStyle(Color(red: 1, green: 0, blue: 0))
+                }
+                PointMark(x: .value("x", 2.0), y: .value("y", 2.0)).symbol(AnyChartSymbolShape(P28Diamond())).symbolSize(100)
+                    .annotation(position: AnnotationPosition.top, alignment: .center, spacing: 0, overflowResolution: AnnotationOverflowResolution(x: .fit(to: .chart), y: .disabled)) { (ctx: AnnotationContext) in
+                        Text("ann").onAppear { log.add("annotation target \(p28S(ctx.targetSize))") }
+                    }
+                PointMark(x: .value("x", 3.0), y: .value("y", 1.0)).symbol(BasicChartSymbolShape.triangle)
+            }
+            .chartXAxis { p28XAxis() }
+            .chartYAxis { p28YAxis(false) }
+            .chartXScale(domain: p28Domain(AutomaticScaleDomain.automatic(includesZero: true)), range: p28Range(PlotDimensionScaleRange.plotDimension(startPadding: 10, endPadding: 10)))
+            .chartPlotStyle { (plot: ChartPlotContent) in plot.background(Color.yellow.opacity(0.2)) }
+            .chartXAxisStyle { (axis: ChartAxisContent) in axis.onGeometryChange(for: CGSize.self) { $0.size } action: { log.add("x axis \(p28S($0))") } }
+            .frame(width: 200, height: 120)
+            Chart(p28Pts) { p in BarMark(x: .value("x", p.x), y: .value("y", p.y)) }
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: 2)
+                .chartScrollTargetBehavior(P28ChartSnap(log: log))
+                .frame(width: 200, height: 80)
+        }
+    }
+}
+#endif
+
+// MARK: scenes, commands, previews (built as values: the app runs UIKit's scene lifecycle)
+
+private struct P28Commands: Commands {
+    var body: some Commands {
+        CommandGroup(after: CommandGroupPlacement.newItem) { Button("P28 New") {} }
+        CommandMenu("P28") { Button("Item") {} }
+    }
+}
+@CommandsBuilder private func p28MoreCommands() -> some Commands {
+    CommandGroup(replacing: CommandGroupPlacement.help) { Button("P28 Help") {} }
+}
+private struct P28FileDoc: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    var text = ""
+    init() {}
+    init(configuration: ReadConfiguration) throws { text = String(decoding: configuration.file.regularFileContents ?? Data(), as: UTF8.self) }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: Data(text.utf8)) }
+}
+#if os(iOS) || os(visionOS)
+private let p28Refresh: BackgroundTask<Void, Void> = .appRefresh("p28.refresh")
+@MainActor @SceneBuilder private func p28Scenes() -> some Scene {
+    WindowGroup("P28", id: "p28") { Text("w") }
+        .commands { P28Commands(); p28MoreCommands() }
+        .backgroundTask(p28Refresh) { }
+        .restorationBehavior(SceneRestorationBehavior.automatic)
+        .windowResizability(WindowResizability.contentSize)
+    DocumentGroup(newDocument: P28FileDoc()) { (file: FileDocumentConfiguration<P28FileDoc>) in Text(file.document.text) }
+    DocumentGroup(newDocument: { P28RefDoc(text: "") }) { (file: ReferenceFileDocumentConfiguration<P28RefDoc>) in Text(file.document.text) }
+}
+private final class P28SceneDelegate: NSObject, UIHostingSceneDelegate {
+    static var rootScene: some Scene { WindowGroup(id: "p28-hosted") { Text("hosted") } }
+}
+private final class P28AppDelegate: NSObject, UIApplicationDelegate {}
+#endif
+private struct P28PreviewKey: PreviewContextKey { static let defaultValue = "p28 default" }
+private struct P28PreviewContext: PreviewContext {
+    subscript<Key: PreviewContextKey>(key: Key.Type) -> Key.Value { Key.defaultValue }
+}
+private struct P28Previews: PreviewProvider {
+    static var previews: some View {
+        Text("preview").previewDevice(PreviewDevice(rawValue: "iPhone 17")).previewDisplayName("P28")
+    }
+    static var platform: PreviewPlatform? { PreviewPlatform.iOS }
+}
+private struct P28PreviewMod: PreviewModifier {
+    static func makeSharedContext() async throws -> Int { 28 }
+    func body(content: Content, context: Int) -> some View { content.overlay { Text("\(context)") } }
+}
+
+// MARK: accessibility: rotors (custom content + builder, system rotors), labeled pairs, chart descriptors, zoom actions
+
+private struct P28RotorEntries: AccessibilityRotorContent {
+    var body: some AccessibilityRotorContent {
+        AccessibilityRotorEntry("first", id: 1)
+        AccessibilityRotorEntry("second", id: 2)
+    }
+}
+@AccessibilityRotorContentBuilder private func p28MoreEntries() -> some AccessibilityRotorContent {
+    AccessibilityRotorEntry("third", id: 3)
+}
+private struct P28AXChart: AXChartDescriptorRepresentable {
+    let log: P6Log
+    func makeChartDescriptor() -> AXChartDescriptor {
+        log.add("chart descriptor made")
+        let x = AXNumericDataAxisDescriptor(title: "x", range: 0...10, gridlinePositions: []) { "\($0)" }
+        let y = AXNumericDataAxisDescriptor(title: "y", range: 0...10, gridlinePositions: []) { "\($0)" }
+        return AXChartDescriptor(title: "P28", summary: nil, xAxis: x, yAxis: y, additionalAxes: [], series: [])
+    }
+}
+private struct P28AXRoot: View {
+    let log: P6Log
+    @Namespace var ns
+    @AccessibilityFocusState(for: AccessibilityTechnologies.voiceOver) var voFocus: Bool
+    var body: some View {
+        VStack {
+            Text("Rotors").accessibilityRotor("P28 Rotor") { P28RotorEntries(); p28MoreEntries() }
+                .accessibilityRotor(AccessibilitySystemRotor.headings) { AccessibilityRotorEntry("h", id: 9) }
+            HStack {
+                Text("Name").accessibilityLabeledPair(role: AccessibilityLabeledPairRole.label, id: "n", in: ns)
+                Text("Value").accessibilityLabeledPair(role: AccessibilityLabeledPairRole.content, id: "n", in: ns)
+            }
+            Color.blue.frame(width: 40, height: 40).accessibilityChartDescriptor(P28AXChart(log: log))
+                .accessibilityZoomAction { (a: AccessibilityZoomGestureAction) in log.add("zoom \(a.direction == .zoomIn ? "in" : "out")") }
+                .accessibilityDirectTouch(true, options: AccessibilityDirectTouchOptions.silentOnTouch)
+                .accessibilityActions(category: AccessibilityActionCategory.edit) { Button("Edit") {} }
+                .accessibilityFocused($voFocus)
+        }
+        .onAppear { log.add("ax appear vo \(voFocus)") }
+    }
+}
+
+// MARK: values and smaller views
+
+@available(iOS 27.1, tvOS 27.1, watchOS 27.1, visionOS 27.1, *)
+private struct P28ArrangeStyle: ArrangementViewStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let c: ArrangementViewStyleConfiguration = configuration
+        return HStack(spacing: 0) { c.primary; c.secondary }
+    }
+}
+private func p28Dynamic<D: DynamicViewContent>(_ d: D) -> Int { d.data.count }
+private func p28CoordName<C: CoordinateSpaceProtocol>(_ c: C) -> String { "\(c.coordinateSpace)" }
+private func p28VisualEffect<V: VisualEffect>(_ v: V) -> String { "\(type(of: v))".components(separatedBy: "<").first ?? "" }
+private func p28Rounded<S: RoundedRectangularShape>(_ s: S, _ size: CGSize) -> RoundedRectangularShapeCorners? { s.corners(in: size) }
+private func p28Tick<T: SliderTickContent>(_ t: T) -> T { t }
+private func p28NavTransition<T: NavigationTransition>(_ t: T) -> String { "\(T.self)" }
+/// applies a ReorderDifference to an array, as an app's reorderContainer handler does
+private func p28Apply(_ d: ReorderDifference<Int, ReorderableSingleCollectionIdentifier>, to a: [Int]) -> [Int] {
+    var out = a.filter { !d.sources.contains($0) }
+    switch d.destination.position {
+    case .before(let id): out.insert(contentsOf: d.sources, at: out.firstIndex(of: id) ?? out.endIndex)
+    case .end: out += d.sources
+    }
+    return out
+}
+private struct P28ValuesRoot: View {
+    let log: P6Log
+    @State var v = 0.5
+    @State var text = "write"
+    @State var attr = AttributedString("formatted")
+    @State var sel = AttributedTextSelection()
+    @State var items = [1, 2, 3]
+    @Environment(\.preferredPencilDoubleTapAction) var pencil
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                Slider(value: $v, in: 0...1) { Text("s") } ticks: {
+                    SliderTick(0.0); SliderTick(1.0)
+                    SliderTickContentForEach([0.25, 0.5, 0.75], id: \.self) { SliderTick($0) }
+                }.frame(width: 200).p28Size("slider-ticks", log)
+                Text("menu").contextMenu(ContextMenu { Button("P28 Item") {} })
+                ContentUnavailableView<SearchUnavailableContent.Label, SearchUnavailableContent.Description, SearchUnavailableContent.Actions>.search.frame(width: 300).p28Size("unavailable", log)
+                ShareLink(item: URL(string: "https://example.com")!, preview: SharePreview("P28", image: Image(systemName: "star"))).p28Size("share", log)
+                Color.red.frame(width: 10, height: 10).scenePadding(ScenePadding.minimum, edges: .leading).p28Size("scene-padding", log)
+                TextEditor(text: $text).writingToolsBehavior(WritingToolsBehavior.disabled).frame(width: 100, height: 40)
+                    .textInputFormattingControlVisibility(.hidden, for: TextInputFormattingControlPlacement.Set.all)
+                TextEditor(text: $attr, selection: $sel).frame(width: 100, height: 40)
+                TextField("bordered", text: $text).textInputBorderShape(TextInputBorderShape.capsule).frame(width: 100)
+                Menu("menu2") { Button("a") {} }.menuActionDismissBehavior(MenuActionDismissBehavior.disabled)
+                Picker("pal", selection: $v) { Text("a").tag(0.5) }.pickerStyle(.palette).paletteSelectionEffect(PaletteSelectionEffect.symbolVariant(.fill))
+                List {
+                    Section { Text("row").badge(3).badgeProminence(BadgeProminence.decreased).listItemTint(ListItemTint.fixed(.red)) }
+                    ForEach(items, id: \.self) { Text("item \($0)") }.reorderable()
+                }
+                .listSectionSpacing(ListSectionSpacing.compact)
+                .reorderContainer(for: Int.self, itemID: \.self) { d in items = p28Apply(d, to: items) }
+                .frame(height: 200)
+                Text("keys").focusable().onKeyPress(phases: KeyPress.Phases.down) { (k: KeyPress) in log.add("key \(k.characters)"); return .handled }
+                    .onContinuousHover { (p: HoverPhase) in log.add("hover \(p)") }
+                    .onPencilDoubleTap { (v: PencilDoubleTapGestureValue) in log.add("pencil tap \(v.hoverPose != nil)") }
+                    .onPencilSqueeze { (p: PencilSqueezeGesturePhase) in log.add("squeeze") }
+                    .sensoryFeedback(SensoryFeedback.success, trigger: v)
+                    .gesture(SpatialEventGesture().onChanged { (e: SpatialEventCollection) in log.add("events \(e.count)") })
+                    .contentShape(ContentShapeKinds.interaction, Rectangle())
+            }
+            .modifier(P28RenameCaller(log: log))
+            .renameAction { log.add("renamed") }
+        }
+        .onAppear { log.add("pencil action \(pencil == PencilPreferredAction.switchEraser ? "switchEraser" : "\(pencil)")") }
+    }
+}
+private struct P28RenameCaller: ViewModifier {
+    let log: P6Log
+    @Environment(\.rename) var rename
+    func body(content: Content) -> some View {
+        content.onAppear { let r: RenameAction? = rename; log.add("rename \(r == nil ? "nil" : "set")"); r?() }
+    }
+}
+@available(iOS 27.1, tvOS 27.1, watchOS 27.1, visionOS 27.1, *)
+private struct P28GeometryNew: View {
+    let log: P6Log
+    var body: some View {
+        ArrangementView { Color.red.frame(width: 10, height: 10) } secondary: { Color.blue.frame(width: 20, height: 10) }.arrangementViewStyle(P28ArrangeStyle()).fixedSize().p28Size("arrangement", log)
+        GeometryReader { g in
+            let regions: [ReservedRegion] = g.reservedRegions(kind: ReservedRegion.Kind.occlusion)
+            let m = g.contentMargins(for: ContentMarginGuide.container)
+            Color.clear.onAppear { log.add("regions \(regions.count) margins \(Int(m.leading)),\(Int(m.top))") }
+        }
+        .onHingeChange { (_: DeviceHingeContext, new: DeviceHingeContext) in log.add("hinge \(new.hinge.map { "\($0.angle.degrees)" } ?? "nil")") }
+    }
+}
+
+#if canImport(Charts) && (os(iOS) || os(visionOS))
+private struct P28Surface: Chart3DContent {
+    var body: some Chart3DContent {
+        SurfacePlot(x: "x", y: "y", z: "z") { x, z in sin(x) * cos(z) }.foregroundStyle(BasicChart3DSurfaceStyle.heightBased)
+    }
+}
+@Chart3DContentBuilder private func p28Points3D(_ spheres: Bool) -> some Chart3DContent {
+    if spheres {
+        PointMark(x: .value("x", 1.0), y: .value("y", 1.0), z: .value("z", 1.0)).symbol(BasicChart3DSymbolShape.sphere)
+    } else {
+        PointMark(x: .value("x", 1.0), y: .value("y", 1.0), z: .value("z", 1.0)).symbol(BasicChart3DSymbolShape.cube)
+    }
+}
+private func p28Sym3D<S: Chart3DSymbolShape>(_ s: S) -> String { "\(S.self)" }
+private func p28Surf3D<S: Chart3DSurfaceStyle>(_ s: S) -> String { "\(S.self)" }
+#endif
+
 // MARK: checks
 
 extension Registry {
@@ -1212,6 +1489,217 @@ extension Registry {
             try expect(docSnap == back && snap == "hello" && back == "v2 (was v1)" && P28Doc.readableContentTypes == [.plainText] && P28RefDoc.writableContentTypes == [.plainText], "snapshot \(snap) read \(back)")
             _ = doc
             return "snapshot \(snap); round trip \(back)"
+        })
+        #endif
+
+        #if canImport(Charts)
+        // MARK: Charts: an area mark by pixels, a custom-shaped point with a context annotation (overflow resolution),
+        // a custom AxisContent / AxisMark builders, scale domain + range, plot and axis styles, a custom
+        // ChartScrollTargetBehavior snapping a scrolled chart through its proxy
+        c.append(check("Charts", "p28-marks-axes-scroll", timeout: 25) {
+            let log = P6Log()
+            let red = await onMain { () -> Int in
+                let v = Chart { ForEach(p28Pts) { AreaMark(x: .value("x", $0.x), y: .value("y", $0.y)).foregroundStyle(Color(red: 1, green: 0, blue: 0)) } }
+                    .chartXAxis(.hidden).chartYAxis(.hidden).background(Color.white)
+                guard let img = p28Render(v, 100, 60) else { return -1 }
+                let ctx = bitmap(img.width, img.height); ctx.draw(img, in: CGRect(x: 0, y: 0, width: img.width, height: img.height))
+                var n = 0
+                for y in 0..<img.height { for x in 0..<img.width { let p = pixel(ctx, x, y); if p[0] > 200 && p[1] < 60 && p[2] < 60 { n += 1 } } }
+                return n
+            }
+            let close = try await onMain { try p6HostSwiftUI(P28ChartRoot(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(5) { log.all.contains { $0.hasPrefix("annotation target") } && log.all.contains { $0.hasPrefix("x axis") } }
+            try await Task.sleep(for: .milliseconds(400))
+            let r = await onMain { () -> String in
+                guard let w = p6LastWindow, let sv = p6Find(w, UIScrollView.self).first(where: { $0.contentSize.width > 250 }) else { return "no chart scroll view" }
+                var t = CGPoint(x: 37, y: 0)
+                sv.delegate?.scrollViewWillEndDragging?(sv, withVelocity: .zero, targetContentOffset: &t)
+                return "target x \(Int(t.x)) content \(Int(sv.contentSize.width))"
+            }
+            let d = "red area px \(red); \(log.all.filter { !$0.hasPrefix("x axis") }.prefix(4)); \(log.all.last { $0.hasPrefix("x axis") } ?? ""); \(r)"
+            // area under y = 1..3 over 100 x 60: about half the plot
+            try expect(red > 1500 && red < 5500, d)
+            try expect(log.all.contains { $0.hasPrefix("annotation target") }, d)
+            return d
+        })
+
+        // MARK: Charts values: a Plottable enum, primitive plottables, plottable values / projections, bins' ranges,
+        // mark dimensions, vectorized plot content types, function area plots, a builder conditional, Plot, value
+        // aligned scrolling
+        c.append(check("Charts", "p28-plottables-vectorized", timeout: 20) {
+            let pv: PlottableValue<P28Cat> = .value("cat", P28Cat.b)
+            let proj: PlottableProjection<P28Pt, Double> = .value("x", \P28Pt.x)
+            let nb = NumberBins(range: 0.0...100.0, count: 4)
+            let bin: ChartBinRange<Double> = nb[1]
+            let dims: MarkDimensions<P28Pt> = 8
+            let bar: BarPlot<VectorizedBarPlotContent<[P28Pt]>> = BarPlot(p28Pts, x: proj, y: .value("y", \.y))
+            let line: LinePlot<VectorizedLinePlotContent<[P28Pt]>> = LinePlot(p28Pts, x: .value("x", \.x), y: .value("y", \.y))
+            let point: PointPlot<VectorizedPointPlotContent<[P28Pt]>> = PointPlot(p28Pts, x: .value("x", \.x), y: .value("y", \.y))
+            let area: AreaPlot<VectorizedAreaPlotContent<[P28Pt]>> = AreaPlot(p28Pts, x: .value("x", \.x), y: .value("y", \.y))
+            let rect: RectanglePlot<VectorizedRectanglePlotContent<[P28Pt]>> = RectanglePlot(p28Pts, x: .value("x", \.x), y: .value("y", \.y), width: dims, height: .fixed(8))
+            let rule: RulePlot<VectorizedRulePlotContent<[P28Pt]>> = RulePlot(p28Pts, x: .value("x", \.x), yStart: .value("a", \.x), yEnd: .value("b", \.y))
+            let sector: SectorPlot<VectorizedSectorPlotContent<[P28Pt]>> = SectorPlot(p28Pts, angle: .value("v", \.y))
+            let fline: LinePlot<FunctionLinePlotContent> = LinePlot(x: "x", y: "y", domain: 0...1) { $0 }
+            let farea: AreaPlot<FunctionAreaPlotContent> = AreaPlot(x: "x", yStart: "lo", yEnd: "hi", domain: 0...1) { (yStart: 0, yEnd: $0) }
+            let names = [p28Vector(bar), p28Vector(line), p28Vector(point), p28Vector(area), p28Vector(rect), p28Vector(rule), p28Vector(sector)]
+            let wrapped = Plot { BarMark(x: .value("x", 1), y: .value("y", 1)) }
+            let cond = p28Either(true)
+            // the plots + function plots + conditional + Plot render
+            let px = await onMain { () -> Int in
+                let v = Chart { area; fline; farea; wrapped; cond }.chartXAxis(.hidden).chartYAxis(.hidden).background(Color.white)
+                guard let img = p28Render(v, 80, 60) else { return -1 }
+                let ctx = bitmap(img.width, img.height); ctx.draw(img, in: CGRect(x: 0, y: 0, width: img.width, height: img.height))
+                var n = 0
+                for y in 0..<img.height { for x in 0..<img.width { let p = pixel(ctx, x, y); if p[0] < 200 || p[2] < 200 { n += 1 } } }
+                return n
+            }
+            let aligned = ValueAlignedChartScrollTargetBehavior(unit: 1.0, majorAlignment: MajorValueAlignment<Double>.unit(5), limitBehavior: ValueAlignedLimitBehavior.always)
+            _ = aligned
+            let d = "value \(P28Cat.b.primitivePlottable) primitive \(p28Primitive("s")) bin \(bin.lowerBound)..<\(bin.upperBound) contains 30 \(bin.contains(30)); vectorized \(names); drawn \(px) px; \(type(of: cond)) \(type(of: wrapped))"
+            try expect(P28Cat(primitivePlottable: "c") == .c && bin.lowerBound == 25 && bin.upperBound == 50 && bin.contains(30) && !bin.contains(60), d)
+            try expect(names == ["BarPlot", "LinePlot", "PointPlot", "AreaPlot", "RectanglePlot", "RulePlot", "SectorPlot"] && px > 300, d)
+            _ = pv; _ = line; _ = point; _ = rule; _ = sector
+            return d
+        })
+        #endif
+
+        // MARK: SwiftUI scenes / commands / previews as values: an app's scene builder (window group + commands +
+        // background task + document groups), a UIKit-hosted SwiftUI scene delegate, preview providers and modifiers
+        #if os(iOS) || os(visionOS)
+        c.append(check("SwiftUI", "p28-scenes-commands-previews", timeout: 20) {
+            let scenes = await onMain { String(describing: type(of: p28Scenes())) }
+            let hosted = await onMain { String(describing: type(of: P28SceneDelegate.rootScene)) }
+            let req = await onMain { UISceneSessionActivationRequest(hostingDelegateClass: P28SceneDelegate.self, id: "p28-hosted") }
+            let prev = await onMain { () -> String in
+                let img = p28Render(P28Previews.previews, 80, 30)
+                return "rendered \(img != nil) platform \(P28Previews.platform == .iOS)"
+            }
+            let shared = try await P28PreviewMod.makeSharedContext()
+            let ctx = P28PreviewContext()[P28PreviewKey.self]
+            let d = "scenes \(scenes.contains("WindowGroup")) \(scenes.components(separatedBy: "DocumentGroup").count - 1) document groups; hosted \(hosted.hasPrefix("WindowGroup")); request role \(req.map { $0.role.rawValue } ?? "nil"); previews \(prev); shared context \(shared); preview context \(ctx)"
+            try expect(scenes.contains("WindowGroup") && scenes.components(separatedBy: "DocumentGroup").count == 3 && hosted.hasPrefix("WindowGroup") && shared == 28 && ctx == "p28 default" && prev.hasPrefix("rendered true"), d)
+            _ = [InterfaceOrientation.portrait, .landscapeLeft]; _ = WindowManagerRole.automatic; _ = WindowToolbarFullScreenVisibility.automatic
+            _ = [DialogSeverity.critical, .automatic]; _ = [DismissBehavior.interactive, .destructive]; _ = DocumentCreationSource.self
+            return d
+        })
+        #endif
+
+        // MARK: SwiftUI accessibility: rotors from custom rotor content and the builder, system rotors, labeled pairs,
+        // a chart descriptor, zoom / direct touch / categorized actions, focus for one technology (as UIKit exposes
+        // them with no assistive technology running)
+        c.append(check("SwiftUI", "p28-accessibility-rotors", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28AXRoot(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(3) { log.all.contains { $0.hasPrefix("ax appear") } }
+            try await Task.sleep(for: .milliseconds(500))
+            #if os(iOS) || os(visionOS)
+            let rotors = await onMain { () -> String in
+                guard let w = p6LastWindow else { return "no window" }
+                var names: [String] = []
+                func walk(_ v: UIView) { names += (v.accessibilityCustomRotors ?? []).map(\.name); v.subviews.forEach(walk) }
+                walk(w)
+                return "rotors \(names)"
+            }
+            #else
+            let rotors = "rotors n/a"
+            #endif
+            let d = "\(log.all); \(rotors)"
+            try expect(log.has("ax appear vo false"), d)
+            return d
+        })
+
+        // MARK: SwiftUI + SwiftUICore values and small views: slider ticks, context menus, search unavailable content,
+        // share previews, scene padding, writing tools as UITextView sees them, attributed text selection, text input
+        // border shapes, an ArrangementViewStyle, badges / list tints / section spacing, reorder differences, key /
+        // hover / pencil / spatial event handlers, rename actions, pencil preferences; 27.1 geometry (reserved regions,
+        // content margin guides, hinge)
+        #if os(iOS) || os(visionOS)
+        c.append(check("SwiftUI", "p28-values-small-views", timeout: 25) {
+            let log = P6Log()
+            let close = try await onMain { () -> () -> Void in
+                if #available(iOS 27.1, visionOS 27.1, *) {
+                    return try p6HostSwiftUI(VStack { P28ValuesRoot(log: log); P28GeometryNew(log: log).frame(height: 20) })
+                }
+                return try p6HostSwiftUI(P28ValuesRoot(log: log))
+            }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(5) { p28Last(log, "arrangement") != nil && log.all.contains { $0.hasPrefix("rename") } }
+            try await Task.sleep(for: .milliseconds(500))
+            let ui = await onMain { () -> String in
+                guard let w = p6LastWindow else { return "no window" }
+                let tv = p6Find(w, UITextView.self)
+                var ints: [String] = []
+                func walk(_ v: UIView) { ints += v.interactions.map { String(describing: type(of: $0)) }; v.subviews.forEach(walk) }
+                walk(w)
+                return "writing tools \(tv.map { $0.writingToolsBehavior.rawValue }) context menus \(ints.filter { $0 == "UIContextMenuInteraction" }.count)"
+            }
+            let keys = ["slider-ticks", "unavailable", "share", "scene-padding", "arrangement"]
+            let d = keys.map { "\($0) \(p28Last(log, $0) ?? "-")" }.joined(separator: ", ") + "; \(ui); \(log.all.filter { !keys.contains(String($0.split(separator: " ").first ?? "")) })"
+            try expect(p28Last(log, "arrangement") == "30x10" && log.has("renamed") && log.has("rename set"), d)
+            // the disabled editor's UITextView: UIWritingToolsBehavior.none (-1); the other: default (0)
+            try expect(ui.contains("writing tools [-1, 0]") && !ui.contains("context menus 0"), d)
+            // (a ReorderDifference has no public initializer: only a drag in the reorder container makes one)
+            let pos: ReorderDifference<Int, ReorderableSingleCollectionIdentifier>.Destination.Position = .before(1)
+            try expect(pos != .end, "reorder position")
+            // attributed text selection over a string's indices
+            let s = AttributedString("hello")
+            let selr = AttributedTextSelection(range: s.startIndex..<s.index(s.startIndex, offsetByCharacters: 2))
+            try expect(selr != AttributedTextSelection() && AttributedTextSelection(insertionPoint: s.startIndex) != selr, "selection")
+            // geometry types
+            let corners = p28Rounded(RoundedRectangle(cornerRadius: 6), CGSize(width: 40, height: 20))
+            let ins = EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10).inset(by: RectangleCornerInsets(topLeading: CGSize(width: 2, height: 3), topTrailing: .zero, bottomLeading: .zero, bottomTrailing: .zero))
+            let border = TextInputBorderShape.capsule.path(in: CGRect(x: 0, y: 0, width: 40, height: 20)).boundingRect
+            let tuple = TupleContent(Text("a"), Text("b"))
+            let dyn = p28Dynamic(ForEach([1, 2, 3], id: \.self) { Text("\($0)") })
+            return d + "; corners fixed 6 \(corners == RoundedRectangularShapeCorners.fixed(6)); insets \(ins.top),\(ins.leading); border \(p28R(border)); tuple \(type(of: tuple.content.0)); dynamic \(dyn); coord \(p28CoordName(.local)) \(CoordinateSpace.global == .global); effect \(p28VisualEffect(EmptyVisualEffect().offset(x: 3))); nav \(p28NavTransition(.automatic)); tick \(type(of: p28Tick(SliderTick(0.5))))"
+        })
+        #endif
+
+        // MARK: SwiftUICore ForEach over sections and subviews of another view
+        c.append(check("SwiftUICore", "p28-foreach-sections-subviews", timeout: 20) {
+            let log = P6Log()
+            let src = Group { Section("S1") { Text("a"); Text("b") }; Section("S2") { Text("c") } }
+            let v = VStack {
+                ForEach(sections: src) { (sec: SectionConfiguration) in Text("sec \(sec.content.count)").onAppear { log.add("section \(sec.content.count)") } }
+                ForEach(subviews: Group { Text("x"); Text("y"); Text("z") }) { (sub: Subview) in sub.onAppear { log.add("subview") } }
+            }
+            let close = try await onMain { try p6HostSwiftUI(v) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(3) { log.all.filter { $0 == "subview" }.count == 3 }
+            let d = "\(log.all.sorted())"
+            try expect(log.all.filter { $0 == "subview" }.count == 3 && log.has("section 2") && log.has("section 1"), d)
+            let fs: ForEach<ForEachSectionCollection<Text>, SectionConfiguration.ID, Text> = ForEach(sections: src) { _ in Text("s") }
+            let fv: ForEach<ForEachSubviewCollection<Text>, Subview.ID, Text> = ForEach(subviews: src) { _ in Text("s") }
+            _ = fs; _ = fv
+            return d
+        })
+
+        #if os(iOS) || os(visionOS)
+        // MARK: SwiftUI app delegate adaptor: made outside an App it holds no delegate (Apple: constructing it is fine)
+        c.append(check("SwiftUI", "p28-delegate-adaptor") {
+            let a = await onMain { UIApplicationDelegateAdaptor(P28AppDelegate.self) }
+            return "\(type(of: a))"
+        })
+        #endif
+
+        #if canImport(Charts) && (os(iOS) || os(visionOS))
+        // MARK: Charts 3D: a surface plot (custom Chart3DContent) and points from the builder laid out on screen with a
+        // pose and camera projection
+        c.append(check("Charts", "p28-chart3d-surface", timeout: 25) {
+            let log = P6Log()
+            let v = Chart3D { P28Surface(); p28Points3D(true) }
+                .chart3DPose(Chart3DPose(azimuth: .degrees(30), inclination: .degrees(20)))
+                .chart3DCameraProjection(Chart3DCameraProjection.orthographic)
+                .frame(width: 200, height: 200).p28Size("chart3d", log)
+            let close = try await onMain { try p6HostSwiftUI(v) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(5) { p28Last(log, "chart3d") != nil }
+            try await Task.sleep(for: .milliseconds(800))
+            let d = "chart3d \(p28Last(log, "chart3d") ?? "-"); \(p28Sym3D(BasicChart3DSymbolShape.sphere)) \(p28Surf3D(BasicChart3DSurfaceStyle.normalBased)); poses front != top \(Chart3DPose.front != Chart3DPose.top)"
+            try expect(p28Last(log, "chart3d") == "200x200" && Chart3DPose.front != Chart3DPose.top && Chart3DCameraProjection.perspective != .orthographic, d)
+            return d
         })
         #endif
 
