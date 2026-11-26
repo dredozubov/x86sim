@@ -17,8 +17,11 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 use x86sim_core::{instance::Instance, ring::Ring};
 
-/// degrees a second the shown hinge moves towards the commanded angle (simhid moves it over 600 ms)
+/// at most this many degrees a second the shown hinge moves towards the commanded angle (simhid moves it over 600 ms)
 const SPEED: f64 = 300.0;
+/// how fast the shown hinge closes on its target (per second): an eased follow, so a slider that sends a step every
+/// 40 ms draws one smooth sweep instead of a dash and a stop per step
+const HINGE_RATE: f64 = 14.0;
 /// how fast the camera and the framing settle on where they should be (per second): both follow the hinge with
 /// the same lag, so a hinge moved a degree at a time reads as one smooth move instead of a twitch per step
 const SETTLE: f32 = 7.0;
@@ -206,8 +209,10 @@ impl Duo3d {
     /// Returns whether it is bent: not closed, not flat.
     pub fn update(&mut self, inst: &Instance, now: f64, ctx: &egui::Context) -> bool {
         let file = pose_override().map(|p| p.0).unwrap_or_else(|| inst.hinge().unwrap_or(0.0));
+        // the panel's angle while it moves the hinge and until simhid's file has caught up with it (the file is
+        // whole degrees and is written as a move ends: switching to it early drew the hinge back, then on again)
         let target = match self.commanded {
-            Some((v, t)) if now - t < 1.0 => v,
+            Some((v, t)) if now - t < 1.0 || ((file - v).abs() > 1.5 && now - t < 3.0) => v,
             _ => file,
         };
         let dt = if self.last_t.is_nan() { 0.0 } else { (now - self.last_t).clamp(0.0, 0.1) };
@@ -216,8 +221,8 @@ impl Duo3d {
         }
         self.last_t = now;
         let d = target - self.shown;
-        let step = SPEED * dt;
-        self.shown = if d.abs() <= step { target } else { self.shown + step * d.signum() };
+        let step = (d * (1.0 - (-dt * HINGE_RATE).exp())).clamp(-SPEED * dt, SPEED * dt);
+        self.shown = if d.abs() < 0.05 { target } else { self.shown + step };
         if self.shown != target {
             ctx.request_repaint();
         }

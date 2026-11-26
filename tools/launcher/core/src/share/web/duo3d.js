@@ -15,7 +15,9 @@
   const BEZEL = 46, THICK = 105, CORNER = 200, FILLET = 13, HINGE_CORNER = 0.5;
   const HALF_W = INNER[0] / 2 + BEZEL, HALF_H = OUTER[1] + 2 * BEZEL;
   const ALU = 0, BACK = 1, FRONT = 2, INNER_SCREEN = 3, OUTER_SCREEN = 4, HINGE = 5, DARK = 6;
-  const SPEED = 300, SETTLE = 7;
+  // SPEED: at most this many degrees a second; HINGE_RATE: how fast the drawn hinge closes on its target (an eased
+  // follow, so a slider's step every 40 ms draws one smooth sweep, not a dash and a stop per step)
+  const SPEED = 300, SETTLE = 7, HINGE_RATE = 14;
   const rad = (d) => d * Math.PI / 180;
   const v3 = (x, y, z) => [x, y, z];
   const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -404,14 +406,17 @@ void main() {
 
     // moves the drawn hinge and the camera on; true while either still moves
     function step(now) {
-      const target = commanded && now - commanded[1] < 1 ? commanded[0] : hinge;
+      // the page's angle while it moves the hinge and until simhid's has caught up with it (whole degrees, written as
+      // a move ends: switching to it early drew the hinge back, then on again)
+      const target = commanded && (now - commanded[1] < 1 || (Math.abs(hinge - commanded[0]) > 1.5 && now - commanded[1] < 3)) ? commanded[0] : hinge;
       const dt = isNaN(lastT) ? 0 : Math.min(0.1, Math.max(0, now - lastT));
       if (isNaN(lastT)) shown = target;
       lastT = now;
-      const d = target - shown, st = SPEED * dt;
-      shown = Math.abs(d) <= st ? target : shown + st * Math.sign(d);
+      const d = target - shown, cap = SPEED * dt;
+      const st = Math.max(-cap, Math.min(cap, d * (1 - Math.exp(-dt * HINGE_RATE))));
+      shown = Math.abs(d) < 0.05 ? target : shown + st;
       // the panel's angle gives way to simhid's a second after it was sent: drawn on until then
-      let moving = shown !== target || (commanded && now - commanded[1] < 1.2);
+      let moving = shown !== target || (commanded && now - commanded[1] < 3);
       const phi = rad(180 - shown);
       // the orientation: a pose's from here at once, else simhid's. A new one turns the phone over from where it is
       // drawn and drops a view turned or zoomed by hand (it was relative to how the phone was held).
