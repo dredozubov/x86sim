@@ -57,7 +57,7 @@ pub struct Extras {
 }
 
 /// An XDG user folder (Videos, Downloads), else ~/<fallback>
-fn user_dir(kind: &str, fallback: &str) -> PathBuf {
+pub(crate) fn user_dir(kind: &str, fallback: &str) -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     std::process::Command::new("xdg-user-dir")
         .arg(kind)
@@ -69,7 +69,7 @@ fn user_dir(kind: &str, fallback: &str) -> PathBuf {
         .unwrap_or_else(|| home.join(fallback))
 }
 
-fn stamp() -> String {
+pub(crate) fn stamp() -> String {
     std::process::Command::new("date").arg("+%Y-%m-%d at %H.%M.%S").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 

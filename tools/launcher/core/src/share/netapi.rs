@@ -4,6 +4,7 @@
 //!   GET  log?after=<ts>&filter=&app=   requests and connections (newest 500), `apps` (bundle ids seen), `captures`,
 //!                                      `mocks`; after: only entries newer than that time
 //!   GET  request?id=<id>               one request, everything
+//!   GET  apps                          the device's apps, from its files (installed first, then Apple's)
 //!   POST capture {app, on, relaunch}   capture on / off for an app
 //!   POST clear {app?}                  empty the log
 //!   POST mock {url, method, status, body, fail, latency_ms} | {clear: true} | {remove: id}
@@ -38,6 +39,7 @@ pub fn handle(req: &Req, inst: &Instance, what: &str, control: bool) -> (u16, Va
             let skip = v.len().saturating_sub(500);
             Ok(json!({"entries": &v[skip..], "apps": apps, "captures": net::captures(inst), "mocks": net::mocks(inst).iter().map(net::mock_line).collect::<Vec<_>>()}))
         }
+        ("GET", "apps") => Ok(json!({"apps": crate::apps::on_disk(inst)})),
         ("GET", "request") => net::request(inst, &q("id")).map(|e| e.full()),
         ("POST", "capture") => {
             let app = body["app"].as_str().unwrap_or("");

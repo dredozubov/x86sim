@@ -88,6 +88,52 @@ pub fn launch_env(inst: &Instance, bundle_id: &str, args: &[String], env: &[(Str
     helper(inst, &a)
 }
 
+/// An app a device has, read from its files (no running phone needed)
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AppEntry {
+    pub bundle_id: String,
+    pub name: String,
+    /// installed by the user (else one of Apple's in the runtime)
+    pub user: bool,
+}
+
+/// The device's apps from disk: what was installed (data/Containers/Bundle/Application) first, then Apple's visible
+/// apps in the runtime (RuntimeRoot/Applications: the ones with an icon, not hidden, launchable, no wallpapers), each
+/// list by name
+pub fn on_disk(inst: &Instance) -> Vec<AppEntry> {
+    let mut plists = vec![];
+    let user_root = inst.dir.join("data/Containers/Bundle/Application");
+    for c in std::fs::read_dir(&user_root).into_iter().flatten().flatten() {
+        for a in std::fs::read_dir(c.path()).into_iter().flatten().flatten() {
+            if a.path().extension().is_some_and(|e| e == "app") {
+                plists.push(("u", a.path().join("Info.plist")));
+            }
+        }
+    }
+    for a in std::fs::read_dir(inst.runtime_root.join("Applications")).into_iter().flatten().flatten() {
+        if a.path().extension().is_some_and(|e| e == "app") {
+            plists.push(("s", a.path().join("Info.plist")));
+        }
+    }
+    if plists.is_empty() {
+        return vec![];
+    }
+    const PY: &str = "import plistlib,sys\nfor a in sys.argv[1:]:\n  k,p=a.split(':',1)\n  try: d=plistlib.load(open(p,'rb'))\n  except Exception: continue\n  if k=='s' and ('hidden' in (d.get('SBAppTags') or []) or d.get('LSApplicationLaunchProhibited') or not (d.get('CFBundleIcons') or d.get('CFBundleIconFiles') or d.get('CFBundleIconName')) or 'Poster' in str(d.get('CFBundleIdentifier'))): continue\n  b=d.get('CFBundleIdentifier')\n  if b: print(k+'\\t'+b+'\\t'+str(d.get('CFBundleDisplayName') or d.get('CFBundleName') or b))";
+    let out = std::process::Command::new("python3").args(["-I", "-c", PY]).args(plists.iter().map(|(k, p)| format!("{k}:{}", p.display()))).output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let mut v: Vec<AppEntry> = text
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(3, '\t');
+            let (k, b, n) = (it.next()?, it.next()?, it.next()?);
+            Some(AppEntry { bundle_id: b.to_string(), name: n.to_string(), user: k == "u" })
+        })
+        .collect();
+    v.sort_by(|a, b| b.user.cmp(&a.user).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    v.dedup_by(|a, b| a.bundle_id == b.bundle_id);
+    v
+}
+
 /// Installed apps (simctl listapps): the helper's JSON answer
 pub fn list(inst: &Instance) -> Result<String> {
     helper(inst, &["listapps"])
