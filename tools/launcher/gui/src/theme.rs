@@ -62,6 +62,7 @@ pub struct Palette {
     pub focus_fill: Color32,   // the keyboard cursor's row
     pub focus_border: Color32,
     pub radius: u8,            // Hyprland's window rounding
+    pub border_w: f32,         // control borders ([controls] normal-border-width)
     pub omarchy: bool,         // following a live Omarchy theme (else the built-in default)
     pub light: bool,
 }
@@ -159,6 +160,7 @@ impl Palette {
             p.hilite_fill = c;
         }
         p.selection = alpha(selection, t.shell_f32("controls", "selection-fill-alpha", 0.85).max(0.35));
+        p.border_w = t.shell_width("controls", "normal-border-width", 1.0).clamp(0.0, 4.0);
         p
     }
 
@@ -221,6 +223,7 @@ impl Palette {
             focus_fill: alpha(a.focus_color.unwrap_or(control), a.focus),
             focus_border: alpha(accent_ink, 0.8),
             radius,
+            border_w: 1.0,
             omarchy,
             light,
         }
@@ -347,6 +350,8 @@ pub fn dialog_title(t: impl Into<String>) -> RichText {
 
 // ---------------------------------------------------------------- applying the theme
 
+/// The `[font] base-size` the window's zoom was last set for.
+static FONT_BASE: Mutex<f32> = Mutex::new(12.0);
 static FONT_PATHS: Mutex<Option<(std::path::PathBuf, Option<std::path::PathBuf>)>> = Mutex::new(None);
 
 /// What Settings > Appearance picked.
@@ -431,6 +436,15 @@ pub fn apply(ctx: &egui::Context) {
     }
     p.omarchy = theme.is_some();
     *PALETTE.write().unwrap() = Some(p);
+    // Omarchy's type size ([font] base-size): the launcher is drawn for 12, so another size scales the whole window
+    // (as Omarchy's scale-with-font does its spacing), on top of any Ctrl +/- zoom
+    let base = theme.as_ref().map_or(12.0, |t| t.font_base());
+    let mut last = FONT_BASE.lock().unwrap();
+    if (base - *last).abs() > 0.01 {
+        ctx.set_zoom_factor(ctx.zoom_factor() * base / *last);
+        *last = base;
+    }
+    drop(last);
     // Omarchy's apps use the system monospace font; without Omarchy the bundled Inter (fonts are reloaded only
     // when the file changed: the theme changes more often)
     let want = theme.as_ref().and_then(|_| omarchy::mono_font());
@@ -558,19 +572,19 @@ fn style(ctx: &egui::Context, p: &Palette) {
         v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.ink_2);
         v.widgets.inactive.bg_fill = p.raised;
         v.widgets.inactive.weak_bg_fill = p.raised;
-        v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, p.border_strong);
+        v.widgets.inactive.bg_stroke = Stroke::new(p.border_w, p.border_strong);
         v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.ink);
         v.widgets.hovered.bg_fill = p.hover;
         v.widgets.hovered.weak_bg_fill = p.hover;
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, alpha(p.accent_ink, 0.7));
+        v.widgets.hovered.bg_stroke = Stroke::new(p.border_w, alpha(p.accent_ink, 0.7));
         v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, p.ink);
         v.widgets.active.bg_fill = p.pressed;
         v.widgets.active.weak_bg_fill = p.pressed;
-        v.widgets.active.bg_stroke = Stroke::new(1.0_f32, p.accent);
+        v.widgets.active.bg_stroke = Stroke::new(p.border_w, p.accent);
         v.widgets.active.fg_stroke = Stroke::new(1.0_f32, p.ink);
         v.widgets.open.bg_fill = p.selected;
         v.widgets.open.weak_bg_fill = p.selected;
-        v.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.border_strong);
+        v.widgets.open.bg_stroke = Stroke::new(p.border_w, p.border_strong);
         v.widgets.open.fg_stroke = Stroke::new(1.0_f32, p.ink);
     });
 }
@@ -890,21 +904,16 @@ pub fn list_card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> 
         .inner
 }
 
-/// Page title row: title + optional subtitle on the left, actions on the right.
-pub fn page_header(ui: &mut egui::Ui, title: &str, sub_text: &str, actions: impl FnOnce(&mut egui::Ui)) {
-    // the text keeps clear of the actions (their width as last drawn): unbounded, a long subtitle ran under the
-    // button at narrow widths ("Check for updates" on Versions)
+/// Page title row: title on the left, actions on the right.
+pub fn page_header(ui: &mut egui::Ui, title: &str, actions: impl FnOnce(&mut egui::Ui)) {
+    // the title keeps clear of the actions (their width as last drawn)
     let aw_id = ui.id().with(("page-header-actions", title));
     let aw: f32 = ui.data(|d| d.get_temp(aw_id)).unwrap_or(0.0);
     ui.horizontal(|ui| {
         let tw = (ui.available_width() - aw - S4).max(160.0);
         ui.vertical(|ui| {
             ui.set_max_width(tw);
-            ui.spacing_mut().item_spacing.y = 2.0;
             ui.add(egui::Label::new(h1(title)).truncate());
-            if !sub_text.is_empty() {
-                ui.add(egui::Label::new(sub(sub_text)).wrap());
-            }
         });
         let w = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1012,25 +1021,22 @@ pub fn kv_text(ui: &mut egui::Ui, label_w: f32, label: &str, value: impl Into<St
     });
 }
 
-/// Settings-style row: title + description on the left, control on the right, hairline below unless last. A row of
-/// the keyboard cursor: Enter goes to its first control.
-pub fn form_row(ui: &mut egui::Ui, label: &str, desc: &str, last: bool, control: impl FnOnce(&mut egui::Ui)) {
+/// Settings-style row: label on the left (`tip`: more about it on hover), control on the right, hairline below unless
+/// last. A row of the keyboard cursor: Enter goes to its first control.
+pub fn form_row(ui: &mut egui::Ui, label: &str, tip: &str, last: bool, control: impl FnOnce(&mut egui::Ui)) {
     let row = nav::row(ui.id().with(("form-row", label)));
     let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        // the description wraps to what the control leaves (its width as last drawn): unbounded, a long one ran under
-        // the control ("How much" on Pre-translate)
+        // the label keeps to what the control leaves (its width as last drawn)
         let cw_id = ui.id().with(("form-row-control", label));
         let cw: f32 = ui.data(|d| d.get_temp(cw_id)).unwrap_or(160.0);
         ui.horizontal(|ui| {
             ui.set_min_height(H_MD);
             let tw = (ui.available_width() - cw - S4).max(140.0);
-            ui.vertical(|ui| {
-                ui.set_max_width(tw);
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(strong(label));
-                if !desc.is_empty() {
-                    ui.add(egui::Label::new(muted(desc)).wrap());
+            ui.allocate_ui_with_layout(egui::vec2(tw, H_MD), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let l = ui.add(egui::Label::new(strong(label)).truncate());
+                if !tip.is_empty() {
+                    l.on_hover_text(tip);
                 }
             });
             let w = ui

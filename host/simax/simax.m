@@ -21,6 +21,8 @@
 //                                views VoiceOver cannot reach), for the audit (host: core/src/axaudit.rs)
 //   action oid name [dir|custom] perform an accessibility action: activate, increment, decrement, scroll, escape,
 //                                magic_tap, custom (by name)
+// The tree's `pixels` (views drawing their own pixels: Metal, OpenGL, SpriteKit, SceneKit) come from simax_pixels.m.
+//   focus / control / setvalue   simax_actions.m
 #include <TargetConditionals.h>
 #if TARGET_OS_WATCH
 // watchOS's headers mark UIKit unavailable (apps use SwiftUI / WatchKit), but UIKitCore runs every watch app
@@ -58,6 +60,21 @@ static void alog(const char* fmt, ...) {
 	va_end(ap);
 	fprintf(stderr, "simax[%d]: %s\n", getpid(), b);
 }
+
+// the engine readers (simax_engines.m, simax_unity.m)
+void simax_log(const char* fmt, ...) {
+	if (!getenv("X86SIM_AX_LOG")) return;
+	va_list ap;
+	va_start(ap, fmt);
+	char b[1024];
+	vsnprintf(b, sizeof(b), fmt, ap);
+	va_end(ap);
+	fprintf(stderr, "simax[%d]: %s\n", getpid(), b);
+}
+void simax_engines_screen_reader(void);
+int simax_engine_view(UIView* v);
+NSArray* simax_engine_elements(UIView* v);
+NSDictionary* simax_unity_type(NSDictionary* req);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Accessibility bundles. Without them UIKit answers only for its own controls: SpringBoard's icons, SwiftUI views and
@@ -164,7 +181,11 @@ typedef struct {
 	NSMutableSet* covered;
 	NSMutableSet* holds;
 	NSMutableDictionary* nth;    // per cell key + role: how many elements of that role the cell gave so far
+	NSMutableArray* pixels;      // views that draw their own pixels (simax_pixels.m): the host reads them with OCR
 } Walk;
+
+NSString* simax_pixel_kind(UIView* v);
+void simax_pixels_note(NSMutableArray* out, UIView* v, CGRect f, int win, CGRect screen);
 
 static void more_of(Walk* w, id e, uint64_t t, NSMutableDictionary* d);
 
@@ -311,12 +332,45 @@ static void emit(Walk* w, id e, int depth, NSString* container) {
 	[w->out addObject:d];
 }
 
+// What an engine reader found in a view (SpriteKit / SceneKit nodes, Unity), less the objects its own accessibility
+// already listed (from index n0 of the output on); its frames are in the view's points
+static void emit_engine(Walk* w, UIView* v, NSUInteger n0, int depth, NSString* container) {
+	NSMutableSet* had = [NSMutableSet set];
+	for (NSUInteger i = n0; i < w->out.count; i++) [had addObject:w->out[i][@"oid"] ?: @""];
+	for (NSDictionary* e in simax_engine_elements(v)) {
+		if ([had containsObject:e[@"oid"]]) continue;
+		CGRect f = place(w, to_screen(v, [e[@"rect"] CGRectValue]));
+		BOOL on = CGRectIntersectsRect(f, w->clip);
+		if (!on && !w->all) continue;
+		NSMutableDictionary* d = [e mutableCopy];
+		[d removeObjectForKey:@"rect"];
+		d[@"frame"] = @[ @(round(f.origin.x * 10) / 10), @(round(f.origin.y * 10) / 10), @(round(f.size.width * 10) / 10), @(round(f.size.height * 10) / 10) ];
+		if (!on) d[@"offscreen"] = @YES;
+		d[@"win"] = @(w->win);
+		d[@"depth"] = @(depth + 1);
+		if (container) d[@"in"] = container;
+		[w->out addObject:d];
+	}
+}
+
+static void walk_in(Walk* w, id o, int depth, NSString* container);
 static void walk(Walk* w, id o, int depth, NSString* container) {
+	// a game view: SpriteKit / SceneKit add their named nodes (SpriteKit lists label nodes' text by itself); Unity's
+	// reader runs when the view gave no elements of its own (no accessibility plugin)
+	NSUInteger n0 = w->out.count;
+	int eng = [o isKindOfClass:[UIView class]] && !view_hidden(o) && ![w->seen containsObject:[NSValue valueWithPointer:(__bridge void*)o]] ? simax_engine_view(o) : 0;
+	walk_in(w, o, depth, container);
+	if (eng == 1 || (eng == 2 && w->out.count == n0)) emit_engine(w, o, n0, depth, container);
+}
+
+static void walk_in(Walk* w, id o, int depth, NSString* container) {
 	if (!o || depth > 80 || --w->budget < 0) return;
 	if ([w->seen containsObject:[NSValue valueWithPointer:(__bridge void*)o]]) return;
 	[w->seen addObject:[NSValue valueWithPointer:(__bridge void*)o]];
 	if ([o isKindOfClass:[UIView class]]) {
 		UIView* v = o;
+		// a view drawing its own pixels counts even when it hides its (missing) accessibility from VoiceOver
+		if (w->pixels && !v.hidden && v.alpha >= 0.01) simax_pixels_note(w->pixels, v, place(w, to_screen(v, v.bounds)), w->win, w->clip);
 		if (view_hidden(v)) return;
 #if SIMAX_WEB
 		if ([v isKindOfClass:[WKWebView class]]) {
@@ -405,7 +459,8 @@ static NSString* const kDomWalker = @
 	"    if (ty === 'radio') return 'radio'; if (ty === 'range') return 'adjustable'; if (ty === 'hidden') return null;"
 	"    return ty === 'search' ? 'searchfield' : 'textfield'; }"
 	"  if (t === 'textarea' || el.isContentEditable) return 'textfield'; if (t === 'select') return 'popup';"
-	"  if (/^h[1-6]$/.test(t)) return 'heading'; if (t === 'img') return el.alt ? 'image' : null; return null; };"
+	"  if (/^h[1-6]$/.test(t)) return 'heading'; if (t === 'img') return el.alt ? 'image' : null;"
+	"  if (t === 'canvas') return 'canvas'; return null; };"
 	"const shown = el => { const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && +s.opacity > 0.01; };"
 	"const visible = (el, r) => { if (r.width < 1 || r.height < 1) return false;"
 	"  if (!all && (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw)) return false; return shown(el); };"
@@ -1202,6 +1257,7 @@ static void tree(NSDictionary* req, void (^reply)(NSDictionary*)) {
 		return;
 	}
 	if (![req[@"noax"] boolValue] && load_ax()) d[@"ax_fresh"] = @YES;
+	if (![req[@"noax"] boolValue]) simax_engines_screen_reader();
 	if (!UIApplication.sharedApplication) {
 		reply(d);
 		return;
@@ -1215,6 +1271,7 @@ static void tree(NSDictionary* req, void (^reply)(NSDictionary*)) {
 	w.all = [req[@"all"] boolValue];
 	w.focus = first_responder();
 	w.budget = 20000;
+	w.pixels = [NSMutableArray array];
 	if ([req[@"full"] boolValue]) {
 		w.full = YES;
 		w.path = [NSMutableArray array];
@@ -1235,6 +1292,7 @@ static void tree(NSDictionary* req, void (^reply)(NSDictionary*)) {
 		walk(&w, wins[i], 0, nil);
 	}
 	if (w.focus) d[@"focus"] = hex(w.focus);
+	if (w.pixels.count) d[@"pixels"] = w.pixels;
 	if (w.focus_item) {
 		CGRect ff = w.focus_frame;
 		NSMutableDictionary* fd = [NSMutableDictionary dictionaryWithDictionary:@{ @"oid": hex(w.focus_item), @"class": NSStringFromClass([w.focus_item class]) }];
@@ -1306,7 +1364,16 @@ static id find_oid(NSString* oid) {
 	return nil;
 }
 
+// for simax_actions.m
+id simax_find_oid(NSString* oid) { return find_oid(oid); }
+UIResponder* simax_first_responder(void) { return first_responder(); }
+NSString* simax_hex(id o) { return hex(o); }
+BOOL simax_actions_handle(NSString* op, NSDictionary* req, void (^reply)(NSDictionary*));
+
 static NSDictionary* type_text(NSDictionary* req) {
+	// a Unity input field with the focus: through the component (insertText: does not reach it)
+	NSDictionary* u = simax_unity_type(req);
+	if (u) return u;
 	UIResponder* r = first_responder();
 	if (!r || ![r conformsToProtocol:@protocol(UIKeyInput)]) return @{ @"error": @"no focused text field (tap one first)" };
 	id<UIKeyInput> k = (id<UIKeyInput>)r;
@@ -1324,7 +1391,7 @@ static NSDictionary* type_text(NSDictionary* req) {
 	NSString* t = req[@"text"] ?: @"";
 	if (t.length) [k insertText:t];
 	if ([req[@"submit"] boolValue]) [k insertText:@"\n"];
-	NSMutableDictionary* d = [NSMutableDictionary dictionaryWithDictionary:@{ @"typed": @(t.length), @"field": NSStringFromClass([r class]) }];
+	NSMutableDictionary* d = [NSMutableDictionary dictionaryWithDictionary:@{ @"typed": @(t.length), @"field": NSStringFromClass([r class]), @"oid": hex(r) }];
 	if (is(r, @"UITextField") && [r valueForKey:@"text"]) d[@"value"] = [r valueForKey:@"text"];
 	return d;
 }
@@ -1614,6 +1681,7 @@ static void handle(NSDictionary* req, void (^reply)(NSDictionary*)) {
 	if ([op isEqualToString:@"ax"]) { load_ax(); reply(@{ @"ax": @YES }); return; }
 	if ([op isEqualToString:@"type"]) { reply(type_text(req)); return; }
 	if ([op isEqualToString:@"action"]) { reply(perform_action(req)); return; }
+	if (simax_actions_handle(op, req, reply)) return;   // focus, control, setvalue (simax_actions.m)
 	if ([op isEqualToString:@"scrollby"]) {
 		// scroll the largest visible scroll view by a part of its height / width (visionOS: no touches reach a window
 		// from the host; the content moves as a scroll gesture would move it, without momentum)
@@ -1844,6 +1912,12 @@ __attribute__((constructor)) static void simax_init(void) {
 	int n = snprintf(g_path, sizeof(g_path), "%s/x86sim-ax-%s-%d.sock", dir, udid && *udid ? udid : "phone", getpid());
 	if (n <= 0 || n >= (int)sizeof(((struct sockaddr_un*)0)->sun_path)) return;
 	snprintf(g_fg, sizeof(g_fg), "%s/x86sim-ax-%s-%d.fg", dir, udid && *udid ? udid : "phone", getpid());
+	// loaded into an app that already runs (libsimshim loads it when UIKit comes after launch, as in a Unity app): its
+	// launch notification has gone, start now
+	if (NSClassFromString(@"UIApplication") && UIApplication.sharedApplication) {
+		dispatch_async(dispatch_get_main_queue(), ^{ start(); });
+		return;
+	}
 	// only an application listens: many daemons link UIKit (sharingd, mobileassetd, ...) and never launch one
 	static id obs;
 	obs = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil

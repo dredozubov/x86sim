@@ -3,12 +3,15 @@
 //! pre-translation (AOT) and settings. Logic lives in x86sim-core; the GUI repaints only when a frame or a status
 //! changes.
 /// Accessibility Inspector: overlay, properties, actions, audit
+mod account_ui;
 mod axinspect_ui;
 mod develop;
 mod devctl_ui;
 mod duo3d;
+mod extras;
 mod global;
 mod home;
+mod net_ui;
 mod omarchy;
 mod phone;
 mod pool;
@@ -119,6 +122,8 @@ pub struct App {
     pub log_filter: String,
     pub log_source: String,
     pub log_paused: bool,
+    /// the selected log lines: (anchor, end) by Line::seq, inclusive
+    pub log_sel: Option<(u64, u64)>,
     pub last_log_poll: Instant,
     pub settings: Option<(String, instance::BootSettings)>,
     pub aot: global::Aot,
@@ -134,6 +139,8 @@ pub struct App {
     pub rt_delete: rtdelete_ui::RtDeleteUi,
     /// phone page: Simulate section (devctl_ui.rs)
     pub devctl: devctl_ui::DevctlUi,
+    /// recording, CPU profile, Web Inspector, share links (extras.rs)
+    pub extras: extras::Extras,
     /// the GPU helper count (checked every few seconds, not per frame)
     pub gpu_helpers: usize,
     pub sizes: Arc<Mutex<HashMap<std::path::PathBuf, u64>>>,
@@ -142,6 +149,7 @@ pub struct App {
     pub last_slow: Instant,
     pub setup: setup::Setup,
     pub develop: develop::Develop,
+    pub account: account_ui::AccountUi,
     pub setup_checking: bool,
     pub ctx: egui::Context,
     /// the `?` overlay
@@ -219,7 +227,7 @@ impl App {
         });
         let aot = global::Aot::new(runtimes.iter().find(|r| r.present && r.restricted_to.is_empty()).map(|r| r.root.clone()));
         // start view / open sections, for scripted screenshots: X86SIM_LAUNCHER_VIEW=ios|aot|settings|add|phone:<id>,
-        // X86SIM_LAUNCHER_OPEN=features,logs,perf,adv (and hinge: a two-screen phone's hinge panel, phone.rs)
+        // X86SIM_LAUNCHER_OPEN=features,logs,perf,adv,net (and hinge: a two-screen phone's hinge panel, phone.rs)
         let view = match std::env::var("X86SIM_LAUNCHER_VIEW").unwrap_or_default().as_str() {
             "ios" => View::Ios,
             "aot" => View::Aot,
@@ -232,7 +240,7 @@ impl App {
         };
         let mut open = HashSet::new();
         for k in std::env::var("X86SIM_LAUNCHER_OPEN").unwrap_or_default().split(',') {
-            for key in ["features", "logs", "perf", "adv", "share", "sim", "ax"] {
+            for key in ["features", "logs", "perf", "adv", "share", "sim", "ax", "web", "net"] {
                 if k == key {
                     open.insert(key);
                 }
@@ -260,6 +268,7 @@ impl App {
             log_filter: String::new(),
             log_source: String::new(),
             log_paused: false,
+            log_sel: None,
             last_log_poll: Instant::now(),
             settings: None,
             aot,
@@ -271,6 +280,7 @@ impl App {
             confirm_discard: None,
             rt_delete: Default::default(),
             devctl: Default::default(),
+            extras: Default::default(),
             gpu_helpers: 0,
             sizes: Arc::new(Mutex::new(HashMap::new())),
             measuring: false,
@@ -278,6 +288,7 @@ impl App {
             last_slow: Instant::now() - Duration::from_secs(60),
             setup: setup::Setup::default(),
             develop: develop::Develop::default(),
+            account: account_ui::AccountUi::default(),
             setup_checking: false,
             ctx: cc.egui_ctx.clone(),
             help: false,
@@ -329,10 +340,12 @@ impl App {
         Some(v)
     }
 
-    /// Models 2: the 3D model of a two-screen phone, its hinge moved on to this frame; None for a one-screen phone
+    /// Models 2: the 3D model of a two-screen phone, its hinge moved on to this frame; None for a one-screen phone, or
+    /// while this machine has no model (Apple's, from the user's Xcode.xip: the phone is shown flat)
     pub fn duo(&mut self, id: &str, ctx: &egui::Context) -> Option<(&mut duo3d::Duo3d, instance::Instance)> {
         let inst = self.inst(id)?.clone();
         inst.inner.as_ref()?;
+        x86sim_core::devicemodel::duo()?;
         if !self.duo3d.contains_key(id) {
             self.duo3d.insert(id.to_string(), duo3d::Duo3d::new(&inst, ctx.clone())?);
         }
@@ -524,7 +537,7 @@ impl App {
                     self.view = View::Home;
                 }
                 // the inspector's folds
-                for (k, sec) in [(Key::F, "features"), (Key::L, "logs"), (Key::P, "perf"), (Key::A, "adv")] {
+                for (sec, k, _, _) in crate::phone::FOLD_KEYS {
                     if key(k) && !self.open.remove(sec) {
                         self.open.insert(sec);
                     }
@@ -584,19 +597,19 @@ impl App {
             what.push(format!("{n} device{} keep{} running", if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
         }
         if !self.fetching.is_empty() {
-            what.push("the download continues".to_string());
+            what.push("Download continues".to_string());
         }
         if self.aot.child.is_some() {
-            what.push("pre-translating continues".to_string());
+            what.push("Pre-translating continues".to_string());
         }
         if self.add.as_ref().is_some_and(|a| a.working) {
-            what.push("the device being set up is kept".to_string());
+            what.push("New device is kept".to_string());
         }
         let m = modal("quit").show(ctx, |ui| {
             ui.set_width(360.0);
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.label(dialog_title("Quit x86Sim?"));
-            ui.label(sub(format!("Without the window, {}.", what.join("; "))));
+            ui.label(sub(what.join(" · ")));
             ui.add_space(S4);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(Btn::primary("Quit").key("Enter").min_w(88.0)).clicked() {
@@ -618,7 +631,7 @@ impl App {
         }
         let page: &[(&str, &str)] = match &self.view {
             View::Home => &[("h / l  j / k", "move between devices"), ("Enter", "open the device"), ("s", "start / stop it"), ("r", "restart it"), ("o", "its screen in its own window"), ("F2", "rename it"), ("Delete", "remove it (when off)"), ("Esc", "drop the cursor")],
-            View::Phone(_) => &[("click the screen", "keys go to the device; click outside to get them back"), ("s", "start / stop"), ("r", "restart"), ("o", "its screen in its own window"), ("f  l  p  a", "features, logs, performance, advanced"), ("F2", "rename"), ("Delete", "remove (when off)"), ("F1 – F4", "the device's buttons (see the i tool)"), ("Esc", "back to all devices")],
+            View::Phone(_) => &[("click the screen", "keys go to the device; click outside to get them back"), ("s", "start / stop"), ("r", "restart"), ("o", "its screen in its own window"), ("F2", "rename"), ("Delete", "remove (when off)"), ("F1 – F4", "the device's buttons (see the i tool)"), ("Esc", "back to all devices")],
             View::Ios => &[("j / k", "move between versions"), ("Enter", "download, resume or pre-translate the version"), ("/", "search"), ("Esc", "drop the cursor")],
             View::Aot => &[("Enter", "start, update or finish (the cursor on the status)"), ("c", "cancel the run"), ("j / k", "move between options"), ("/", "search the parts")],
             View::Settings | View::Setup | View::Develop => &[("j / k", "move between rows"), ("Enter", "flip the switch, press the button, step the choice"), ("Esc", "drop the cursor")],
@@ -641,8 +654,23 @@ impl App {
                 }
                 ui.add_space(S3);
             };
-            group(ui, "everywhere", &[("1 – 5", "devices, versions, pre-translate, settings, setup"), ("n", "add a device"), ("?", "this list"), ("q", "quit"), ("Tab", "move between controls")]);
+            group(ui, "everywhere", &[("1 – 6", "devices, versions, pre-translate, settings, setup, develop"), ("n", "add a device"), ("?", "this list"), ("q", "quit"), ("Tab", "move between controls")]);
             group(ui, "this page", page);
+            // the device page's folds: three to a row (nine rows of their own made the list taller than the window)
+            if matches!(self.view, View::Phone(_)) {
+                ui.label(overline("folds (open / close)"));
+                ui.add_space(2.0);
+                egui::Grid::new("help-folds").num_columns(6).spacing(egui::vec2(S3, 4.0)).show(ui, |ui| {
+                    for (i, (_, _, k, what)) in crate::phone::FOLD_KEYS.iter().enumerate() {
+                        keys(ui, k, pal().hilite);
+                        ui.label(muted(*what));
+                        if i % 3 == 2 {
+                            ui.end_row();
+                        }
+                    }
+                });
+                ui.add_space(S3);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(Btn::secondary("Close").key("Esc")).clicked() {
                     self.help = false;
@@ -697,6 +725,7 @@ impl eframe::App for App {
         theme::poll(ctx);
         self.sync();
         self.devctl_poll();
+        self.extras_poll();
         self.cursor_device = None;
         self.shortcuts(ctx);
         // drag-and-drop installs (.app / .ipa / .xcarchive) and the pool section's background work (pool.rs)

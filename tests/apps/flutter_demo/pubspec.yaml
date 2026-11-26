@@ -1,0 +1,13 @@
+name: flutter_demo
+description: x86Sim's Flutter test app for the agent tools (tests/ax/games_e2e.py flutter).
+publish_to: none
+version: 1.0.0+1
+environment:
+  sdk: ^3.5.0
+dependencies:
+  flutter:
+    sdk: flutter
+  # (one plugin: the dev toolchain's Flutter build expects a plugin list, which an app without plugins does not get)
+  shared_preferences: ^2.3.0
+flutter:
+  uses-material-design: true

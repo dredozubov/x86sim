@@ -20,6 +20,8 @@ function h(tag, attrs = {}, ...kids) {
     if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else if (k === "class") e.className = v;
     else if (k === "text") e.textContent = v;
+    // the page's CSP refuses style attributes; the CSSOM is allowed
+    else if (k === "style") e.style.cssText = v;
     else e.setAttribute(k, v === true ? "" : v);
   }
   for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) e.append(c.nodeType ? c : String(c));
@@ -48,6 +50,18 @@ async function api(path, body) {
   return j;
 }
 
+// the launcher's units: 1.2 GB / 640 MB, 35%, 13 min
+function fmtMem(mb) { return mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB"; }
+function fmtUp(s) {
+  if (s == null) return "–";
+  if (s < 60) return Math.round(s) + " s";
+  if (s < 3600) return Math.round(s / 60) + " min";
+  if (s < 86400) return (s / 3600).toFixed(1).replace(/\.0$/, "") + " h";
+  return (s / 86400).toFixed(1).replace(/\.0$/, "") + " d";
+}
+const stateLabel = (s) => ({ running: "Running", starting: "Starting", stopping: "Stopping", off: "Off" })[s] || s || "";
+function badge(state) { return h("span", { class: "badge " + state }, h("span", { class: "dot " + state }), stateLabel(state)); }
+
 function toast(msg, ms = 3500) {
   const t = h("div", { class: "toast", text: msg });
   document.body.append(t);
@@ -58,10 +72,67 @@ async function copy(text) {
   try {
     await navigator.clipboard.writeText(text);
     toast("Copied");
-  } catch {
-    prompt("Copy this:", text);
+    return;
+  } catch {}
+  // no async clipboard (plain HTTP from another machine): a hidden text area and the copy command
+  const ta = h("textarea", { class: "offscreen", readonly: "" });
+  ta.value = text;
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch {}
+  ta.remove();
+  if (ok) toast("Copied");
+  else prompt("Copy this:", text.length > 2000 ? text.slice(-2000) : text);
+}
+
+// ---------- the look: Desktop (this machine's Omarchy theme, live), System, Dark or Light ----------
+// The server pushes the theme's generation (a WebSocket: once at once, then at every theme switch, no polling);
+// theme.css holds its colours and the page applies them only in the Desktop look.
+const LOOKS = [["desktop", "\uE560", "Desktop theme (this machine's Omarchy theme, live)"], ["system", "\uE18C", "System light / dark"],
+  ["dark", "\uE330", "Dark"], ["light", "\uE472", "Light"]];
+let look = (() => { try { return localStorage.getItem("x86sim.look") || "desktop"; } catch { return "desktop"; } })();
+let desktopTheme = false;
+function applyLook() {
+  const root = document.documentElement;
+  const useDesktop = look === "desktop" && desktopTheme;
+  if (useDesktop) root.dataset.hostTheme = ""; else delete root.dataset.hostTheme;
+  if (look === "dark" || look === "light") root.dataset.theme = look; else delete root.dataset.theme;
+  const shown = look === "desktop" && !desktopTheme ? LOOKS[1] : LOOKS.find((l) => l[0] === look) || LOOKS[1];
+  const b = document.getElementById("lookBtn");
+  if (b) {
+    b.firstChild.textContent = shown[1];
+    b.title = (look === "desktop" && !desktopTheme ? "System light / dark (no Omarchy theme on this machine)" : shown[2]) + " · click for the next look";
+    b.setAttribute("aria-label", b.title);
   }
 }
+document.getElementById("lookBtn").addEventListener("click", () => {
+  const order = LOOKS.map((l) => l[0]).filter((l) => l !== "desktop" || desktopTheme);
+  const cur = look === "desktop" && !desktopTheme ? "system" : look;
+  look = order[(order.indexOf(cur) + 1) % order.length];
+  try { localStorage.setItem("x86sim.look", look); } catch {}
+  applyLook();
+});
+applyLook();
+// the theme's generation, pushed over a WebSocket (it passes Tailscale and Cloudflare's quick tunnels alike); the
+// socket comes back after a drop (a server restart), a second later and then less often
+let themeGen = null, themeRetry = 0;
+function themeSocket() {
+  let ws;
+  try { ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws-theme"); } catch { return; }
+  ws.onmessage = (m) => {
+    themeRetry = 0;
+    const t = JSON.parse(m.data);
+    desktopTheme = !!t.available;
+    if (t.generation !== themeGen) {
+      if (themeGen !== null) document.getElementById("themecss").href = "theme.css?g=" + encodeURIComponent(t.generation);
+      themeGen = t.generation;
+    }
+    applyLook();
+  };
+  ws.onclose = () => setTimeout(themeSocket, Math.min(30000, 1000 * 2 ** themeRetry++));
+}
+themeSocket();
 
 // ---------- routing ----------
 let cleanup = null;
@@ -80,11 +151,11 @@ async function boot() {
   } catch (e) {
     main.replaceChildren(h("div", { class: "msg" },
       h("h2", { text: e.status === 401 ? "This link needs a valid token" : "Can't reach the server" }),
-      h("p", { text: e.status === 401 ? "Open the full link you were given (it ends in ?t=…). It may have expired or been revoked." : String(e.message) })));
+      h("p", { text: e.status === 401 ? "Expired or revoked" : String(e.message) })));
     return;
   }
   const role = $("#role");
-  role.textContent = ME.role === "control" ? "Watch and drive" : "Watching only";
+  role.textContent = ME.role === "control" ? "Watch and drive" : "Watch only";
   role.classList.toggle("view", ME.role !== "control");
   if (ME.expires) role.title = "Link expires " + new Date(ME.expires * 1000).toLocaleString();
   // tunnels and links are the server owner's (a link can't make more links)
@@ -102,7 +173,8 @@ async function boot() {
 let currentPhone = null;
 function dashboard() {
   currentPhone = null;
-  $("#crumb").textContent = "Phones";
+  $("#crumb").replaceChildren();
+  $("#acts").replaceChildren();
   document.title = "x86Sim Devices";
   const control = ME.role === "control";
   // what the viewer picked, kept in this browser (a remembered convenience only: the page works without it)
@@ -131,10 +203,11 @@ function dashboard() {
   const viewGrid = h("button", { class: "btn small", text: "Grid", title: "Cards" });
   const viewList = h("button", { class: "btn small", text: "List", title: "Rows" });
   const bar = h("div", { class: "dashbar" }, search, chips, h("div", { class: "grow" }), h("label", { class: "meta sortlbl" }, "Sort ", sortSel), h("div", { class: "seg" }, viewGrid, viewList));
-  const secRun = h("section", { class: "dsec" }, h("h2", {}, "Running ", h("span", { class: "count" })), h("div"));
-  const secOff = h("section", { class: "dsec" }, h("h2", {}, "Off ", h("span", { class: "count" })), h("div"));
+  const total = h("span", { class: "meta" });
+  const secRun = h("section", { class: "dsec" }, h("h2", {}, "running", h("span", { class: "count" })), h("div"));
+  const secOff = h("section", { class: "dsec" }, h("h2", {}, "off", h("span", { class: "count" })), h("div"));
   const empty = h("div", { class: "empty" });
-  main.append(bar, secRun, secOff, empty);
+  main.append(h("div", { class: "page" }, h("div", { class: "phead" }, h("h1", { text: "Devices" }), total), bar, secRun, secOff, empty));
 
   const cards = new Map();  // id -> the element of the current view + its parts
   let phones = [], n = 0, alive = true;
@@ -155,16 +228,18 @@ function dashboard() {
     const open = () => location.hash = "#/phone/" + encodeURIComponent(p.id);
     const scr = h("div", { class: "scr" });
     const thumb = h("div", { class: "thumb", title: "Open " + p.name, onclick: open }, scr);
-    const title = h("div", { class: "dname" });
+    const title = h("a", { class: "dname", href: "#/phone/" + encodeURIComponent(p.id) });
     const meta = h("div", { class: "meta dmodel" });
+    const dot = h("span", { class: "dot" });
     const st = h("div", { class: "meta state" });
     const stats = h("div", { class: "meta dstats" });
     const row = h("div", { class: "row" });
     const list = pref.view === "list";
+    // the GUI's card: the screen, then a dot, the name and the one action, then model and load
     const el = list
-      ? h("div", { class: "drow" }, thumb, h("div", { class: "dinfo" }, title, meta), st, stats, row)
-      : h("div", { class: "card" }, thumb, title, meta, h("div", { class: "dline" }, st, stats), row);
-    return { el, scr, thumb, title, meta, st, stats, row, img: h("img", { alt: "" }), loading: false, open };
+      ? h("div", { class: "drow" }, thumb, h("div", { class: "dinfo" }, h("div", { class: "cname" }, dot, title), meta), st, stats, row)
+      : h("div", { class: "card" }, thumb, h("div", { class: "cfoot" }, h("div", { class: "cname" }, dot, title, row), meta, stats));
+    return { el, scr, thumb, title, meta, dot, st, stats, row, img: h("img", { alt: "" }), loading: false, open };
   }
 
   function update(c, p) {
@@ -175,8 +250,12 @@ function dashboard() {
     if (Array.isArray(p.screen) && p.screen[0] > 0 && p.screen[1] > 0) c.scr.style.setProperty("--arn", String(p.screen[0] / p.screen[1]));
     c.scr.className = "scr k-" + kindOf(p);
     const running = p.state === "running" || p.state === "starting";
-    c.st.replaceChildren(h("span", { class: "dot " + p.state }), p.state);
-    c.stats.textContent = p.state === "running" && p.memory_mb ? `${Math.round(p.memory_mb)} MB · ${Math.round(p.cpu_pct || 0)}% CPU` : "";
+    c.dot.className = "dot " + p.state;
+    c.dot.title = stateLabel(p.state);
+    c.st.replaceChildren(h("span", { class: "dot " + p.state }), stateLabel(p.state));
+    c.stats.textContent = p.state === "running" && p.memory_mb ? `${fmtMem(p.memory_mb)} · ${Math.round(p.cpu_pct || 0)}% CPU` + (p.gpu ? ` · ${p.gpu.short}` : "") : p.state === "off" ? "" : stateLabel(p.state);
+    c.stats.title = p.state !== "off" && p.gpu ? p.gpu.name : "";
+    c.stats.hidden = !c.stats.textContent && pref.view !== "list";
     if (running && !c.loading) {
       c.loading = true;
       const im = new Image();
@@ -190,10 +269,9 @@ function dashboard() {
     if (c.row.dataset.k !== key) {
       c.row.dataset.k = key;
       c.row.replaceChildren(...[
-        h("button", { class: "btn small primary", text: "Open", onclick: c.open }),
-        control && p.state === "off" && p.installed ? h("button", { class: "btn small", text: "Start", onclick: (e) => act(e, p.id, "start") }) : null,
+        control && p.state === "off" && p.installed ? h("button", { class: "btn small good", text: "Start", onclick: (e) => act(e, p.id, "start") }) : null,
         control && running ? h("button", { class: "btn small danger", text: "Stop", onclick: (e) => act(e, p.id, "stop") }) : null,
-        control ? h("button", { class: "btn small", text: "Share", onclick: () => openShare(p.id) }) : null].filter(Boolean));
+        !control ? h("button", { class: "btn small", text: "Open", onclick: c.open }) : null].filter(Boolean));
     }
   }
 
@@ -222,9 +300,10 @@ function dashboard() {
       }
     }
     for (const [id, c] of cards) if (!shown.some((p) => p.id === id)) { c.el.remove(); if (!phones.some((p) => p.id === id)) cards.delete(id); }
+    const on = phones.filter((p) => p.state === "running");
+    total.textContent = phones.length ? `${phones.length} · ${on.length} running` + (on.length ? ` · ${fmtMem(on.reduce((a, p) => a + (p.memory_mb || 0), 0))}` : "") : "";
     empty.hidden = shown.length > 0;
-    empty.textContent = !phones.length ? "No devices yet. Make one in the x86Sim launcher or with `x86sim device create`."
-      : "No device matches the search or the device type.";
+    empty.textContent = !phones.length ? "No devices" : "Nothing matches";
   }
 
   async function tick() {
@@ -236,7 +315,7 @@ function dashboard() {
   }
   async function act(e, id, what) {
     e.target.disabled = true;
-    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting… the first boot can take a few minutes" : "Stopping…"); }
+    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting…" : "Stopping…"); }
     catch (err) { toast(err.message); e.target.disabled = false; }
     tick();
   }
@@ -270,11 +349,29 @@ function phoneView(id) {
   const overlay = h("div", { class: "overlay", text: "Connecting…" });
   const dots = h("div", { class: "dots" });
   const wrap = h("div", { class: "screenwrap" }, canvas, dots, overlay);
-  const stage = h("div", { class: "stage" }, wrap);
+  // the tool column beside the screen (buildSide fills it)
+  const tools = h("div", { class: "tools" });
+  const stage = h("div", { class: "stage" }, wrap, tools);
   const side = h("aside", { class: "side" });
   // a narrow screen (a phone's browser): the most used controls right under the screen, the rest below
   const quick = h("div", { class: "quick" });
-  main.append(h("div", { class: "phone" }, stage, quick, side));
+  // the panels on a narrow screen: the screen takes every touch (it drives the device), so the page can't be scrolled
+  // down to them; a button pinned at the strip's end slides them up as a sheet over the screen instead
+  const panelsBtn = h("button", { class: "tool panels", type: "button", title: "Panels", "aria-label": "Panels", "aria-expanded": "false" },
+    h("span", { class: "ic", text: "\uE434" }));
+  const phoneEl = h("div", { class: "phone" }, stage, h("div", { class: "quickbar" }, quick, panelsBtn), side);
+  main.append(phoneEl);
+  const sheet = (open) => {
+    phoneEl.classList.toggle("sheet", open);
+    panelsBtn.classList.toggle("on", open);
+    panelsBtn.setAttribute("aria-expanded", String(open));
+    if (open) side.style.cssText = `bottom:${phoneEl.querySelector(".quickbar").offsetHeight}px`;
+  };
+  panelsBtn.onclick = () => sheet(!phoneEl.classList.contains("sheet"));
+  document.addEventListener("pointerdown", (e) => {
+    if (phoneEl.classList.contains("sheet") && !side.contains(e.target) && !panelsBtn.contains(e.target) && !e.target.closest?.(".hingepop, dialog")) sheet(false);
+  }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && phoneEl.classList.contains("sheet")) sheet(false); });
   // the Accessibility Inspector (axinspect.js): its overlay on the screen, its panel in the side bar
   const axi = window.AXI ? AXI.attach({ id, wrap, side, control, api, h, toast }) : null;
   const stats = h("div", { class: "stats" });
@@ -282,16 +379,33 @@ function phoneView(id) {
   const canH264 = "VideoDecoder" in window && window.isSecureContext;
   let codec = prefs.codec === "jpeg" || !canH264 ? "jpeg" : "h264";
   let quality = prefs.quality ?? 1, fps = prefs.fps ?? 30;
+  // a two-screen phone in 3D (duo3d.js) where WebGL2 is there and the server has Apple's model, else the flat stream
+  let duoOK = !!(window.Duo3D && Duo3D.supported());
+  let duo = null, duoLoading = false;
+  // the hinge panel's slider following the hinge as it is (hingePanel sets it)
+  // every hinge panel on the page (the fold, the strip's popup) follows the hinge as it moves
+  const hingeSyncs = new Set();
+  // the stream width the socket asked for
+  let connW = 0;
 
   // --- sizing: the canvas keeps the stream's aspect inside the stage
   let fw = 0, fh = 0;
   function fit() {
+    if (duo) {
+      // the stage's content box less the tool column and its gap
+      const r = stage.getBoundingClientRect(), cs = getComputedStyle(stage), tw = tools.offsetWidth ? tools.offsetWidth + 14 : 0;
+      const px = (k) => parseFloat(cs[k]) || 0;
+      return duo.resize(r.width - px("paddingLeft") - px("paddingRight") - tw - 2, r.height - px("paddingTop") - px("paddingBottom") - 2);
+    }
     // before the first frame: the phone's shape from its screen size
     const scr = info?.screen;
     const w = fw || (scr && scr[0]), hh = fh || (scr && scr[1]);
     if (!w) return;
-    const r = stage.getBoundingClientRect(), m = innerWidth <= 760 ? 12 : 24;
-    const s = Math.min((r.width - m) / w, (r.height - m) / hh);
+    // the stage's padding and the bezel drawn around the canvas (app.css) on both sides
+    const r = stage.getBoundingClientRect(), m = innerWidth <= 760 ? 28 : 64;
+    // the tool column beside the screen takes its width and the gap
+    const tw = tools.offsetWidth ? tools.offsetWidth + 14 : 0;
+    const s = Math.min((r.width - m - tw) / w, (r.height - m) / hh);
     canvas.style.width = Math.max(50, Math.floor(w * s)) + "px";
     canvas.style.height = Math.max(50, Math.floor(hh * s)) + "px";
   }
@@ -308,16 +422,20 @@ function phoneView(id) {
     const aspect = fw && fh ? fw / fh : scr[0] / scr[1];
     const css = Math.min(r.width - 24, (r.height - 24) * aspect) * (window.devicePixelRatio || 1);
     const cap = [540, 900, 1400][quality];
+    // the 3D phone: the inner screen spans about the area's width
+    if (duo) return Math.max(240, Math.min(cap, Math.round(r.width * (window.devicePixelRatio || 1) / 16) * 16));
     return Math.max(240, Math.min(cap, Math.round(css / 16) * 16));
   }
 
   // --- stats
-  let frames = 0, bytes = 0, lat = [], lastStats = performance.now(), statLine = "";
+  let frames = 0, bytes = 0, lat = [], lastStats = performance.now(), statLine = "", curFps = 0;
   const statIv = setInterval(() => {
     const now = performance.now(), dt = (now - lastStats) / 1000;
     lastStats = now;
     const l = lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length : null;
-    statLine = `${codec.toUpperCase()} ${fw}×${fh}\n${(frames / dt).toFixed(0)} fps · ${(bytes * 8 / dt / 1e6).toFixed(2)} Mbit/s` + (l !== null && l >= 0 && l < 5000 ? `\nframe age ${l.toFixed(0)} ms` : "");
+    curFps = Math.round(frames / dt);
+    // nothing to say before the first frame (a device that is off)
+    statLine = !fw ? "" : `${codec.toUpperCase()} ${fw}×${fh}\n${(frames / dt).toFixed(0)} fps · ${(bytes * 8 / dt / 1e6).toFixed(2)} Mbit/s` + (l !== null && l >= 0 && l < 5000 ? `\nframe age ${l.toFixed(0)} ms` : "");
     if (soundOn && actx && aLat.length) {
       // packet age on arrival + what is queued + the output's own latency
       const net = aLat.reduce((a, b) => a + b, 0) / aLat.length;
@@ -387,7 +505,7 @@ function phoneView(id) {
   const canOpus = "AudioDecoder" in window && window.isSecureContext;
   const canMic = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext && "AudioWorkletNode" in window;
   let actx = null, gain = null, adec = null, aCodec = "", nextT = 0, soundOn = false, volume = prefs.volume ?? 0.8;
-  let aLat = [], aLost = 0, aUnder = 0, aMin = 1, aN = 0, soundBtn = null, quickSound = null, micBtn = null, mic = null;
+  let aLat = [], aLost = 0, aUnder = 0, aMin = 1, aN = 0, soundBtns = [], recBtns = [], micBtn = null, mic = null;
   async function soundStart() {
     try {
       actx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: "interactive" });
@@ -420,8 +538,8 @@ function phoneView(id) {
     updateSound();
   }
   function updateSound() {
-    for (const b of [soundBtn, quickSound]) if (b) { b.textContent = soundOn ? "🔊 Sound on" : "🔇 Sound off"; b.classList.toggle("on", soundOn); }
-    if (micBtn) { micBtn.textContent = mic ? "🎙 Mic on" : "🎙 Mic off"; micBtn.classList.toggle("on", !!mic); }
+    for (const b of soundBtns) { setIcon(b, soundOn ? I.soundOn : I.soundOff); b.classList.toggle("on", soundOn); }
+    if (micBtn) { micBtn.textContent = mic ? "Mic on" : "Mic off"; micBtn.classList.toggle("on", !!mic); }
   }
   function schedule(planes, n) {
     if (!actx) return;
@@ -497,7 +615,10 @@ function phoneView(id) {
     if (!alive) return;
     needKey = true;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const u = `${proto}//${location.host}/ws/${encodeURIComponent(id)}?codec=${codec}&w=${wantWidth()}&q=${quality}&fps=${fps}` + (TOKEN ? "&t=" + encodeURIComponent(TOKEN) : "");
+    // duo=1: a two-screen phone sends both screens (the 3D view); a one-screen phone ignores it
+    const w = connW = wantWidth();
+    if (duo) duo.reset();
+    const u = `${proto}//${location.host}/ws/${encodeURIComponent(id)}?codec=${codec}&w=${w}&q=${quality}&fps=${fps}` + (duoOK ? `&duo=1&w2=${Math.round(w * 0.6 / 16) * 16}` : "") + (TOKEN ? "&t=" + encodeURIComponent(TOKEN) : "");
     ws = new WebSocket(u);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => { retry = 0; if (soundOn) { nextT = 0; send({ t: "audio", on: true, codec: aCodec }); } };
@@ -510,6 +631,7 @@ function phoneView(id) {
       bytes += ev.data.byteLength;
       if (kind === 3 || kind === 4) return onAudio(kind, key, t, data);
       lat.push(Date.now() - t / 1000);
+      if (duo && (kind & 15) <= 2) return duo.packet(kind, key, w, hh, t, data);
       if (kind === 1) onH264(key, w, hh, t, data);
       else if (kind === 2) onJpeg(data);
     };
@@ -523,15 +645,21 @@ function phoneView(id) {
   let lastState = {};
   function onText(m) {
     if (m.t === "hello") {
+      // a server restarted on another build: this tab still runs the old scripts, so load the new ones
+      if (m.build && window.__x86simBuild && m.build !== window.__x86simBuild) { location.reload(); return; }
+      if (m.build) window.__x86simBuild = m.build;
       info = { ...info, ...m };
-      $("#crumb").textContent = `${m.name} · ${m.model}`;
+      head();
       document.title = m.name + " · x86Sim";
       canvas.classList.toggle("watch", m.platform === "watchos");
       canvas.classList.toggle("tv", m.platform === "tvos" || m.platform === "xros");
+      if (m.two_screens && duoOK && !duo) startDuo();
       buildSide();
     } else if (m.t === "state") {
       lastState = m;
-      if (!m.running) { overlay.hidden = false; overlay.textContent = control ? "The device is off. Start it from the dashboard." : "The device is off."; }
+      if (duo) duo.state(m);
+      if (m.hinge != null) for (const f of hingeSyncs) f(Number(m.hinge), m.orientation);
+      if (!m.running) { overlay.hidden = false; overlay.textContent = "Off"; }
       updateSide();
     } else if (m.t === "expired") {
       alive = false;
@@ -540,8 +668,36 @@ function phoneView(id) {
     } else if (m.t === "error") toast(m.error);
   }
 
+  // --- the 3D phone (duo3d.js) in place of the flat canvas
+  function startDuo() {
+    if (duoLoading) return;
+    duoLoading = true;
+    Duo3D.load().then((model) => {
+      duoLoading = false;
+      if (duo || !alive) return;
+      // no model on the server: the phone flat, its own stream
+      if (!model) { duoOK = false; connect(); return; }
+      showDuo(model);
+    });
+  }
+  function showDuo(model) {
+    duo = Duo3D.create({
+      model, control, send,
+      onFrame: (w, hh, s) => { frames++; overlay.hidden = true; if (s === "inner" || !fw) { fw = w; fh = hh; } },
+      onNoH264: () => { toast("This browser can't decode H.264: using JPEG"); codec = "jpeg"; connect(); },
+      onLost: () => { duo.close(); duo = null; canvas.hidden = false; connect(); },
+    });
+    if (!duo) return;
+    canvas.hidden = true;
+    wrap.prepend(duo.el);
+    duo.state({ ...info, ...lastState });
+    bindKeys(duo.canvas);
+    window.__x86simDuo = duo.debug;
+    fit();
+  }
+
   // --- side panel
-  let fold = null, recBtn = null;
+  let fold = null;
   function btn(label, title, down, up) {
     const b = h("button", { class: "btn small", text: label, title, type: "button" });
     if (up) {
@@ -554,66 +710,149 @@ function phoneView(id) {
   const hold = (n, label, title) => btn(label, title || label, () => send({ t: "button", n, d: true }), () => send({ t: "button", n, d: false }));
   const keyHold = (u, label, title) => btn(label, title || label, () => send({ t: "key", u, d: true }), () => send({ t: "key", u, d: false }));
   function group(title, ...kids) { return h("div", {}, h("h4", { text: title }), h("div", { class: "btns" }, ...kids)); }
+  // the launcher's Phosphor icons (icons.ttf, the glyphs used here)
+  const I = { home: "", lock: "", volup: "", voldown: "", siri: "", action: "", switcher: "",
+    rotl: "", rotr: "", shake: "", pointer: "", type: "", soundOn: "", soundOff: "",
+    camera: "", marks: "", record: "", stop: "", back: "", up: "", down: "",
+    tv: "", playpause: "", tap: "", wave: "", mute: "", press: "", share: "",
+    hingeOpen: "\uE0E6", hingeClosed: "\uE1E0", tablet: "\uE1E6", laptop: "\uE586", resetView: "\uE08A" };
+  const icon = (c) => h("span", { class: "ic", text: c });
+  function setIcon(b, c) { if (b && b.firstChild) b.firstChild.textContent = c; }
+  // an icon button of the tool column beside the screen (the launcher's screen toolbar); held down for `up`
+  function tool(c, title, down, up) {
+    const b = h("button", { class: "tool", type: "button", title, "aria-label": title }, icon(c));
+    if (up) {
+      b.addEventListener("pointerdown", (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); down(); });
+      b.addEventListener("pointerup", up);
+      b.addEventListener("pointercancel", up);
+    } else b.addEventListener("click", down);
+    return b;
+  }
+  const holdT = (n, c, title) => tool(c, title, () => send({ t: "button", n, d: true }), () => send({ t: "button", n, d: false }));
+  const link = (c, title, href) => h("a", { class: "tool", href, download: "", title, "aria-label": title }, icon(c));
+  const gap = () => h("span", { class: "tgap" });
   function buildSide() {
     const p = info.platform;
-    const parts = [];
-    if (axi) parts.push(axi.panel());
-    if (control) {
-      if (p === "tvos") {
-        parts.push(h("div", {}, h("h4", { text: "Siri Remote" }), h("div", { class: "remote" },
-          h("span"), keyHold(0x52, "▲", "Up"), h("span"),
-          keyHold(0x50, "◀", "Left"), keyHold(0x28, "●", "Select"), keyHold(0x4f, "▶", "Right"),
-          h("span"), keyHold(0x51, "▼", "Down"), h("span"))));
-        parts.push(group("Buttons", hold("menu", "Back"), hold("tv", "TV"), hold("playpause", "⏯", "Play / Pause"), hold("siri", "Siri"), hold("volup", "Vol +"), hold("voldown", "Vol −"), hold("mute", "Mute")));
-      } else if (p === "watchos") {
-        parts.push(group("Digital Crown", btn("▲", "Turn up", () => send({ t: "crown", d: -120 })), btn("▼", "Turn down", () => send({ t: "crown", d: 120 })), hold("home", "Press")));
-        parts.push(group("Buttons", hold("side", "Side"), btn("Double tap", "Hand gesture", () => send({ t: "sys", a: "double_tap" })), btn("Wrist flick", "Hand gesture", () => send({ t: "sys", a: "wrist_flick" }))));
-      } else if (p === "xros") {
-        parts.push(group("Buttons", hold("home", "Crown press"), btn("Crown ▲", "", () => send({ t: "crown", d: -120 })), btn("Crown ▼", "", () => send({ t: "crown", d: 120 })), hold("side", "Top button")));
-      } else {
-        parts.push(group("Buttons", hold("home", "Home"), hold("lock", "Lock"), hold("volup", "Vol +"), hold("voldown", "Vol −"), hold("siri", "Siri"), hold("action", "Action"),
-          btn("Switcher", "App Switcher", () => send({ t: "sys", a: "app_switcher" }))));
-        parts.push(group("Device", btn("Rotate ←", "Rotate left", () => send({ t: "rotate", dir: "left" })), btn("Rotate →", "Rotate right", () => send({ t: "rotate", dir: "right" })),
-          btn("Shake", "Device > Shake", () => send({ t: "shake" })), btn("Paste…", "Type text into the device", openPaste)));
-        parts.push(group("Keyboard", btn("Software", "I/O > Keyboard > Toggle Software Keyboard (Cmd-K): the on-screen keyboard while a text field is focused", () => send({ t: "sys", a: "soft_keyboard" })),
-          btn("Hardware", "I/O > Keyboard > Connect Hardware Keyboard (Shift-Cmd-K): connect / disconnect; disconnected, the software keyboard shows on every focus", () => send({ t: "sys", a: "hw_keyboard" }))));
-        if (info.two_screens) {
-          fold = h("div", { class: "btns" }, ...info.poses.map((ps) => btn(ps.label, "Hinge: " + ps.label, () => send({ t: "hinge", pose: ps.key }))));
-          parts.push(h("div", {}, h("h4", { text: "Fold" }), fold));
+    // the launcher's panels (panels.js): overview, Features, Logs, Performance, Simulate
+    if (!pan && window.PANELS) pan = PANELS.attach({ id, control, platform: p, api, h, toast, copy, name: info.name || id, fmtMem, fmtUp, send, fps: () => curFps, restart,
+      onDetail: (d) => { needsRestart = !!d.needs_restart; head(); } });
+    const fold = (key, title, body, open) => pan ? pan.fold(key, title, body, null, open) : h("div", {}, h("h4", { text: title }), body);
+
+    // ---- the device's buttons, then capture and share (the launcher's screen toolbar): beside the screen on a wide
+    // window, the strip under it on a narrow one (each place its own buttons, built the same way)
+    soundBtns = []; recBtns = [];
+    // one order on every device, as the launcher's screen toolbar (phone.rs screen_toolbar): the hardware buttons
+    // (Home, crown, Lock / side, volume, mute, Siri, Action, Back, Play/Pause, App Switcher), the device actions
+    // (rotate, shake, pointer, hand gestures, typing), then the page's own tools (share, sound, record, screenshots).
+    // Each device shows only what it has, never in another order.
+    const makeTools = () => {
+      const t = [];
+      if (control) {
+        const crown = p === "watchos" || p === "xros";
+        if (p === "tvos") {
+          t.push(holdT("tv", I.tv, "TV / home (F1)"), holdT("volup", I.volup, "Volume up"), holdT("voldown", I.voldown, "Volume down"),
+            holdT("mute", I.mute, "Mute"), holdT("siri", I.siri, "Siri"), holdT("menu", I.back, "Back (Esc)"), holdT("playpause", I.playpause, "Play / Pause"));
+        } else if (crown) {
+          t.push(holdT("home", I.press, "Digital Crown: press"), tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })),
+            tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, p === "xros" ? "Top button" : "Side button"));
+        } else {
+          t.push(holdT("home", I.home, "Home (F1)"), holdT("lock", I.lock, "Lock: the side button (F2)"), holdT("volup", I.volup, "Volume up (F3)"),
+            holdT("voldown", I.voldown, "Volume down (F4)"), holdT("siri", I.siri, "Siri"), holdT("action", I.action, "Action button"),
+            tool(I.switcher, "App Switcher", () => send({ t: "sys", a: "app_switcher" })));
         }
+        t.push(gap());
+        if (p === "ios") {
+          t.push(tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })));
+          // a two-screen phone's hinge, as the launcher's strip: a popup with the slider, the poses and the view's reset
+          if (info.two_screens) t.push(hingeTool());
+          t.push(tool(I.shake, "Shake", () => send({ t: "shake" })));
+          // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
+          if (info.ipad) {
+            const ptr = tool(I.pointer, "Pointer capture: the mouse drives the iPad's pointer", () => {
+              pointerMode = !pointerMode;
+              if (!pointerMode) send({ t: "pointer", a: "remove" });
+              for (const b of document.querySelectorAll(".tool.ptr")) b.classList.toggle("on", pointerMode);
+            });
+            ptr.classList.add("ptr");
+            ptr.classList.toggle("on", pointerMode);
+            t.push(ptr);
+          }
+        }
+        if (p === "watchos")
+          t.push(tool(I.tap, "Double tap (hand gesture)", () => send({ t: "sys", a: "double_tap" })), tool(I.wave, "Wrist flick (hand gesture)", () => send({ t: "sys", a: "wrist_flick" })));
+        t.push(tool(I.type, "Type text into the device (Ctrl+V pastes)", openPaste));
       }
-      if (p !== "ios") parts.push(group("Text", btn("Paste…", "Type text into the device", openPaste)));
+      const sb = tool(I.soundOff, "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
+      const rb = tool(I.record, "Record the screen to a video file", toggleRec);
+      soundBtns.push(sb); recBtns.push(rb);
+      t.push(gap());
+      // share this device: links are the server owner's to make (as the header's Share)
+      if (ME.owner) t.push(tool(I.share, "Share this device", () => openShare(id)));
+      t.push(sb, rb, link(I.camera, "Screenshot (PNG)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`)),
+        link(I.marks, "Screenshot with every element's @ref", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)));
+      return t;
+    };
+    tools.replaceChildren(...makeTools());
+    quick.replaceChildren(...makeTools().filter((e) => !e.classList.contains("tgap")));
+
+    // ---- the inspector: the overview, then folds (open ones remembered), as the launcher's right panel
+    const parts = [pan ? pan.overview : null];
+    if (control && p === "tvos") parts.push(fold("remote", "Siri Remote", h("div", { class: "remote" },
+      h("span"), keyHold(0x52, "▲", "Up"), h("span"),
+      keyHold(0x50, "◀", "Left"), keyHold(0x28, "●", "Select"), keyHold(0x4f, "▶", "Right"),
+      h("span"), keyHold(0x51, "▼", "Down"), h("span")), true));
+    if (control && p === "ios" && info.two_screens) parts.push(fold("hinge", "Hinge", hingePanel(), true));
+    if (pan) parts.push(pan.features, pan.gpu, pan.logs);
+    // the Network section (netpanel.js): an app's requests, control links only
+    if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast, copy, name: info.name || id }); parts.push(netp.panel); }
+    // Share, as the launcher's section: this device's links and the tunnels that make them reach other machines
+    if (ME.owner) {
+      const info2 = h("div", { class: "kvs" });
+      const shareFold = fold("share", "Share", [info2, h("div", { class: "btns" }, h("button", { class: "btn small primary", type: "button", text: "Make a link…", onclick: () => openShare(id) }))]);
+      const fill = async () => {
+        try {
+          const [u, l] = await Promise.all([api("/api/urls"), api("/api/links")]);
+          const up = u.tunnels.filter((t) => t.state === "up").map((t) => ({ tailscale: "Tailscale", funnel: "Funnel", cloudflared: "Cloudflare" })[t.kind] || t.kind);
+          const mine = l.filter((x) => !x.phone || x.phone === id).length;
+          info2.replaceChildren(h("div", { class: "kv" }, h("span", { text: "Reachable" }), h("span", { text: up.length ? up.join(", ") : "this machine only" })),
+            h("div", { class: "kv" }, h("span", { text: "Links" }), h("span", { text: mine ? `${mine} for this device` : "none yet" })));
+          shareFold.sum.textContent = up.length ? up.join(", ") : "";
+        } catch {}
+      };
+      fill();
+      shareFold.addEventListener("toggle", () => shareFold.open && fill());
+      $("#shareDlg").addEventListener("close", fill);
+      parts.push(shareFold);
     }
-    soundBtn = btn("", "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
-    quickSound = btn("", "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
-    const q = [];
-    if (control && (p === "ios" || p === "xros")) q.push(hold("home", "Home"));
-    if (control && p === "ios") q.push(btn("Switcher", "App Switcher", () => send({ t: "sys", a: "app_switcher" })));
-    if (control && p === "tvos") q.push(hold("menu", "Back"), hold("tv", "TV"));
-    if (control && p === "watchos") q.push(hold("home", "Crown"), hold("side", "Side"));
-    if (control) q.push(btn("Type…", "Type text into the device", openPaste));
-    q.push(quickSound);
-    quick.replaceChildren(...q);
+    if (axi) {
+      const ax = axi.panel();
+      const h4 = ax.querySelector(":scope > h4");
+      if (h4) h4.remove();
+      parts.push(fold("ax", "Accessibility", ax));
+    }
+    if (control && p !== "watchos") parts.push(fold("web", "Web Inspector", webPanel()));
+    if (pan && pan.perf) {
+      // x86sim profile: 5 s CPU profile of the app in front, downloaded as speedscope JSON (control links only)
+      if (control && !pan.perf.querySelector(".profile")) pan.perf.querySelector(".fbody").prepend(h("div", { class: "btns profile" },
+        h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/profile.json?secs=5`), download: "",
+          title: "5 s CPU profile of the app in front (speedscope JSON)", text: "Profile 5 s" })));
+      parts.push(pan.perf);
+    }
+    if (pan) parts.push(pan.simulate);
     const volIn = h("input", { type: "range", min: 0, max: 1, step: 0.05, value: volume, title: "Volume (this browser only)", class: "vol", oninput: (e) => setVolume(Number(e.target.value)) });
-    micBtn = control ? btn("", canMic ? "Your microphone into the device (asks the browser for it)" : "The microphone needs HTTPS (or localhost) and a browser with AudioWorklet", () => (mic ? micStop() : micStart())) : null;
+    micBtn = control ? btn("", canMic ? "Your microphone into the device" : "Needs HTTPS or localhost", () => (mic ? micStop() : micStart())) : null;
     if (micBtn && !canMic) micBtn.disabled = true;
-    parts.push(group("Sound", soundBtn, volIn, micBtn));
-    updateSound();
-    recBtn = btn("Record", "Record the screen to a video file", toggleRec);
-    // x86sim profile: 5 s CPU profile of the app in front, downloaded as speedscope JSON (control links only)
-    const profBtn = control ? h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/profile.json?secs=5`), download: "",
-      title: "CPU profile of the app in front for 5 seconds (speedscope JSON: open it at speedscope.app)", text: "Profile 5 s" }) : null;
-    parts.push(group("Capture", h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`), download: "", text: "Screenshot" }), recBtn, profBtn));
     const qSel = h("select", { onchange: (e) => { quality = Number(e.target.value); save(); connect(); } }, ["Low", "Medium", "High"].map((l, i) => h("option", { value: i, selected: i === quality, text: l })));
     const cSel = h("select", { onchange: (e) => { codec = e.target.value; save(); connect(); } },
       h("option", { value: "h264", text: "H.264" + (canH264 ? "" : " (needs HTTPS)"), selected: codec === "h264", disabled: !canH264 }), h("option", { value: "jpeg", text: "JPEG", selected: codec === "jpeg" }));
     const fSel = h("select", { onchange: (e) => { fps = Number(e.target.value); save(); connect(); } }, [15, 30, 60].map((f) => h("option", { value: f, selected: f === fps, text: f + " fps" })));
-    parts.push(h("div", {}, h("h4", { text: "Stream" }), h("div", { class: "btns" }, qSel, cSel, fSel), stats));
-    if (control) parts.push(h("div", { class: "kbd" }, ...keyHelp(p)));
-    if (control) parts.push(group("Share", btn("Share this device…", "", () => openShare(id))));
-    if (control && p !== "watchos") parts.push(webPanel());
-    parts.push(h("div", { class: "btns" }, h("a", { class: "btn small", href: "#/", text: "← All devices" })));
-    side.replaceChildren(...parts);
+    parts.push(fold("av", "Sound and stream", [
+      h("div", { class: "sfield" }, h("div", { class: "sl", text: "Volume (this browser)" }), h("div", { class: "btns" }, volIn, micBtn)),
+      h("div", { class: "sfield" }, h("div", { class: "sl", text: "Picture" }), h("div", { class: "btns" }, qSel, cSel, fSel), stats)]));
+    if (control) parts.push(fold("keys", "Keyboard and mouse", h("div", { class: "kbd" }, ...keyHelp(p).slice(1))));
+    side.replaceChildren(...parts.filter(Boolean));
+    updateSound();
+    updateSide();
   }
   // Web Inspector: the phone's inspectable pages (Safari, WKWebViews with isInspectable), each with an Inspect link
   // (share/inspect.rs). Asked for on a click only: the first ask starts the phone's webinspectord.
@@ -627,21 +866,145 @@ function phoneView(id) {
         if (!r.ok) throw new Error(j.error || r.status);
         const pages = j.apps.flatMap((a) => a.pages.map((pg) => ({ ...pg, app: a.name || a.bundle })));
         if (j.ui_error) list.append(h("div", { class: "muted", text: j.ui_error }));
-        if (!pages.length) { list.replaceChildren(h("div", { class: "muted", text: "No inspectable pages: open one in Safari, or an app whose WKWebView sets isInspectable." })); return; }
+        if (!pages.length) { list.replaceChildren(h("div", { class: "muted", text: "No inspectable pages", title: "Open one in Safari, or an app whose WKWebView sets isInspectable" })); return; }
         list.replaceChildren(...pages.map((pg) => h("div", { class: "webpage" },
           j.ui_error ? null : h("a", { class: "btn small", href: pg.href, target: "_blank", rel: "noopener", text: "Inspect" }),
           h("span", { text: ` ${pg.title || "(untitled)"} · ${pg.app}`, title: pg.url }))));
       } catch (e) { list.replaceChildren(h("div", { class: "muted", text: "Web Inspector: " + e.message })); }
     };
-    return h("div", {}, h("h4", { text: "Web Inspector" }), h("div", { class: "btns" }, btn("Web pages…", "Safari's pages and apps' inspectable web views, to open in WebKit's Web Inspector", find)), list);
+    return h("div", {}, h("div", { class: "btns" }, btn("Find web pages", "Safari pages and inspectable web views, in Web Inspector", find)), list);
   }
   function keyHelp(p) {
-    if (p === "xros") return [h("h4", { text: "Keys" }), ...[["Mouse", "the system pointer: hover, click, drag"], ["Wheel", "scroll where it points"], ["Keys", "the keyboard (click the screen first)"], ["Ctrl+V", "paste"]].map(([a, b]) => h("div", {}, h("b", { text: a }), " " + b))];
+    if (p === "xros") return [h("h4", { text: "Keys" }), ...[["Mouse", "the system pointer: hover, click, drag"], ["Wheel", "scroll where it points"], ["Keys", "the keyboard (click the screen first)"], ["Ctrl+V", "paste"]].flatMap(([a, b]) => [h("b", { text: a }), h("span", { text: b })])];
     const l = [["Click / drag", "touch"], ["Alt + drag", "pinch / rotate"], ["Shift + drag", "two-finger pan"], ["Wheel", p === "watchos" ? "Digital Crown" : p === "tvos" ? "swipe the remote" : "scroll"], ["Keys", "the device's keyboard (click the screen first)"], ["Ctrl+V", "paste"], ["F1 / F2 / F3 / F4", p === "tvos" ? "TV / play / vol" : "home / lock / vol"]];
     if (p === "tvos") l.splice(0, 3, ["Arrows, Enter, Esc", "remote: move, select, back"], ["Click", "select"]);
-    return [h("h4", { text: "Keys" }), ...l.map(([a, b]) => h("div", {}, h("b", { text: a }), " " + b))];
+    return [h("h4", { text: "Keys" }), ...l.flatMap(([a, b]) => [h("b", { text: a }), h("span", { text: b })])];
   }
-  function updateSide() {}
+  // the title bar: Devices / name, model and OS, the state, Start or Stop; the tiles: memory, CPU, uptime (the
+  // dashboard's numbers, polled)
+  let lastHead = "", pan = null, netp = null, needsRestart = false, pointerMode = false;
+  function head() {
+    const d = info || {};
+    const state = d.state || (lastState.running === false ? "off" : lastState.running ? "running" : "");
+    const k = [d.name, d.model, d.os, state, control, needsRestart].join("|");
+    if (k === lastHead) return;
+    lastHead = k;
+    $("#crumb").replaceChildren(h("a", { class: "back", href: "#/", title: "All devices" }, "‹ ", h("span", { class: "lbl", text: "Devices" })), h("span", { class: "sep", text: "/" }),
+      h("span", { class: "here", text: d.name || id }), h("span", { class: "sub", text: [d.model, d.os].filter(Boolean).join(" · ") }), ...(state ? [badge(state)] : []));
+    const running = state === "running" || state === "starting";
+    const acts = [];
+    if (control && state === "off" && d.installed !== false) acts.push(h("button", { class: "btn small good", type: "button", text: "Start", onclick: (e) => power(e, "start") }));
+    if (control && state === "running") acts.push(h("button", { class: "btn small" + (needsRestart ? " primary" : ""), type: "button", text: needsRestart ? "Restart to apply" : "Restart",
+      title: needsRestart ? "Feature or start settings changed since this device started" : "Stop and start again", onclick: restart }));
+    if (control && running) acts.push(h("button", { class: "btn small danger", type: "button", text: "Stop", onclick: (e) => power(e, "stop") }));
+    $("#acts").replaceChildren(...acts);
+  }
+  async function power(e, what) {
+    e.target.disabled = true;
+    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting…" : "Stopping…"); }
+    catch (err) { toast(err.message); e.target.disabled = false; }
+    poll();
+  }
+  async function restart(e) {
+    if (e && e.target) e.target.disabled = true;
+    try { await api(`/api/phones/${encodeURIComponent(id)}/restart`, {}); toast("Restarting…"); needsRestart = false; }
+    catch (err) { toast(err.message); if (e && e.target) e.target.disabled = false; }
+    poll();
+  }
+  // the strip's Hinge button: its icon follows the hinge (open / closed); a click opens the hinge panel beside it
+  // (above the strip on a phone), closed by a click outside or Esc
+  function hingeTool() {
+    const at = Number(lastState.hinge ?? info.hinge ?? 180);
+    let pop = null;
+    const close = () => { if (pop) { pop.remove(); pop = null; document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", esc); } };
+    const outside = (e) => { if (pop && !pop.contains(e.target) && !b.contains(e.target)) close(); };
+    const esc = (e) => { if (e.key === "Escape") close(); };
+    const b = tool(at >= 10 ? I.hingeOpen : I.hingeClosed, "Hinge: fold, half open, unfold", () => {
+      if (pop) return close();
+      pop = h("div", { class: "hingepop", role: "dialog", "aria-label": "Hinge" }, hingePanel());
+      document.body.append(pop);
+      const r = b.getBoundingClientRect();
+      if (innerWidth <= 760) pop.style.cssText = `left:8px;right:8px;bottom:${innerHeight - r.top + 8}px`;
+      else pop.style.cssText = `left:${Math.max(8, Math.min(r.right + 8, innerWidth - pop.offsetWidth - 8))}px;top:${Math.max(8, Math.min(r.top, innerHeight - pop.offsetHeight - 8))}px`;
+      document.addEventListener("pointerdown", outside, true);
+      document.addEventListener("keydown", esc);
+    });
+    hingeSyncs.add((deg) => setIcon(b, deg >= 10 ? I.hingeOpen : I.hingeClosed));
+    return b;
+  }
+  // the hinge of a two-screen phone, as the launcher's panel: a slider from folded to flat over a degree scale (85°:
+  // where the inner screen takes over), the poses as icons (the current one lit) and the 3D view's reset
+  function hingePanel() {
+    const val = h("span", { class: "muted" });
+    const show = (v) => { val.textContent = `${Math.round(v)}° · ${v < 10 ? "closed" : v < 85 ? "half open" : v < 170 ? "open" : "flat"}`; };
+    let cur = Number(lastState.hinge ?? info.hinge ?? 180), orient = lastState.orientation ?? info.orientation ?? null;
+    let sentAt = 0, pend = null;
+    const icons = [I.hingeClosed, I.hingeOpen, I.laptop, I.tablet];
+    const poseBtns = (info.poses || []).map((ps, k) => {
+      const b = tool(icons[k] || I.hingeOpen, ps.label, () => {
+        send({ t: "hinge", pose: ps.key });
+        if (duo && ps.angle != null) duo.pose(ps.angle, ps.orientation);
+        if (ps.angle != null) { slider.value = ps.angle; cur = ps.angle; }
+        if (ps.orientation) orient = ps.orientation;
+        sentAt = performance.now();
+        show(Number(slider.value)); lit();
+      });
+      b.dataset.k = k;
+      return b;
+    });
+    const lit = () => (info.poses || []).forEach((ps, k) => poseBtns[k].classList.toggle("on", Math.abs(cur - ps.angle) < 1 && (!ps.orientation || !orient || ps.orientation === orient)));
+    const slider = h("input", { type: "range", min: 0, max: 180, step: "any", value: cur, class: "vol", "aria-label": "Hinge angle",
+      oninput: (e) => {
+        const v = Number(e.target.value);
+        // an input that only repeats what the device sync just set is no move of the user's (some browsers fire one
+        // when the value is set under a finger): never sent back, so a stale angle can't echo to the device
+        if (synced && performance.now() - synced[1] < 250 && Math.abs(v - synced[0]) < 0.01) return;
+        cur = v; show(v); lit();
+        // while dragged: a short move at most every 40 ms, the last value when let go
+        clearTimeout(pend);
+        const go = () => { sentAt = performance.now(); send({ t: "hinge", deg: v, ms: 40 }); if (duo) duo.command(v); };
+        if (performance.now() - sentAt >= 40) go(); else pend = setTimeout(go, 40);
+      } });
+    // the scale: a tick every 15°, labelled every 45°, the screen swap at 85° in the accent colour
+    const scale = h("div", { class: "hscale" });
+    for (let d = 0; d <= 180; d += 15) {
+      const tk = h("span", { class: "tk" + (d % 45 === 0 ? " big" : "") });
+      tk.style.cssText = `left:${(d / 180) * 100}%`;
+      scale.append(tk);
+      if (d % 45 === 0) { const lb = h("span", { class: "lb", text: d + "°" }); lb.style.cssText = `left:${(d / 180) * 100}%`; scale.append(lb); }
+    }
+    const swap = h("span", { class: "tk swap", title: "85°: the inner screen takes over above this, the outer one below" });
+    swap.style.cssText = `left:${(85 / 180) * 100}%`;
+    scale.append(swap);
+    show(cur); lit();
+    // moved from elsewhere (a pose, the MCP, the CLI): the slider follows unless it was just used here
+    // held: a finger or the mouse is on the slider (a touch doesn't focus it); it never follows the device then, and
+    // after a move from here only once the device has caught up with the angle sent (or 3 s on)
+    let held = false, synced = null;
+    // pointer and touch both (a touch on a range can end its pointer events early, as the browser takes the gesture)
+    for (const ev of ["pointerdown", "touchstart", "mousedown"]) slider.addEventListener(ev, () => { held = true; }, { passive: true });
+    for (const ev of ["pointerup", "touchend", "touchcancel", "mouseup"]) window.addEventListener(ev, () => { held = false; }, { passive: true });
+    hingeSyncs.add((deg, o) => {
+      if (o) orient = o;
+      const since = performance.now() - sentAt;
+      if (held || document.activeElement === slider || since < 1000) return;
+      if (since < 3000 && Math.abs(deg - Number(slider.value)) > 1.5) return;
+      slider.value = deg; synced = [Number(slider.value), performance.now()]; cur = deg; show(deg); lit();
+    });
+    const reset = tool(I.resetView, "Reset the view", () => duo && duo.resetView && duo.resetView());
+    return h("div", { class: "hingepanel" }, h("div", { class: "hingerow" }, slider, val), scale,
+      h("div", { class: "hposes" }, ...poseBtns, h("span", { class: "grow" }), reset));
+  }
+  function updateSide() {
+    head();
+  }
+  async function poll() {
+    try {
+      const ps = await api("/api/phones");
+      const p = ps.find((x) => x.id === id || x.name === id);
+      if (p && alive) { info = { ...info, ...p }; updateSide(); }
+    } catch {}
+  }
   function save() { localStorageSet("x86sim_prefs", JSON.stringify({ codec, quality, fps, volume })); }
 
   // --- recording (the canvas as the browser shows it)
@@ -651,7 +1014,7 @@ function phoneView(id) {
     const types = ["video/mp4;codecs=avc1", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
     const type = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
     if (!type) return toast("This browser can't record");
-    const stream = canvas.captureStream(30);
+    const stream = (duo ? duo.canvas : canvas).captureStream(30);
     rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8e6 });
     chunks = [];
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
@@ -661,19 +1024,17 @@ function phoneView(id) {
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       rec = null;
-      recBtn.textContent = "Record";
-      recBtn.classList.remove("rec");
+      for (const b of recBtns) { setIcon(b, I.record); b.classList.remove("rec"); }
     };
     rec.start(1000);
-    recBtn.textContent = "● Stop";
-    recBtn.classList.add("rec");
+    for (const b of recBtns) { setIcon(b, I.stop); b.classList.add("rec"); }
   }
 
   // --- paste / type
   function openPaste() {
     const d = $("#pasteDlg");
     $("#pasteText").value = "";
-    d.onclose = () => { if (d.returnValue === "ok") typeText($("#pasteText").value); canvas.focus(); };
+    d.onclose = () => { if (d.returnValue === "ok") typeText($("#pasteText").value); (duo ? duo.canvas : canvas).focus(); };
     d.showModal();
   }
   function typeText(s) { if (s) { releaseMods(); send({ t: "text", s }); } }
@@ -685,7 +1046,7 @@ function phoneView(id) {
   };
   const isTv = () => info?.platform === "tvos";
   // Vision Pro: the mouse is the system pointer (hover, click where it points); touches reach nothing there
-  const isXr = () => info?.platform === "xros";
+  const isXr = () => info?.platform === "xros" || pointerMode;
   let xrLast = 0;
   const pts = new Map(); // pointerId -> [x, y]
   let mode = null; // "wait" (a finger, maybe a second coming) | "one" | "two" (real fingers) | "pinch" | "pan" | "tv"
@@ -804,7 +1165,7 @@ function phoneView(id) {
     const p = info?.platform;
     if (p === "watchos") { send({ t: "crown", d: dy * 1.2 }); return; }
     // Vision Pro: the wheel scrolls where the pointer is (the crown has its buttons)
-    if (p === "xros") { send({ t: "pointer", a: "scroll", dx, dy }); return; }
+    if (p === "xros" || pointerMode) { send({ t: "pointer", a: "scroll", dx, dy }); return; }
     if (p === "tvos") {
       wheelAcc[0] += dx; wheelAcc[1] += dy;
       while (Math.abs(wheelAcc[0]) >= 40 || Math.abs(wheelAcc[1]) >= 40) {
@@ -850,7 +1211,7 @@ function phoneView(id) {
   function releaseAll() { for (const u of held) send({ t: "key", u, d: false }); held.clear(); }
   const FKEYS = { F1: "home", F2: "lock", F3: "volup", F4: "voldown" };
   const FKEYS_TV = { F1: "tv", F2: "playpause", F3: "volup", F4: "voldown" };
-  canvas.addEventListener("keydown", (e) => {
+  function onKeyDown(e) {
     if (!control) return;
     if ((e.ctrlKey || e.metaKey) && e.code === "KeyV") return; // the paste event types the clipboard
     const fk = (isTv() ? FKEYS_TV : FKEYS)[e.code];
@@ -863,18 +1224,23 @@ function phoneView(id) {
     syncMods(e);
     held.add(u);
     send({ t: "key", u, d: true });
-  });
-  canvas.addEventListener("keyup", (e) => {
+  }
+  function onKeyUp(e) {
     if (!control) return;
     const fk = (isTv() ? FKEYS_TV : FKEYS)[e.code];
     if (fk) { send({ t: "button", n: fk, d: false }); return; }
     const u = hidUsage(e.code);
     if (u !== undefined && held.has(u)) { held.delete(u); send({ t: "key", u, d: false }); }
     if (MODS[e.code]) syncMods(e);
-  });
-  canvas.addEventListener("blur", releaseAll);
+  }
+  function bindKeys(el) {
+    el.addEventListener("keydown", onKeyDown);
+    el.addEventListener("keyup", onKeyUp);
+    el.addEventListener("blur", releaseAll);
+  }
+  bindKeys(canvas);
   function onPaste(e) {
-    if (!control || document.activeElement !== canvas) return;
+    if (!control || (document.activeElement !== canvas && !(duo && document.activeElement === duo.canvas))) return;
     e.preventDefault();
     typeText(e.clipboardData.getData("text"));
   }
@@ -883,18 +1249,25 @@ function phoneView(id) {
   connect();
   // a bigger window asks for a sharper stream (reconnect when the wanted width changes by a third)
   let lastW = 0;
-  const sizeIv = setInterval(() => { const w = wantWidth(); if (lastW && Math.abs(w - lastW) / lastW > 0.33) connect(); lastW = w; }, 2000);
-  api("/api/phones").then((ps) => { const p = ps.find((x) => x.id === id || x.name === id); if (p) { info = { ...p, ...info }; lastW = wantWidth(); fit(); } }).catch(() => {});
+  // against the width the socket asked for too: the first connect, before the phone's shape (or its 3D view) was known
+  const sizeIv = setInterval(() => { const w = wantWidth(); if ((lastW && Math.abs(w - lastW) / lastW > 0.33) || (connW && Math.abs(w - connW) / connW > 0.33)) connect(); lastW = w; }, 2000);
+  api("/api/phones").then((ps) => { const p = ps.find((x) => x.id === id || x.name === id); if (p) { info = { ...p, ...info }; lastW = wantWidth(); fit(); updateSide(); } }).catch(() => {});
+  const pollIv = setInterval(poll, 3000);
   return () => {
     alive = false;
     if (axi) axi.close();
+    if (pan) pan.close();
+    if (netp) netp.close();
+    if (pointerMode) send({ t: "pointer", a: "remove" });
     releaseAll();
     if (mic) micStop();
     if (soundOn) soundStop();
     if (rec) rec.stop();
     if (ws) { ws.onclose = null; ws.close(); }
     if (dec && dec.state !== "closed") try { dec.close(); } catch {}
-    clearInterval(statIv); clearInterval(sizeIv); ro.disconnect();
+    if (duo) duo.close();
+    clearInterval(statIv); clearInterval(sizeIv); clearInterval(pollIv); ro.disconnect();
+    $("#acts").replaceChildren();
     document.removeEventListener("paste", onPaste);
   };
 }
@@ -903,56 +1276,95 @@ function localStorageGet(k) { try { return localStorage.getItem(k); } catch { re
 function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
 // ---------- share dialog ----------
+// New link first (what the sheet is opened for), then the tunnels that make a link reach other machines, then the links
+// already handed out. A bottom sheet on a phone, a centred panel on a wide screen (app.css).
+const fmtWhen = (t) => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const KIND_LABEL = { local: "This machine", lan: "Local network", tailscale: "Tailscale", funnel: "Funnel", cloudflared: "Cloudflare" };
+let sharePhones = [];
+
 async function openShare(phone) {
   const d = $("#shareDlg");
   const sel = $("#linkPhone");
   try {
-    const ps = await api("/api/phones");
-    sel.replaceChildren(h("option", { value: "", text: "Every device" }), ...ps.map((p) => h("option", { value: p.id, text: p.name, selected: p.id === phone })));
+    sharePhones = await api("/api/phones");
+    sel.replaceChildren(h("option", { value: "", text: "Every device" }), ...sharePhones.map((p) => h("option", { value: p.id, text: p.name, selected: p.id === phone })));
   } catch {}
-  $("#linkOut").replaceChildren();
+  const out = $("#linkOut");
+  out.hidden = true;
+  out.replaceChildren();
   $("#linkMake").onclick = makeLink;
-  await refreshTunnels();
-  await refreshLinks();
   if (!d.open) d.showModal();
+  // the sheet shows at once; its lists fill in
+  refreshTunnels();
+  refreshLinks();
+  let iv = setInterval(() => { if (d.open) refreshTunnels(true); }, 3000);
+  d.addEventListener("close", () => clearInterval(iv), { once: true });
+}
+// a click on the backdrop closes it
+$("#shareDlg").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+
+function lrow(title, sub, subClass, ...trail) {
+  return h("div", { class: "lrow" }, h("div", { class: "txt" }, h("div", { class: "t1" }, ...[title].flat()), sub ? h("div", { class: "t2 " + (subClass || ""), text: sub }) : null), ...trail);
 }
 
-async function refreshTunnels() {
+let tunnelBusy = null;
+async function refreshTunnels(quiet) {
   const box = $("#tunnels");
+  if (!quiet && !box.childElementCount) box.replaceChildren(h("div", { class: "lrow none", text: "Looking…" }));
   let u;
-  try { u = await api("/api/urls"); } catch (e) { box.textContent = e.message; return; }
+  try { u = await api("/api/urls"); } catch (e) { box.replaceChildren(h("div", { class: "lrow none", text: e.message })); return; }
   const a = u.available;
   const rows = [
-    ["tailscale", "Tailscale", a.tailscale_ready, a.tailscale ? a.tailscale_detail : "not installed"],
-    ["funnel", "Funnel", a.tailscale_ready, "public, through Tailscale"],
-    ["cloudflared", "Cloudflare", a.cloudflared, a.cloudflared ? "trycloudflare.com quick tunnel" : "cloudflared not installed"],
+    ["tailscale", "Tailscale", "your tailnet only", a.tailscale_ready, a.tailscale ? a.tailscale_detail : "Not installed"],
+    ["funnel", "Funnel", "public", a.tailscale_ready, "Through Tailscale"],
+    ["cloudflared", "Cloudflare", "public", a.cloudflared, a.cloudflared ? "trycloudflare.com" : "Not installed"],
   ];
-  box.replaceChildren(...rows.map(([kind, label, ok, detail]) => {
+  box.replaceChildren(...rows.map(([kind, label, scope, ok, detail]) => {
     const t = u.tunnels.find((x) => x.kind === kind);
-    const on = t && (t.state === "up" || t.state === "starting");
-    const status = t ? (t.state === "up" ? t.url : t.state === "failed" ? "failed: " + (t.error || "") : t.state) : detail;
-    const b = h("button", { type: "button", class: "btn small" + (on ? " on" : ""), text: on ? "Turn off" : "Turn on", disabled: !ok && !on });
-    b.onclick = async () => {
-      b.disabled = true; b.textContent = on ? "Stopping…" : "Starting…";
+    const on = !!t && (t.state === "up" || t.state === "starting");
+    const busy = tunnelBusy === kind || t?.state === "starting";
+    const [sub, cls] = t ? (t.state === "up" ? [t.url, "ok"] : t.state === "failed" ? ["Failed: " + (t.error || "unknown error"), "bad"] : [t.state === "starting" ? "Starting…" : t.state, ""]) : [detail, ""];
+    const sw = h("button", { type: "button", class: "switch" + (busy ? " busy" : ""), role: "switch", "aria-checked": on ? "true" : "false", "aria-label": label, disabled: (!ok && !on) || busy || !!tunnelBusy });
+    sw.onclick = async () => {
+      tunnelBusy = kind;
+      refreshTunnels(true);
       try { await api("/api/tunnel", { kind, on: !on }); } catch (e) { toast(e.message, 8000); }
-      refreshTunnels();
+      tunnelBusy = null;
+      refreshTunnels(true);
     };
-    return h("div", { class: "tunnel" }, h("span", { class: "name", text: label }), h("span", { class: "info", text: status }), b);
+    const st = t?.state === "up" ? "running" : t?.state === "failed" ? "failed" : busy ? "starting" : "off";
+    return lrow([h("span", { class: "dot " + st }), label, h("span", { class: "meta", text: scope })], sub, cls, sw);
   }));
 }
 
 async function makeLink() {
   const out = $("#linkOut");
-  out.textContent = "…";
+  const btn = $("#linkMake");
+  btn.disabled = true;
   try {
-    const r = await api("/api/links", { phone: $("#linkPhone").value || null, role: $("#linkRole").value, ttl_s: Number($("#linkTtl").value) });
+    const role = (document.querySelector('input[name="linkRole"]:checked') || {}).value || "view";
+    const r = await api("/api/links", { phone: $("#linkPhone").value || null, role, ttl_s: Number($("#linkTtl").value) });
     const best = r.urls.find((x) => x.kind !== "local") || r.urls[0];
+    const name = r.phone ? (sharePhones.find((p) => p.id === r.phone)?.name || r.phone) : "every device";
+    out.className = "result";
     out.replaceChildren(
-      h("img", { src: withToken("/api/qr.svg?text=" + encodeURIComponent(best.url)), alt: "QR code" }),
-      h("div", { class: "urls" }, ...r.urls.map((x) => h("div", { class: "url" }, h("span", { class: "pill", text: x.kind }), h("code", { text: x.url }), h("button", { type: "button", class: "btn small", text: "Copy", onclick: () => copy(x.url) }))),
-        r.urls.every((x) => x.kind === "local") ? h("p", { class: "hint", text: "Only this machine can open it: turn on a tunnel above for others." }) : null,
-        h("p", { class: "hint", text: `${r.role === "control" ? "Watch and drive" : "Watch only"} · expires ${new Date(r.expires * 1000).toLocaleString()}` })));
-  } catch (e) { out.textContent = e.message; }
+      h("div", { class: "qr", title: "Scan to open " + best.url }, h("img", { src: withToken("/api/qr.svg?text=" + encodeURIComponent(best.url)), alt: "QR code of the link" })),
+      h("div", { class: "urls" },
+        h("div", { class: "hint" }, h("b", { text: r.role === "control" ? "Watch and drive" : "Watch only", style: "color:var(--ink);font-weight:600" }), ` · ${name} · until ${fmtWhen(r.expires)}`),
+        ...r.urls.map((x) => h("div", { class: "url" },
+          h("div", { class: "uh" }, h("span", { class: "pill", text: KIND_LABEL[x.kind] || x.kind }),
+            navigator.share ? h("button", { type: "button", class: "btn small ghost", text: "Send…", onclick: () => navigator.share({ title: "x86Sim: " + name, url: x.url }).catch(() => {}) }) : null,
+            h("button", { type: "button", class: "btn small", text: "Copy", onclick: () => copy(x.url) })),
+          h("code", { text: x.url }))),
+        r.urls.every((x) => x.kind === "local") ? h("p", { class: "hint", text: "This machine only", title: "Turn on a tunnel under Remote access for others" }) : null));
+    out.hidden = false;
+    out.scrollIntoView({ block: "nearest" });
+  } catch (e) {
+    out.className = "result";
+    out.replaceChildren(h("div", { class: "hint", text: e.message }));
+    out.hidden = false;
+  }
+  btn.disabled = false;
   refreshLinks();
 }
 
@@ -960,10 +1372,12 @@ async function refreshLinks() {
   const box = $("#linkList");
   try {
     const l = await api("/api/links");
-    box.replaceChildren(...(l.length ? l.map((x) => h("div", { class: "tunnel" },
-      h("span", { class: "info", text: `${x.role === "control" ? "drive" : "watch"} · ${x.phone || "every device"} · until ${x.expires ? new Date(x.expires * 1000).toLocaleString() : "server stop"}` }),
-      h("button", { type: "button", class: "btn small danger", text: "Revoke", onclick: async () => { await api("/api/links/revoke", { id: x.id }); refreshLinks(); } }))) : ["None"]));
-  } catch (e) { box.textContent = e.message; }
+    box.replaceChildren(...(l.length ? l.map((x) => lrow(
+      [h("span", { class: "dot " + (x.role === "control" ? "running" : "off") }), x.role === "control" ? "Watch and drive" : "Watch only"],
+      `${x.phone ? (sharePhones.find((p) => p.id === x.phone)?.name || x.phone) : "Every device"} · ${x.expires ? "until " + fmtWhen(x.expires) : "until the server stops"}`, "",
+      h("button", { type: "button", class: "btn small danger", text: "Revoke", onclick: async (e) => { e.target.disabled = true; await api("/api/links/revoke", { id: x.id }).catch((er) => toast(er.message)); refreshLinks(); } })))
+      : [h("div", { class: "lrow none", text: "No links yet" })]));
+  } catch (e) { box.replaceChildren(h("div", { class: "lrow none", text: e.message })); }
 }
 
 boot();

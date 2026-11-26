@@ -28,12 +28,24 @@ mod mcp_profile;
 // ---- device services (simctl location / privacy / push / addmedia): sim_location, sim_privacy, sim_push, sim_addmedia ----
 #[path = "mcp_parts/services.rs"]
 mod mcp_services;
+// ---- network capture of native apps: net_capture, net_log, net_request, net_mock ----
+#[path = "mcp_parts/net.rs"]
+mod mcp_net;
+// ---- agent actions, round 2 (feat/agent-tools-2 C/D): fill, ... ----
+#[path = "mcp_parts/actions.rs"]
+mod mcp_actions;
+// ---- devices and apps, round 2 (feat/agent-tools-2 D): sim_delete, ... ----
+#[path = "mcp_parts/devices.rs"]
+mod mcp_devices;
+// ---- the GPU a device renders on: sim_gpu ----
+#[path = "mcp_parts/gpu.rs"]
+mod mcp_gpu;
 
 fn tools() -> Value {
     let phone = json!({"type": "string", "description": "the device: its name (as in the hub, e.g. \"QA\"), folder (device-a64-qa) or path. Default: the only running device, else the configured one"});
     let after = json!({"type": "string", "enum": ["full", "diff", "none"], "description": "what to answer with after the action settled: the whole screen (default), only what changed, or nothing"});
     let mut t = json!([
-        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime; responsive (SpringBoard answers; null while not known) and hung (running, but SpringBoard has not answered for 10 s or more: restart the device).",
+        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime; the GPU helper's memory and the GPU it renders on (gpu_name, gpu_id; sim_gpu); responsive (SpringBoard answers; null while not known) and hung (running, but SpringBoard has not answered for 10 s or more: restart the device).",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "sim_status", "description": "Same as phones_list (kept for older clients).",
          "inputSchema": {"type": "object", "properties": {}}},
@@ -75,17 +87,17 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "path": {"type": "string", "description": "the .app directory on this machine"}}, "required": ["path"]}},
         {"name": "app_uninstall", "description": "Uninstall an app from a running device (simctl uninstall).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}}, "required": ["bundle_id"]}},
-        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app, env sets environment variables in its process (simctl's SIMCTL_CHILD_NAME, x86sim launch --env). Returns the pid.",
+        {"name": "app_launch", "description": "Open an app on a running device by bundle id (simctl launch); args are passed to the app, env sets environment variables in its process (simctl's SIMCTL_CHILD_NAME, x86sim launch --env). Returns the pid; an error when no process started or it died within 3 s, with how it ended (exit code, signal).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "bundle_id": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "environment variables for the app, e.g. {\"API_URL\": \"http://localhost:8080\"}"}, "after": after}, "required": ["bundle_id"]}},
         {"name": "app_list", "description": "Installed apps on a running device (simctl listapps).", "inputSchema": {"type": "object", "properties": {"phone": phone}}},
         // agents: the screen as text and actions on its elements (x86sim_core::ax, host/simax)
-        {"name": "snapshot", "description": "The device's screen as text: the accessibility elements of the app(s) in front, SpringBoard (alerts, home screen icons, status bar, Control Center) and web pages (DOM: links, buttons, fields, headings, text). One line per element: @ref role \"label\" value= id= [states] (center x,y in points). Refs stay the same for the same element across snapshots, so act on them (tap ref=@e3). diff=true: only what changed since the last snapshot. all=true: also elements scrolled out of view. json=true: full records (frames, app, layer, window).",
-         "inputSchema": {"type": "object", "properties": {"phone": phone, "diff": {"type": "boolean"}, "all": {"type": "boolean"}, "json": {"type": "boolean"}}}},
+        {"name": "snapshot", "description": "The device's screen as text: the accessibility elements of the app(s) in front, SpringBoard (alerts, home screen icons, status bar, Control Center) and web pages (DOM: links, buttons, fields, headings, text). One line per element: @ref role \"label\" value= id= [states] (center x,y in points). Refs stay the same for the same element across snapshots, so act on them (tap ref=@e3). diff=true: only what changed since the last snapshot. all=true: also elements scrolled out of view. json=true: full records (frames, app, layer, window). Text drawn as pixels (Metal / OpenGL / SpriteKit / SceneKit views, games, a web page's canvas) is read by OCR when such a view covers a quarter of the screen and has no elements: role text, tagged [ocr] (json: ocr: true); tap / wait_for find it by its text. ocr=true reads the whole screen and adds any text no element says (images with text, custom-drawn controls).",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "diff": {"type": "boolean"}, "all": {"type": "boolean"}, "json": {"type": "boolean"}, "ocr": {"type": "boolean"}}}},
         {"name": "tap", "description": "Tap an element and answer with the screen after it settled. target: a ref from the snapshot (@e3), id:<accessibility identifier>, or label text (exact, then prefix, then substring; alerts over the app win); or x and y in points. An element scrolled out of view is scrolled in first. hold_ms >= 500 is a long press.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "hold_ms": {"type": "integer"}, "after": after}}},
         {"name": "long_press", "description": "Touch and hold an element (target as tap) or a point, ms (default 800): context menus, icon editing.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
-        {"name": "type", "description": "Type text into the focused field (tap the field first, or pass target to tap it first), as the software keyboard does: any characters. clear: empty the field first; submit: press the Return key after. A newline in text is a Return key press too (it submits a single-line field or web form, and is a new line in a multi-line text view). keys=true: hardware key presses instead (US layout; for games / key handlers).",
+        {"name": "type", "description": "Type text into the focused field (or pass target: it is tapped, then the text waits up to 2 s for that field to have the focus; it is an error when the focus is elsewhere), as the software keyboard does: any characters. The answer names the field that got the text and its value now. clear: empty the field first; submit: press the Return key after. A newline in text is a Return key press too (it submits a single-line field or web form, and is a new line in a multi-line text view). keys=true: hardware key presses instead (US layout; for games / key handlers).",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "text": {"type": "string"}, "target": {"type": "string"}, "clear": {"type": "boolean"}, "submit": {"type": "boolean"}, "keys": {"type": "boolean"}, "after": after}, "required": ["text"]}},
         {"name": "key", "description": "Press a key on the hardware keyboard: return, tab, escape, delete, space, up, down, left, right, home, end, pageup, pagedown, a character, or a combination such as cmd+a, shift+tab.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "key": {"type": "string"}, "after": after}, "required": ["key"]}},
@@ -97,14 +109,14 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "direction": {"type": "string", "enum": ["up", "down", "left", "right", "home", "notifications", "controlcenter", "back"]}, "x1": {"type": "number"}, "y1": {"type": "number"}, "x2": {"type": "number"}, "y2": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
         {"name": "pinch", "description": "A two-finger pinch (zoom a map, photo or web page): fingers on a line through the center (target as tap, or x and y in points; default the screen's middle), half their distance going from radius (default 60) to to_radius (larger zooms in, smaller zooms out; default radius*2.5) over ms (default 500). rotate: degrees the fingers turn (clockwise; a two-finger rotation, e.g. a map's heading; with to_radius = radius it only turns). iPhone and iPad.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "radius": {"type": "number"}, "to_radius": {"type": "number"}, "rotate": {"type": "number"}, "ms": {"type": "integer"}, "after": after}}},
-        {"name": "wait_for", "description": "Wait until an element (target as tap: text, @ref, id:...) is on screen, or with gone=true until it is not; timeout seconds (default 20). Wakes on every new frame (no fixed polling). Answers with the screen.",
+        {"name": "wait_for", "description": "Wait until an element (target as tap: text matched exactly, then by prefix, then as a part of the label; @ref, id:...) is on screen, or with gone=true until it is not; timeout seconds (default 20). Wakes on every new frame (no fixed polling). Answers with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "target": {"type": "string"}, "gone": {"type": "boolean"}, "timeout": {"type": "number"}}, "required": ["target"]}},
         {"name": "press", "description": "Press a hardware button (home, lock, side, volup, voldown, siri, action, ...; as sim_button) and answer with the screen after it.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "button": {"type": "string"}, "ms": {"type": "integer"}, "after": after}, "required": ["button"]}},
         {"name": "sim_keyboard", "description": "Apple Simulator's I/O > Keyboard. software: on / off / toggle the on-screen keyboard while a hardware keyboard is connected (Toggle Software Keyboard, Cmd-K; it shows while a text field is focused). hardware: connect / disconnect / toggle the simulated hardware keyboard (Connect Hardware Keyboard, Shift-Cmd-K; disconnected, the software keyboard shows on every focus as on a device; kept across boots, also for a device that is off). status: both states. Typing (type, key) works either way; snapshot lists the keyboard's keys (role key) while it is up. Answers with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "keyboard": {"type": "string", "enum": ["software", "hardware", "status"]}, "action": {"type": "string", "enum": ["on", "off", "toggle", "connect", "disconnect"]}, "after": after}, "required": ["keyboard"]}},
-        {"name": "screenshot", "description": "The screen as an image (PNG), upright. Default scale: one pixel per point, so positions match the snapshot's coordinates; scale=1 for full device pixels, 2 for half, etc. (a divisor).",
-         "inputSchema": {"type": "object", "properties": {"phone": phone, "scale": {"type": "integer"}}}},
+        {"name": "screenshot", "description": "The screen as an image (PNG), upright. Default scale: one pixel per point, so positions match the snapshot's coordinates; scale=1 for full device pixels, 2 for half, etc. (a divisor). marks=true: every element of a fresh snapshot outlined with its @ref beside it (marks=actionable: only controls, links, fields, icons and [ocr] text), the snapshot's text alongside, for working from the image; ocr=true marks the whole screen's text read from pixels too. target=@e3 (or id:..., or text): only that element, cropped with a margin.",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "scale": {"type": "integer"}, "marks": {"type": ["boolean", "string"], "description": "true | actionable"}, "target": {"type": "string"}, "ocr": {"type": "boolean"}}}},
         {"name": "open_url", "description": "Open a URL (web page in Safari, deep link, prefs:/settings link) as simctl openurl, and answer with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "url": {"type": "string"}, "after": after}, "required": ["url"]}},
         {"name": "app_terminate", "description": "Stop a running app by bundle id (simctl terminate) and answer with the screen.",
@@ -145,6 +157,21 @@ fn tools() -> Value {
     if let Value::Array(v) = &mut t {
         v.extend(mcp_services::tools(&phone));
     }
+    // ---- network capture ----
+    if let Value::Array(v) = &mut t {
+        v.extend(mcp_net::tools(&phone));
+    }
+    // ---- agent actions, round 2 ----
+    if let Value::Array(v) = &mut t {
+        v.iter_mut().for_each(mcp_actions::extend_wait_for);
+        v.extend(mcp_actions::tools(&phone));
+    }
+    // ---- devices and apps, round 2 ----
+    if let Value::Array(v) = &mut t {
+        v.iter_mut().for_each(mcp_devices::extend_terminate);
+        v.extend(mcp_devices::tools(&phone));
+        v.extend(mcp_gpu::tools(&phone));
+    }
     t
 }
 
@@ -170,6 +197,18 @@ enum Answer {
     Json(Value),
     Text(String, Option<Value>),
     Image(String, String),
+    /// MCP content parts as they are (batch)
+    Parts(Vec<Value>),
+}
+
+/// An answer as MCP content parts (batch's steps)
+fn parts_of(a: Answer) -> Vec<Value> {
+    match a {
+        Answer::Json(v) => vec![json!({"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default()})],
+        Answer::Text(t, _) => vec![json!({"type": "text", "text": t})],
+        Answer::Image(b64, caption) => vec![json!({"type": "image", "data": b64, "mimeType": "image/png"}), json!({"type": "text", "text": caption})],
+        Answer::Parts(p) => p,
+    }
 }
 
 fn ax_answer(o: ax::Outcome) -> Answer {
@@ -243,11 +282,26 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
     if let Some(r) = mcp_services::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(Answer::Json);
     }
+    if let Some(r) = mcp_net::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(|(t, v)| Answer::Text(t, v));
+    }
+    if let Some(r) = mcp_devices::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(Answer::Json);
+    }
+    if let Some(r) = mcp_gpu::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(Answer::Json);
+    }
+    if name == "batch" {
+        return mcp_actions::batch(a, &|n, args| call(n, args).map(parts_of), &|| phone_of(a, &cfg)).map(Answer::Parts);
+    }
+    if let Some(r) = mcp_actions::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(|t| Answer::Text(t, None));
+    }
     if matches!(name, "phones_list" | "sim_status") {
         return Ok(Answer::Json(json!({"phones": instance::summaries(1000)})));
     }
     if name == "sim_devices" {
-        return Ok(Answer::Json(json!({"devices": instance::list().into_iter().map(|i| json!({"name": i.name, "id": i.id, "label": format!("{} · {}", i.model, i.name), "path": i.dir, "ios": i.ios, "installed": i.runtime_present})).collect::<Vec<_>>(),
+        return Ok(Answer::Json(json!({"devices": instance::list().into_iter().map(|i| json!({"name": i.name, "id": i.id, "label": format!("{} · {}", i.model, i.name), "path": i.dir, "ios": i.ios, "installed": i.runtime_present, "unavailable": i.unavailable})).collect::<Vec<_>>(),
                          "models": sim::models().into_iter().map(|m| m.0).collect::<Vec<_>>(),
                          "runtimes": sim::runtimes().into_iter().map(|r| r.0).collect::<Vec<_>>()})));
     }
@@ -270,7 +324,10 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             .find(|r| !sim::runtime_restricted_to(&r.1).is_empty())
             .or(cands.first())
             .map(|r| r.1.clone())
-            .ok_or_else(|| anyhow::anyhow!("no {pname} {want} installed for {model} (see sim_devices runtimes)"))?;
+            .ok_or_else(|| match sim::runtimes().into_iter().find(|r| r.0.contains(want) && sim::runtime_unsupported(&r.1).contains(&model_id)) {
+                Some(r) => anyhow::anyhow!("{} does not support {model} (Apple's simulator refuses it too); leave out ios for the build that does", r.0),
+                None => anyhow::anyhow!("no {pname} {want} installed for {model} (see sim_devices runtimes)"),
+            })?;
         return Ok(Answer::Json(json!({"device": sim::create_device(a["model"].as_str().unwrap_or(""), a["name"].as_str().unwrap_or(""), &rt)?})));
     }
     let inst = phone_of(a, &cfg)?;
@@ -418,7 +475,7 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
         }
         "snapshot" => {
             let prev = ax::last(&inst);
-            let snap = ax::snapshot(&inst, ax::SnapOpts { all: a["all"].as_bool().unwrap_or(false), ..Default::default() })?;
+            let snap = ax::snapshot(&inst, ax::SnapOpts { all: a["all"].as_bool().unwrap_or(false), ocr: a["ocr"].as_bool().unwrap_or(false), ..Default::default() })?;
             let text = match (a["diff"].as_bool().unwrap_or(false), prev) {
                 (true, Some(p)) => snap.diff(&p),
                 _ => snap.text(),
@@ -438,11 +495,8 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             return Ok(ax_answer(ax::tap(&inst, &target, hold, after)?));
         }
         "type" => {
-            if let Some(t) = a["target"].as_str() {
-                ax::tap(&inst, t, 80, ax::After::None)?;
-                ax::settle(&inst, std::time::Duration::from_millis(250), std::time::Duration::from_millis(2000));
-            }
-            let o = ax::type_text(&inst, a["text"].as_str().unwrap_or(""), a["clear"].as_bool().unwrap_or(false), a["submit"].as_bool().unwrap_or(false), a["keys"].as_bool().unwrap_or(false), after)?;
+            // a target is tapped, then the text waits for it to have the focus (x86sim_core::axact)
+            let o = x86sim_core::axact::type_into(&inst, a["target"].as_str(), a["text"].as_str().unwrap_or(""), a["clear"].as_bool().unwrap_or(false), a["submit"].as_bool().unwrap_or(false), a["keys"].as_bool().unwrap_or(false), after)?;
             return Ok(ax_answer(o));
         }
         "key" => return Ok(ax_answer(ax::key(&inst, a["key"].as_str().unwrap_or(""), after)?)),
@@ -480,6 +534,19 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             let div = a["scale"].as_u64().map(|s| s as u32).unwrap_or(inst.scale.round().max(1.0) as u32);
             // a stable frame: what an action or setting just changed, not the frame before it
             ax::settle(&inst, std::time::Duration::from_millis(150), std::time::Duration::from_millis(1500));
+            let marks = match &a["marks"] {
+                Value::Bool(true) => Some(x86sim_core::marks::Marks::All),
+                Value::String(s) => x86sim_core::marks::Marks::parse(s),
+                _ => None,
+            };
+            if let Some(t) = a["target"].as_str().filter(|t| !t.is_empty()) {
+                let (png, w, h, e) = x86sim_core::marks::element_shot(&inst, t, div)?;
+                return Ok(Answer::Image(ax::base64(&png), format!("{} @{} {} {}, {w}x{h} px", inst.name, e.r, e.role, e.label.as_deref().unwrap_or(""))));
+            }
+            if let Some(m) = marks {
+                let (png, w, h, n, snap) = x86sim_core::marks::marked(&inst, m, div, a["ocr"].as_bool().unwrap_or(false))?;
+                return Ok(Answer::Image(ax::base64(&png), format!("{} screen, {w}x{h} px, {n} marks\n{}", inst.name, snap.text())));
+            }
             let (png, w, h) = ax::screenshot(&inst, div)?;
             return Ok(Answer::Image(ax::base64(&png), format!("{} screen, {w}x{h} px", inst.name)));
         }
@@ -535,6 +602,7 @@ fn main() {
                     Ok(Answer::Text(t, None)) => json!({"content": [{"type": "text", "text": t}]}),
                     Ok(Answer::Text(t, Some(v))) => json!({"content": [{"type": "text", "text": t}], "structuredContent": v}),
                     Ok(Answer::Image(b64, caption)) => json!({"content": [{"type": "image", "data": b64, "mimeType": "image/png"}, {"type": "text", "text": caption}]}),
+                    Ok(Answer::Parts(p)) => json!({"content": p}),
                     Err(e) => json!({"content": [{"type": "text", "text": format!("{e:#}")}], "isError": true}),
                 })
             }

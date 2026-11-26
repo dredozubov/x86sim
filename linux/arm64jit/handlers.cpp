@@ -1033,6 +1033,8 @@ Handler special_handler(const std::string &n, int *nfixed, const char **native_n
         {"_mach_msg_server", h_callbacks<0>}, {"_mach_msg_server_once", h_callbacks<0>},
         {"_mach_msg_server_importance", h_callbacks<0>}, {"___sigaction", h_sigaction}, {"___platform_sigaction", h_platform_sigaction},
         {"_sigaltstack", h_sigaltstack}, {"___sigaltstack", h_sigaltstack},
+        {"_pthread_sigmask", h_sigmask}, {"___pthread_sigmask", h_sigmask}, {"_sigprocmask", h_sigmask},
+        {"___disable_threadsignal", h_disable_threadsignal},
         {"_mach_vm_map", h_cachelock<h_vm_map>}, {"_vm_map", h_cachelock<h_vm_map>}, {"_mach_vm_remap", h_cachelock<h_vm_remap>},
         {"_vm_remap", h_cachelock<h_vm_remap>}, {"_mach_vm_remap_new", h_cachelock<h_vm_remap>},
         {"_vm_remap_new", h_cachelock<h_vm_remap>}, {"_mach_vm_allocate", h_cachelock<h_vm_allocate>},

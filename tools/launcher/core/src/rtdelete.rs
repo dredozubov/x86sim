@@ -91,7 +91,7 @@ pub fn find(key: &str) -> Result<Runtime> {
     if hits.is_empty() && !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric()) && scratch().join(format!("jc-{k}")).is_dir() {
         let dir = format!("ios-0-{k}-arm64");
         let root = repo_root().join("runtimes").join(&dir).join("RuntimeRoot");
-        return Ok(Runtime { jc: crate::sim::jc_for(&root), platform: "ios".into(), version: String::new(), build: k.into(), root, present: false, partial: false, restricted_to: vec![], dir });
+        return Ok(Runtime { jc: crate::sim::jc_for(&root), platform: "ios".into(), version: String::new(), build: k.into(), root, present: false, partial: false, restricted_to: vec![], unsupported: vec![], dir });
     }
     match hits.len() {
         1 => Ok(hits[0].clone()),

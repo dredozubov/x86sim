@@ -541,6 +541,9 @@ def clone(a):
         die("usage: x86sim clone NEWNAME", 2)
     name = " ".join(a)
     own_phone("clone")
+    # as simctl clone: not a device its runtime refuses (device-a64.py check: CoreSimulator's "unavailable")
+    if subprocess.run([sys.executable, os.path.join(ROOT, "cli/libexec/arm64/device-a64.py"), "check", DEV]).returncode:
+        sys.exit(1)
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24].strip("-")
     if not slug:
         die("x86sim clone: give the new device a name", 2)
@@ -620,6 +623,28 @@ def last_crash(exe):
             continue
         if CRASH.search(txt):
             return p, txt
+    return None, None
+
+
+ABORT = re.compile(r"abort_with_(?:payload|reason):? namespace (\d+) code (\S+): (.*?)(?: \(lr 0x[0-9a-f]+\))?$")
+
+
+def last_abort(exe):
+    """Why the newest run of `exe` that aborted did: libsimshim's records (data/var/log/x86sim-exit/<exe>.<pid>.log)
+    and the translator's process logs (dyld's halts come before libsimshim loads). (path, reason) or (None, None)."""
+    logs = glob.glob(os.path.join(DATA, "var/log/x86sim-exit", "%s.*.log" % glob.escape(exe)))
+    for d in ("private/var/tmp/x86sim-a64", "private/var/tmp/x86sim-a64.prev"):
+        logs += glob.glob(os.path.join(prefix_dir(), d, "%s.*.log" % glob.escape(exe)))
+    for p in sorted(logs, key=lambda p: os.path.getmtime(p), reverse=True):
+        try:
+            lines = open(p, errors="replace").read().splitlines()
+        except OSError:
+            continue
+        for l in reversed(lines):
+            m = ABORT.search(l)
+            if m:
+                ns, code, why = m.groups()
+                return p, ("dyld: %s" % why if ns == "6" else "namespace %s code %s: %s" % (ns, code, why))
     return None, None
 
 
@@ -714,6 +739,10 @@ def applog(a):
             print(sym.line(l) if sym else l)
     elif not reports:
         print("\n== no crash recorded for %s (this boot or the last)" % exe)
+    # why its last run that aborted did (abort_with_payload / abort_with_reason, dyld's halts)
+    apath, why = last_abort(exe)
+    if why:
+        print("\n== abort reason, %s (%s)\n%s" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(apath))), apath, why))
     # os_log
     d = os.path.join(DATA, "var/log")
     logs = sorted(glob.glob(os.path.join(d, "oslog.%s.*.log" % glob.escape(exe))), key=os.path.getmtime)

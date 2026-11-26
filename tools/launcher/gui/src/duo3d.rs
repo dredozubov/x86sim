@@ -1,24 +1,27 @@
-//! Models 2: the iPhone Duo in 3D, as Xcode's DeviceHub shows its foldable (CoreDevicePopDeviceKitExtension draws
-//! Apple's V68.usdz; that model is Apple's, so this one is built here, mesh.rs): two rounded halves on a hinge spine,
-//! the inner screen one panel across both fronts and the outer screen on the back of the right half, each the
-//! phone's live picture. The left half faces the viewer; the right half turns about the hinge by 180 - angle, so
+//! Models 2: the iPhone Duo in 3D, as Xcode's DeviceHub shows its foldable: Xcode's own model (V68.usdz, taken from
+//! the user's Xcode.xip: x86sim_core::devicemodel), skinned along its hinge. Without it the phone is shown flat. The
+//! inner screen is one panel across both fronts, the outer screen on the back of the left half (the cameras on the
+//! right half's), each the phone's live picture. The left half faces the viewer; the right half turns about the hinge by 180 - angle, so
 //! closed it lies on the left half with the outer screen up. The device orientation turns the whole phone
 //! (landscape: the left half becomes the base of a laptop pose). Drawn with OpenGL (gpu.rs) with a depth buffer.
 mod gpu;
-mod mesh;
+mod geom;
 
 use crate::viewer::{convert, Hit, Img, ScreenMap};
 use eframe::egui;
 use egui::{Rect, TextureId};
-use mesh::{rot_x, rot_y, rot_z, v3, V3};
+use geom::{rot_x, rot_y, rot_z, v3, V3};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
-use x86sim_core::{instance::Instance, ring::Ring};
+use x86sim_core::{devicemodel, instance::Instance, ring::Ring};
 
-/// degrees a second the shown hinge moves towards the commanded angle (simhid moves it over 600 ms)
+/// at most this many degrees a second the shown hinge moves towards the commanded angle (simhid moves it over 600 ms)
 const SPEED: f64 = 300.0;
+/// how fast the shown hinge closes on its target (per second): an eased follow, so a slider that sends a step every
+/// 40 ms draws one smooth sweep instead of a dash and a stop per step
+const HINGE_RATE: f64 = 14.0;
 /// how fast the camera and the framing settle on where they should be (per second): both follow the hinge with
 /// the same lag, so a hinge moved a degree at a time reads as one smooth move instead of a twitch per step
 const SETTLE: f32 = 7.0;
@@ -39,8 +42,6 @@ struct Feed {
     seen_ms: AtomicU64,
     frame: Mutex<Option<Img>>,
     dirty: AtomicBool,
-    /// the latest frame shows something (an unused screen is black)
-    lit: AtomicBool,
 }
 
 struct Screen {
@@ -51,7 +52,7 @@ struct Screen {
 
 impl Screen {
     fn new(ring: &Path, rot: u32, name: String, ctx: egui::Context) -> Screen {
-        let feed = Arc::new(Feed { ring: Mutex::new(ring.to_path_buf()), rot, target_w: AtomicU32::new(800), seen_ms: AtomicU64::new(now_ms()), frame: Mutex::new(None), dirty: AtomicBool::new(false), lit: AtomicBool::new(false) });
+        let feed = Arc::new(Feed { ring: Mutex::new(ring.to_path_buf()), rot, target_w: AtomicU32::new(800), seen_ms: AtomicU64::new(now_ms()), frame: Mutex::new(None), dirty: AtomicBool::new(false) });
         let weak: Weak<Feed> = Arc::downgrade(&feed);
         let _ = std::thread::Builder::new().name(format!("duo3d {name}")).spawn(move || {
             let mut path = PathBuf::new();
@@ -78,8 +79,6 @@ impl Screen {
                         let step = (src_w / f.target_w.load(Ordering::Relaxed).max(8) as usize).max(1);
                         if (fr.seq, step) != last {
                             let img = convert(&fr, step, f.rot, true);
-                            let lit = img.pixels.iter().step_by(97).any(|c| c.r() > 12 || c.g() > 12 || c.b() > 12);
-                            f.lit.store(lit, Ordering::Relaxed);
                             *f.frame.lock().unwrap() = Some(img);
                             f.dirty.store(true, Ordering::Release);
                             ctx.request_repaint();
@@ -132,6 +131,17 @@ pub struct Duo3d {
     last_t: f64,
     /// the angle the hinge panel last sent and when (the hinge file only changes at a move's start and end)
     pub commanded: Option<(f64, f64)>,
+    /// the hinge angle the camera's default view is aimed for: set by a pose, a reset, or a move from elsewhere (the
+    /// MCP, the CLI), never while the slider is dragged, so the view holds still under a sliding hinge
+    view_deg: f64,
+    /// the orientation a pose chosen here holds the phone in, and when: drawn at once, before simhid reports it
+    commanded_orient: Option<(String, f64)>,
+    /// the device orientation the phone is placed in (portrait / landscape / upside down; a face up or down report
+    /// keeps the last one, as the screens' pictures do)
+    orient: String,
+    /// how far the drawn placement (roll, tilt) still is from the orientation's: it eases to nothing after a turn,
+    /// so the phone turns into a new orientation instead of jumping there
+    place_off: (f32, f32),
     /// the camera (yaw, pitch; radians) drawn, easing towards the default view of the pose
     cam: Option<(f32, f32)>,
     /// the framing (scale before zoom, picture centre, view-space centre) drawn, easing towards the phone's
@@ -140,11 +150,17 @@ pub struct Duo3d {
     fit_t: f64,
     /// what a drag turned the view by on top of the default view (radians); a double click resets it
     orbit: (f32, f32),
-    /// the scroll wheel's zoom (1: the phone fits the area)
+    /// the scroll wheel's zoom (1: the phone fits the area), and the one drawn: the wheel moves both, a reset only the
+    /// first (the drawn one eases back)
     zoom: f32,
+    zoom_shown: f32,
     gl: gpu::Target,
     /// the main view's projection, as last drawn (touches are traced back through it)
     proj: Option<Proj>,
+    /// the model as last drawn
+    model: Option<Arc<devicemodel::Model>>,
+    /// the posed surfaces touches are traced onto: (angle, surfaces)
+    hits: Mutex<Option<(f64, Arc<devicemodel::HitMesh>)>>,
 }
 
 /// How the main view was drawn: enough to trace a pointer position back into the model
@@ -154,11 +170,12 @@ struct Proj {
     pitch: f32,
     roll: f32,
     tilt: f32,
-    phi: f32,
     c: V3,
     dist: f32,
     s: f32,
     off: egui::Pos2,
+    /// the hinge angle drawn
+    deg: f64,
 }
 
 impl Proj {
@@ -181,13 +198,20 @@ impl Duo3d {
             shown: inst.hinge().unwrap_or(0.0),
             last_t: f64::NAN,
             commanded: None,
+            view_deg: f64::NAN,
+            commanded_orient: None,
+            orient: String::new(),
+            place_off: (0.0, 0.0),
             cam: None,
             fit: None,
             fit_t: f64::NAN,
             orbit: (0.0, 0.0),
             zoom: 1.0,
+            zoom_shown: 1.0,
             gl: Default::default(),
             proj: None,
+            model: None,
+            hits: Mutex::new(None),
         })
     }
 
@@ -196,8 +220,10 @@ impl Duo3d {
     /// Returns whether it is bent: not closed, not flat.
     pub fn update(&mut self, inst: &Instance, now: f64, ctx: &egui::Context) -> bool {
         let file = pose_override().map(|p| p.0).unwrap_or_else(|| inst.hinge().unwrap_or(0.0));
+        // the panel's angle while it moves the hinge and until simhid's file has caught up with it (the file is
+        // whole degrees and is written as a move ends: switching to it early drew the hinge back, then on again)
         let target = match self.commanded {
-            Some((v, t)) if now - t < 1.0 => v,
+            Some((v, t)) if now - t < 1.0 || ((file - v).abs() > 1.5 && now - t < 3.0) => v,
             _ => file,
         };
         let dt = if self.last_t.is_nan() { 0.0 } else { (now - self.last_t).clamp(0.0, 0.1) };
@@ -206,18 +232,45 @@ impl Duo3d {
         }
         self.last_t = now;
         let d = target - self.shown;
-        let step = SPEED * dt;
-        self.shown = if d.abs() <= step { target } else { self.shown + step * d.signum() };
+        let step = (d * (1.0 - (-dt * HINGE_RATE).exp())).clamp(-SPEED * dt, SPEED * dt);
+        self.shown = if d.abs() < 0.05 { target } else { self.shown + step };
         if self.shown != target {
             ctx.request_repaint();
         }
-        // the camera eases to the pose's view (the screen swap turns it from the inner to the outer screen)
         let phi = ((180.0 - self.shown) as f32).to_radians();
-        let want = Self::default_view(&orientation(inst), self.shown, phi, self.facing());
+        // the orientation: a pose's from here at once, else simhid's. A new one turns the phone over from where it is
+        // drawn and drops a view turned or zoomed by hand (it was relative to how the phone was held).
+        let o = match &self.commanded_orient {
+            Some((o, t)) if now - t < 1.5 => o.clone(),
+            _ => orientation(inst),
+        };
+        if roll_known(&o) && o != self.orient {
+            if !self.orient.is_empty() {
+                let (a, b) = (placement(&self.orient, phi), placement(&o, phi));
+                self.place_off = (wrap(self.place_off.0 + a.0 - b.0), self.place_off.1 + a.1 - b.1);
+                self.reset_view();
+            }
+            self.orient = o;
+        }
+        if self.place_off != (0.0, 0.0) {
+            let k = (-(dt as f32) * SETTLE).exp();
+            self.place_off = (self.place_off.0 * k, self.place_off.1 * k);
+            if self.place_off.0.abs() + self.place_off.1.abs() < 0.001 {
+                self.place_off = (0.0, 0.0);
+            }
+            ctx.request_repaint();
+        }
+        // the camera eases to the view of the angle it is aimed for: a pose's, a reset's, or a move from elsewhere
+        // once it is done (the hinge panel sent nothing for 3 s); not the sliding angle itself
+        // quiet: nothing sent from here for 3 s, and the hinge is not where the panel last sent it (moved elsewhere)
+        let quiet = self.commanded.is_none_or(|(v, t)| now - t > 3.0 && (file - v).abs() > 1.5);
+        if self.view_deg.is_nan() || (quiet && (file - self.view_deg).abs() > 1.0 && (self.shown - file).abs() < 0.5) {
+            self.view_deg = self.shown;
+        }
+        let want = Self::default_view(&self.orient, self.view_deg, ((180.0 - self.view_deg) as f32).to_radians());
         let cam = match self.cam {
             Some((y, p)) if dt > 0.0 => {
                 let k = 1.0 - (-(dt as f32) * SETTLE).exp();
-                let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
                 let (dy, dp) = (wrap(want.0 - y), want.1 - p);
                 if dy.abs() + dp.abs() > 0.002 {
                     ctx.request_repaint();
@@ -228,37 +281,73 @@ impl Duo3d {
             None => want,
         };
         self.cam = Some(cam);
+        if self.zoom_shown != self.zoom {
+            let k = 1.0 - (-(dt as f32) * SETTLE).exp();
+            self.zoom_shown += (self.zoom - self.zoom_shown) * k;
+            if (self.zoom_shown - self.zoom).abs() < self.zoom * 0.001 {
+                self.zoom_shown = self.zoom;
+            }
+            ctx.request_repaint();
+        }
         self.bent()
+    }
+
+    /// A pose chosen in the hinge panel (`HINGE_POSES`): drawn moving there at once, its orientation too, and the
+    /// view settles on the pose's default (a turn or zoom by hand is dropped)
+    pub fn pose(&mut self, angle: f64, orientation: Option<&str>, now: f64) {
+        self.commanded = Some((angle, now));
+        self.view_deg = angle;
+        if let Some(o) = orientation {
+            self.commanded_orient = Some((o.to_string(), now));
+        }
+        self.reset_view();
+    }
+
+    /// Back to the pose's default view: no turn or zoom by hand. The turn is handed to the camera, which eases from
+    /// where it is drawn to the default view, and the zoom eases back: no jump.
+    pub fn reset_view(&mut self) {
+        if let Some((y, p)) = self.cam {
+            self.cam = Some((wrap(y + self.orbit.0), (p + self.orbit.1).clamp(-1.5, 1.5)));
+        }
+        self.orbit = (0.0, 0.0);
+        self.zoom = 1.0;
+        // aimed for the angle just sent from here (a pose moving there), else where the hinge is drawn
+        if let Some((v, _)) = self.commanded.filter(|c| self.last_t.is_nan() || self.last_t - c.1 < 3.0) {
+            self.view_deg = v;
+        } else if !self.shown.is_nan() {
+            self.view_deg = self.shown;
+        }
     }
 
     pub fn bent(&self) -> bool {
         self.shown > 0.5 && self.shown < 179.5
     }
 
-    /// Whether the view should face the inner screen: the screen that is lit (SpringBoard moves to the other one a
-    /// couple of seconds after the hinge settles past its swap angle); None while both or neither are
-    fn facing(&self) -> Option<bool> {
-        let (i, o) = (self.inner.feed.lit.load(Ordering::Relaxed), self.outer.feed.lit.load(Ordering::Relaxed));
-        (i != o).then_some(i)
-    }
-
     /// The default camera (turntable yaw about the vertical, then elevation) at hinge angle `deg` (the right half
-    /// turned by `phi`), facing the screen in use: the lit one (`inner`), else by SpringBoard's swap angle (inner
-    /// from 85 degrees up). Held in portrait, the inner screen is seen along the bisector of the two halves (an open
-    /// book; straight on when flat), the outer one on the right half's back straight on, then from a little to the
-    /// right and above so the fold reads as 3D. In landscape the phone sits on the table on its lower half
-    /// (`placement`), seen from the front and above as a laptop is: low for the inner screen, high for the outer
-    /// one lying face up.
-    fn default_view(orient: &str, deg: f64, phi: f32, inner: Option<bool>) -> (f32, f32) {
-        let inner = inner.unwrap_or(deg >= 85.0);
+    /// turned by `phi`): a function of the angle alone, so a hinge moved by the slider or a pose is followed in one
+    /// smooth move (it once turned to whichever screen was lit, and SpringBoard lights the other one a couple of
+    /// seconds after the hinge passes its swap angle: the view ended facing the shut inner side, then swung round).
+    /// It faces the inner screen when open and the outer one when folded, blended up to SpringBoard's swap angle
+    /// (85 degrees; `inner_weight`). Held in portrait, the inner screen is seen along the bisector of the two halves
+    /// (an open book; straight on when flat), the outer one on the left half's back (the cameras are on the right
+    /// half's) straight on from behind, then from a little to the side and above so the fold
+    /// reads as 3D. In landscape the phone sits on the table on its lower half (`placement`), seen from the front and
+    /// above as a laptop is: low for the inner screen; for the outer one from high above where it lies face up
+    /// (landscape right: the left half is the lid) and from below where it lies face down (landscape left).
+    fn default_view(orient: &str, deg: f64, phi: f32) -> (f32, f32) {
+        let w = inner_weight(deg);
         let k = phi.sin().max(0.0);
         if matches!(orient, "landscapeLeft" | "landscapeRight") {
-            let elev: f32 = if inner { 28.0 } else { 70.0 };
+            let out = if orient == "landscapeLeft" { -70.0 } else { 70.0 };
+            let elev = out + (28.0 - out) * w;
             // a positive pitch tips the top of the scene towards the camera: seen from above
             return ((-12f32 * k).to_radians(), elev.to_radians());
         }
-        let n = if inner { v3(-phi.sin(), 0.0, 1.0 + phi.cos()) } else { v3(phi.sin(), 0.0, -phi.cos()) };
-        let n = rot_z(n, roll_of(orient));
+        // the inner screen's bisector turns by -phi/2, the outer screen faces -z (the left half holds still): the way
+        // between them goes round the left half's edge (never through the phone)
+        let yaw_in = -phi / 2.0;
+        let y = yaw_in + (1.0 - w) * (-std::f32::consts::PI - yaw_in);
+        let n = rot_z(v3(y.sin(), 0.0, y.cos()), roll_of(orient));
         let yaw = n.x.atan2(n.z);
         let r = (n.x * n.x + n.z * n.z).sqrt();
         let pitch = n.y.atan2(r);
@@ -274,15 +363,14 @@ impl Duo3d {
     /// response to the viewer with `screen_map`). Returns the response of the area.
     pub fn paint(&mut self, ui: &mut egui::Ui, rect: Rect, inst: &Instance) -> egui::Response {
         let resp = ui.interact(rect, ui.id().with("duo3d"), egui::Sense::click_and_drag());
-        let orient = orientation(inst);
+        let orient = if self.orient.is_empty() { orientation(inst) } else { self.orient.clone() };
         let phi = ((180.0 - self.shown) as f32).to_radians();
         let moving = ui.input(|i| i.modifiers.alt || i.pointer.secondary_down() || i.pointer.middle_down());
         {
             let other = resp.dragged_by(egui::PointerButton::Secondary) || resp.dragged_by(egui::PointerButton::Middle);
             // a double right click resets the view in either mode (a double left click is the phone's while it is used)
             if resp.double_clicked_by(egui::PointerButton::Secondary) || (moving && resp.double_clicked()) {
-                self.orbit = (0.0, 0.0);
-                self.zoom = 1.0;
+                self.reset_view();
             } else if other || (moving && resp.dragged_by(egui::PointerButton::Primary)) {
                 // the phone turns the way it is dragged, as if held by the pointer
                 let d = resp.drag_delta();
@@ -293,33 +381,38 @@ impl Duo3d {
                 let z = self.zoom * (scroll * 0.002).exp() * pinch;
                 if z != self.zoom {
                     self.zoom = z.clamp(0.4, 5.0);
+                    self.zoom_shown = self.zoom;
                 }
             }
         }
-        let (cy, cp) = self.cam.unwrap_or_else(|| Self::default_view(&orient, self.shown, phi, self.facing()));
+        let (cy, cp) = self.cam.unwrap_or_else(|| Self::default_view(&orient, self.shown, phi));
         let (yaw, pitch) = (cy + self.orbit.0, (cp + self.orbit.1).clamp(-1.5, 1.5));
         let (roll, tilt) = placement(&orient, phi);
+        let (roll, tilt) = (roll + self.place_off.0, tilt + self.place_off.1);
         let view = |p: V3| rot_x(rot_y(rot_x(rot_z(p, roll), tilt), yaw), pitch);
         let ppp = ui.ctx().pixels_per_point();
         let inner_ring = inst.inner.as_ref().map(|d| d.ring.clone()).unwrap_or_default();
-        let inner = self.inner.texture(ui.ctx(), &inner_ring, rect.width() * ppp * 2.0 * self.zoom);
-        let outer = self.outer.texture(ui.ctx(), &inst.ring, rect.width() * ppp * 1.2 * self.zoom);
-        let m = mesh::build(self.shown as f32);
-        let size = 2.0 * mesh::half_w() + mesh::half_h();
+        let inner = self.inner.texture(ui.ctx(), &inner_ring, rect.width() * ppp * 2.0 * self.zoom_shown);
+        let outer = self.outer.texture(ui.ctx(), &inst.ring, rect.width() * ppp * 1.2 * self.zoom_shown);
+        // the model (main.rs shows the phone flat without it), posed; every 8th vertex is plenty to frame it
+        let Some(model) = devicemodel::duo() else { return resp };
+        let bones = model.pose(self.shown);
+        let pts: Vec<[f32; 3]> = (0..model.v.len()).step_by(8).map(|i| model.skin(i, &bones)).collect();
+        let size = 2.0 * geom::half_w() + geom::half_h();
         // a longer lens than a wide one, as products are photographed
         let dist = 2.4 * size;
         // the view-space box's centre is the middle of the picture; the projected box fits the area
         let mut lo = v3(f32::MAX, f32::MAX, f32::MAX);
         let mut hi = v3(f32::MIN, f32::MIN, f32::MIN);
-        for v in &m.v {
-            let p = view(v3(v.p[0], v.p[1], v.p[2]));
+        for v in &pts {
+            let p = view(v3(v[0], v[1], v[2]));
             lo = v3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
             hi = v3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
         }
         let c = lo.add(hi).scale(0.5);
         let mut bb = Rect::NOTHING;
-        for v in &m.v {
-            let q = view(v3(v.p[0], v.p[1], v.p[2])).sub(c);
+        for v in &pts {
+            let q = view(v3(v[0], v[1], v[2])).sub(c);
             let k = dist / (dist - q.z).max(1.0);
             bb.extend_with(egui::pos2(q.x * k, -q.y * k));
         }
@@ -343,14 +436,15 @@ impl Duo3d {
         self.fit = Some(fit);
         self.fit_t = now;
         let (s0, bbc, c) = fit;
-        let s = s0 * self.zoom;
+        let s = s0 * self.zoom_shown;
         let off = rect.center() - bbc.to_vec2() * s;
         let bb = Rect::from_center_size(bbc, bb.size());
         let (hw, hh) = (rect.width() / 2.0, rect.height() / 2.0);
         let col = |e: V3| view(e);
         let (ex, ey, ez) = (col(v3(1.0, 0.0, 0.0)), col(v3(0.0, 1.0, 0.0)), col(v3(0.0, 0.0, 1.0)));
         let frame = gpu::Frame {
-            mesh: m,
+            model: model.clone(),
+            bones,
             rot: [ex.x, ex.y, ex.z, ey.x, ey.y, ey.z, ez.x, ez.y, ez.z],
             centre: [c.x, c.y, c.z],
             fit: [s / hw, s / hh, (off.x - rect.center().x) / hw, -(off.y - rect.center().y) / hh],
@@ -367,75 +461,41 @@ impl Duo3d {
             painter.add(egui::Shape::ellipse_filled(base + egui::vec2(0.0, 6.0), egui::vec2(w * (0.55 + 0.5 * k), w * 0.07 * (0.6 + 0.6 * k)), egui::Color32::from_black_alpha(14)));
         }
         ui.painter().add(egui::PaintCallback { rect, callback: Arc::new(self.gl.callback(frame)) });
-        self.proj = Some(Proj { yaw, pitch, roll, tilt, phi, c, dist, s, off });
+        self.proj = Some(Proj { yaw, pitch, roll, tilt, c, dist, s, off, deg: self.shown });
+        self.model = Some(model);
         resp.on_hover_cursor(if moving { egui::CursorIcon::Grab } else { egui::CursorIcon::PointingHand })
     }
 
     /// The main view's screens for touches (viewer::ScreenMap), as last drawn
     pub fn screen_map(&self, inst: &Instance) -> Option<DuoMap> {
         let d = inst.inner.as_ref()?;
-        Some(DuoMap { proj: self.proj?, inner: (d.upright(), (d.id, d.rotation)), outer: inst.screen })
+        let proj = self.proj?;
+        // the posed surfaces at the drawn angle, made once per angle
+        let mut cache = self.hits.lock().unwrap();
+        let m = self.model.as_ref()?;
+        if cache.as_ref().is_none_or(|(deg, _)| *deg != proj.deg) {
+            *cache = Some((proj.deg, Arc::new(m.hit_mesh(m.posed(&m.pose(proj.deg))))));
+        }
+        let hits = cache.as_ref().unwrap().1.clone();
+        Some(DuoMap { proj, hits, inner: (d.upright(), (d.id, d.rotation)), outer: inst.screen })
     }
 }
 
-/// The 3D model's screens: a pointer position is traced into the model and onto the nearest screen facing it that
-/// the other half does not hide. Surfaces: 1 the inner screen's left half, 2 its right half, 3 the outer screen.
+/// The 3D model's screens: a pointer position is traced into the model onto the nearest surface under it, as drawn
+/// (posed at the drawn angle); a screen there is touched. Surfaces: 1 the inner
+/// screen's left half, 2 its right half, 3 the outer screen.
 pub struct DuoMap {
     proj: Proj,
+    hits: Arc<devicemodel::HitMesh>,
     /// the inner screen's upright size and its display (SFB id, panel turn); the outer screen's size
     inner: ((u32, u32), (u32, u32)),
     outer: (u32, u32),
 }
 
-/// Where a ray meets the plane z = `z` of a half's own space: (t, x, y)
-fn plane(o: V3, d: V3, z: f32) -> Option<(f32, f32, f32)> {
-    if d.z.abs() < 1e-6 {
-        return None;
-    }
-    let t = (z - o.z) / d.z;
-    Some((t, o.x + d.x * t, o.y + d.y * t))
-}
-
-/// Where a ray enters a box (a half's own space: [0, w] x [-h/2, h/2] x [-THICK, 0])
-fn enters_box(o: V3, d: V3) -> Option<f32> {
-    let (w, h) = (mesh::half_w(), mesh::half_h());
-    let (mut t0, mut t1) = (f32::MIN, f32::MAX);
-    for (oo, dd, lo, hi) in [(o.x, d.x, 0.0, w), (o.y, d.y, -h / 2.0, h / 2.0), (o.z, d.z, -mesh::THICK, 0.0)] {
-        if dd.abs() < 1e-9 {
-            if oo < lo || oo > hi {
-                return None;
-            }
-            continue;
-        }
-        let (a, b) = ((lo - oo) / dd, (hi - oo) / dd);
-        t0 = t0.max(a.min(b));
-        t1 = t1.min(a.max(b));
-    }
-    (t0 <= t1 && t1 > 0.0).then_some(t0)
-}
-
 impl DuoMap {
-    /// The ray in each half's own space: the left half mirrored, the right half turned back
-    fn rays(&self, p: egui::Pos2) -> [(V3, V3); 2] {
+    fn ray(&self, p: egui::Pos2) -> ([f32; 3], [f32; 3]) {
         let (o, d) = self.proj.ray(p);
-        let mirror = |v: V3| v3(-v.x, v.y, v.z);
-        let back = |v: V3| rot_y(v, -self.proj.phi);
-        [(mirror(o), mirror(d)), (back(o), back(d))]
-    }
-
-    /// Surface `surface`'s plane under `p`: (t, normalised x, y on its picture), unclamped
-    fn on(&self, p: egui::Pos2, surface: u8) -> Option<(f32, f32, f32)> {
-        let rays = self.rays(p);
-        let (sw, sh) = mesh::INNER;
-        let (ow, oh) = mesh::OUTER;
-        match surface {
-            1 => plane(rays[0].0, rays[0].1, 0.0).map(|(t, x, y)| (t, (sw / 2.0 - x) / sw, (sh / 2.0 - y) / sh)),
-            2 => plane(rays[1].0, rays[1].1, 0.0).map(|(t, x, y)| (t, (x + sw / 2.0) / sw, (sh / 2.0 - y) / sh)),
-            _ => {
-                let ox1 = mesh::half_w() / 2.0 + ow / 2.0;
-                plane(rays[1].0, rays[1].1, -mesh::THICK).map(|(t, x, y)| (t, (ox1 - x) / ow, (oh / 2.0 - y) / oh))
-            }
-        }
+        ([o.x, o.y, o.z], [d.x, d.y, d.z])
     }
 
     fn hit_of(&self, surface: u8, x: f32, y: f32) -> Hit {
@@ -446,51 +506,20 @@ impl DuoMap {
 
 impl ScreenMap for DuoMap {
     fn hit(&self, p: egui::Pos2) -> Option<Hit> {
-        let rays = self.rays(p);
-        let mut best: Option<(f32, Hit)> = None;
-        for surface in 1..=3u8 {
-            let half = if surface == 1 { 0 } else { 1 };
-            let (_, d) = rays[half];
-            // the screen faces the ray: the inner screen +z, the outer -z (each half's own space)
-            let facing = if surface == 3 { d.z > 0.0 } else { d.z < 0.0 };
-            let Some((t, x, y)) = self.on(p, surface).filter(|_| facing) else { continue };
-            let inside = match surface {
-                1 => (0.0..=0.5).contains(&x),
-                2 => (0.5..=1.0).contains(&x),
-                _ => (0.0..=1.0).contains(&x),
-            } && (0.0..=1.0).contains(&y);
-            if !inside || t <= 0.0 {
-                continue;
-            }
-            // the other half in front of it hides it
-            let (oo, od) = rays[1 - half];
-            if enters_box(oo, od).is_some_and(|t2| t2 < t - 1.0) {
-                continue;
-            }
-            if best.as_ref().is_none_or(|(bt, _)| t < *bt) {
-                best = Some((t, self.hit_of(surface, x, y)));
-            }
-        }
-        best.map(|(_, h)| h)
+        let (o, d) = self.ray(p);
+        let h = self.hits.trace(o, d, None)?;
+        let surface = if h.screen == 2 { 3 } else if h.x < 0.5 { 1 } else { 2 };
+        Some(self.hit_of(surface, h.x.clamp(0.0, 1.0), h.y.clamp(0.0, 1.0)))
     }
 
     fn follow(&self, p: egui::Pos2, of: &Hit) -> (f32, f32) {
-        // across the crease a drag on the inner screen carries on on the other half
-        if of.surface != 3 {
-            for s in [of.surface, 3 - of.surface] {
-                if let Some((t, x, y)) = self.on(p, s) {
-                    let mine = if s == 1 { x <= 0.5 } else { x >= 0.5 };
-                    if t > 0.0 && mine {
-                        return (x, y);
-                    }
-                }
-            }
-        }
-        self.on(p, of.surface).map(|(_, x, y)| (x, y)).unwrap_or((of.x, of.y))
+        // on the screen it began on, whatever is in front (across the crease a drag on the inner screen carries on)
+        let (o, d) = self.ray(p);
+        self.hits.trace(o, d, Some(if of.surface == 3 { 2 } else { 1 })).map(|h| (h.x, h.y)).unwrap_or((of.x, of.y))
     }
 
     fn span(&self, of: &Hit) -> (f32, f32) {
-        let (w, h) = if of.surface == 3 { mesh::OUTER } else { mesh::INNER };
+        let (w, h) = if of.surface == 3 { geom::OUTER } else { geom::INNER };
         (w * self.proj.s, h * self.proj.s)
     }
 }
@@ -527,6 +556,24 @@ fn placement(orient: &str, phi: f32) -> (f32, f32) {
     (roll, tilt)
 }
 
+/// How much the default view faces the inner screen at hinge angle `deg`: 0 folded, 1 open. It eases over from 55
+/// up to SpringBoard's swap angle (85 degrees), so the inner screen is faced straight from where it is in use (a
+/// half open book at 90 is seen as one)
+fn inner_weight(deg: f64) -> f32 {
+    let t = ((deg as f32 - 55.0) / 30.0).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// An angle brought into -pi..pi (the short way round)
+fn wrap(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Whether the orientation says how the phone is held upright (face up / down and unknown do not)
+fn roll_known(orient: &str) -> bool {
+    matches!(orient, "portrait" | "portraitUpsideDown" | "landscapeLeft" | "landscapeRight")
+}
+
 /// How far the device orientation turns the phone about the view axis
 fn roll_of(orient: &str) -> f32 {
     match orient {
@@ -541,6 +588,46 @@ fn roll_of(orient: &str) -> f32 {
 mod tests {
     use super::*;
 
+    /// The default view follows the hinge without a jump anywhere from flat to closed (a degree of hinge never turns
+    /// it by more than a few degrees), facing the inner screen straight on when flat and the outer one when closed
+    #[test]
+    fn default_view_is_smooth() {
+        for orient in ["portrait", "portraitUpsideDown", "landscapeLeft", "landscapeRight"] {
+            let view = |deg: f64| Duo3d::default_view(orient, deg, ((180.0 - deg) as f32).to_radians());
+            let mut last = view(180.0);
+            for i in (0..1800).rev() {
+                let v = view(i as f64 / 10.0);
+                let d = wrap(v.0 - last.0).abs() + (v.1 - last.1).abs();
+                assert!(d < 1f32.to_radians(), "{orient} at {}: {last:?} -> {v:?}", i as f64 / 10.0);
+                last = v;
+            }
+        }
+        // flat: the inner screen from the front; closed: the outer one, on the left half's back, from behind
+        for (deg, want) in [(0.0, std::f32::consts::PI), (180.0, 0.0)] {
+            let (yaw, pitch) = Duo3d::default_view("portrait", deg, ((180.0 - deg) as f32).to_radians());
+            assert!(wrap(yaw - want).abs() < 1e-4 && pitch.abs() < 1e-4, "{deg}: {yaw} {pitch}");
+        }
+    }
+
+    /// A turn between any two held orientations eases the short way round (never more than half a turn of roll), and
+    /// face up / down reports do not count as one (the phone stays as it was placed)
+    #[test]
+    fn orientation_turns_short_way() {
+        let all = ["portrait", "landscapeLeft", "portraitUpsideDown", "landscapeRight"];
+        for a in all {
+            for b in all {
+                let phi = 90f32.to_radians();
+                let (pa, pb) = (placement(a, phi), placement(b, phi));
+                let off = wrap(pa.0 - pb.0);
+                assert!(off.abs() <= std::f32::consts::PI + 1e-4, "{a} -> {b}: {off}");
+                // eased to nothing, the drawn roll is the new orientation's
+                let r = pb.0 + off;
+                assert!((r.sin() - pa.0.sin()).abs() < 1e-4 && (r.cos() - pa.0.cos()).abs() < 1e-4, "{a} -> {b}");
+            }
+        }
+        assert!(!roll_known("faceUp") && !roll_known("faceDown") && !roll_known("unknown") && !roll_known(""));
+    }
+
     /// In landscape the lower half's front faces straight up, whatever the hinge angle (a laptop's base on the table)
     #[test]
     fn landscape_base_lies_flat() {
@@ -554,10 +641,18 @@ mod tests {
                 let far = if orient == "landscapeLeft" { v3(-1000.0, 0.0, 0.0) } else { rot_y(v3(1000.0, 0.0, 0.0), phi) };
                 let f = rot_x(rot_z(far, roll), tilt);
                 assert!(f.y.abs() < 1e-2 && f.z > 900.0, "{orient} at {deg}: far edge {f:?}");
-                // the default camera sees its top: the face turned towards the viewer (+z), from above
-                let (yaw, pitch) = Duo3d::default_view(orient, deg as f64, phi, Some(true));
+                // the default camera sees its top: the face turned towards the viewer (+z), from above; low as a
+                // laptop is seen once the inner screen is in use. Folded it looks for the outer screen (the left
+                // half's back): from high above in landscape right (the left half is the lid, face up), from below
+                // in landscape left (the left half is the base, its back on the table)
+                let (yaw, pitch) = Duo3d::default_view(orient, deg as f64, phi);
                 let seen = rot_x(rot_y(n, yaw), pitch);
-                assert!(seen.z > 0.3 && seen.y > 0.5, "{orient} at {deg}: base top seen as {seen:?}");
+                if deg >= 85.0 || orient == "landscapeRight" {
+                    let up = if deg >= 85.0 { 0.5 } else { 0.3 };
+                    assert!(seen.z > 0.3 && seen.y > up, "{orient} at {deg}: base top seen as {seen:?}");
+                } else {
+                    assert!(seen.z < -0.3, "{orient} at {deg}: the base's back (outer screen) not seen: {seen:?}");
+                }
             }
         }
     }

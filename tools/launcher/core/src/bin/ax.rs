@@ -4,29 +4,61 @@ use anyhow::{anyhow, bail, Result};
 use std::time::Duration;
 use x86sim_core::ax::{self, After, SnapOpts};
 use x86sim_core::instance;
+// ---- network capture (x86sim net): its own option parsing ----
+#[path = "ax_parts/net.rs"]
+mod ax_net;
+// ---- the GPU a device renders on (x86sim gpu) ----
+#[path = "ax_parts/gpu.rs"]
+mod ax_gpu;
 
 const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
-  snapshot [--json] [--all] [--diff]   the screen as text: one element per line with a ref (@e3), role, label, value,
+  snapshot [--json] [--all] [--diff] [--ocr]
+                                       the screen as text: one element per line with a ref (@e3), role, label, value,
                                        id and its center point; --diff: only what changed since the last snapshot;
-                                       --all: also elements scrolled out of view; --json: everything (frames, states)
+                                       --all: also elements scrolled out of view; --json: everything (frames, states);
+                                       --ocr: also text read from the whole screen's pixels that no element says (large
+                                       Metal / game / canvas views with no elements are always read: [ocr] lines)
   find TARGET                          the elements a target matches, best first
   tap TARGET                           TARGET: @e3 | id:IDENTIFIER | \"label text\" | X Y (points)
   long-press TARGET [--ms N]           (default 800 ms)
-  type TEXT [--clear] [--submit] [--keys]
+  type TEXT [--into TARGET] [--clear] [--submit] [--keys]
                                        into the focused field (as the software keyboard: any text); --submit and a newline in TEXT
-                                       press the Return key; --keys: key presses
+                                       press the Return key; --keys: key presses; --into: tap TARGET first and wait (up to 2 s) until it
+                                       has the focus (an error when the text would land elsewhere)
+  fill TARGET=TEXT... [--submit] [--submit-tap TARGET] [--append]
+                                       a form in one call: each field (its label, placeholder, the label beside it,
+                                       @ref, id:) tapped, focused, emptied (not with --append) and typed; then Return
+                                       (--submit) or a tap (--submit-tap)
+  drag FROM TO [--hold MS] [--ms MS]   press FROM (a target or \"X,Y\"), hold (default 600 ms: lift), move to TO, drop
+  set-value TARGET VALUE               a slider (number, 50%), switch (on|off), stepper, segmented control (title),
+                                       wheel picker (\"Apple\" | \"10, 30\"), date picker (2026-05-01T14:30 | 14:30), any
+                                       adjustable; no VALUE: what the control is and the values it takes
   key COMBO                            return | tab | escape | delete | up ... | cmd+a | shift+tab
   scroll up|down|left|right [AMOUNT] [--at TARGET]
                                        precise scroll (no fling), AMOUNT in screens (default 0.5)
   swipe up|down|left|right|home|notifications|controlcenter|back | swipe X1 Y1 X2 Y2 [MS]
   scroll-to TARGET [--dir down] [--max 10]
-  wait-for TARGET [--gone] [--timeout S]   (default 20 s)
+  wait-for TARGET [--gone] [--timeout S] [conditions]   (default 20 s; conditions as expect's)
+  expect TARGET [--gone] [--label L] [--value V] [--contains T] [--enabled|--disabled] [--selected|--unselected]
+         [--focused|--unfocused] [--count N] [--timeout S]
+                                       PASS (exit 0) or FAIL (exit 1, with what was found instead or the nearest
+                                       by text); --timeout waits on new frames for it to become true
   press BUTTON [MS]                    home lock side volup voldown siri action ...
   keyboard software on|off|toggle | hardware connect|disconnect|toggle | status
                                        Apple's I/O > Keyboard: Toggle Software Keyboard (Cmd-K), Connect Hardware
                                        Keyboard (Shift-Cmd-K; kept across boots)
-  open URL | launch BUNDLEID [ARGS] | terminate BUNDLEID
-  screenshot [OUT.png] [--scale N]     N: divisor (default: the device scale, a picture in points)
+  open URL | launch BUNDLEID [ARGS] | terminate BUNDLEID [--kill]   (--kill: SIGKILL its process, as a crash)
+  record start OUT.mp4 [--max S] | record stop | record status
+                                       screen recording in the background (default at most 300 s); stop finishes the
+                                       file and prints its path, length and size
+  app-state [BUNDLEID]                 installed, running, pid(s), foreground / background / suspended, memory, CPU,
+                                       uptime, last exit; no BUNDLEID: every running app
+  screenshot [OUT.png] [--scale N] [--marks [actionable]] [--target TARGET] [--ocr]
+                                       N: divisor (default: the device scale, a picture in points); --marks: every
+                                       element outlined with its @ref beside it (actionable: only controls, links,
+                                       fields and [ocr] text), the refs listed on stdout; --target: only that element
+                                       (@e3, id:..., text), cropped with a margin; --ocr: marks also on the whole
+                                       screen's text read from pixels
   inspect [TARGET | X Y] [--json]      Accessibility Inspector: every property of an element (label, value, hint,
                                        traits, actions, custom actions, rotors, language, class, view, controller,
                                        hierarchy, font / color); no target: the screen + views VoiceOver cannot reach
@@ -37,6 +69,8 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
   action NAME [TARGET] [--dir up|down|left|right|next|previous] [--name CUSTOM]
                                        an accessibility action: activate increment decrement scroll escape magic_tap
                                        custom
+{NET}
+{GPU}
 Actions print what they did and the screen after it (--after diff: only changes, --after none: nothing; --json).
 The phone: --phone NAME (name, folder or path), else $X86SIM_DEVICE, else the only running phone.";
 
@@ -65,6 +99,24 @@ fn main() {
 
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // net: options of its own (x86sim net ...)
+    let first = if matches!(args.first().map(String::as_str), Some("--phone" | "-p")) { 2 } else { 0 };
+    if args.get(first).map(String::as_str) == Some("net") {
+        let phone = (first == 2).then(|| args[1].clone());
+        let rest = args.split_off(first + 1);
+        return ax_net::run(&pick(phone.as_deref())?, rest);
+    }
+    if args.get(first).map(String::as_str) == Some("gpu") {
+        let phone = (first == 2).then(|| args[1].clone());
+        let rest = args.split_off(first + 1);
+        // a list needs no device: the one picked, if any
+        let inst = match pick(phone.as_deref()) {
+            Ok(i) => Some(i),
+            Err(e) if phone.is_some() || rest.first().is_some_and(|c| c == "set") => return Err(e),
+            Err(_) => None,
+        };
+        return ax_gpu::run(inst, rest);
+    }
     let mut flag = |name: &str| -> bool {
         if let Some(i) = args.iter().position(|a| a == name) {
             args.remove(i);
@@ -80,7 +132,17 @@ fn run() -> Result<()> {
     let clear = flag("--clear");
     let submit = flag("--submit");
     let keys = flag("--keys");
+    let append = flag("--append");
+    let stop = flag("--stop");
+    let privileged = flag("--privileged");
+    let kill = flag("--kill");
+    let tri = |on: bool, off: bool| if on { Some(true) } else if off { Some(false) } else { None };
+    let (en, dis) = (flag("--enabled"), flag("--disabled"));
+    let (sel, unsel) = (flag("--selected"), flag("--unselected"));
+    let (foc, unfoc) = (flag("--focused"), flag("--unfocused"));
+    let (enabled, selected, focused) = (tri(en, dis), tri(sel, unsel), tri(foc, unfoc));
     let dynamic_type = flag("--dynamic-type");
+    let ocr = flag("--ocr");
     let mut opt = |name: &str| -> Option<String> {
         let i = args.iter().position(|a| a == name)?;
         if i + 1 >= args.len() {
@@ -100,8 +162,41 @@ fn run() -> Result<()> {
     let scale = opt("--scale");
     let rules = opt("--rules");
     let aname = opt("--name");
+    let target_opt = opt("--target");
+    let into = opt("--into");
+    let submit_tap = opt("--submit-tap");
+    let hold = opt("--hold");
+    let (xlabel, xvalue, xcontains, xcount) = (opt("--label"), opt("--value"), opt("--contains"), opt("--count"));
+    // --marks [actionable]: the value is optional (after every opt(): the closure borrows args)
+    let marks = match args.iter().position(|a| a == "--marks") {
+        Some(i) => {
+            args.remove(i);
+            if args.get(i).map(String::as_str) == Some("actionable") {
+                args.remove(i);
+                Some(x86sim_core::marks::Marks::Actionable)
+            } else {
+                Some(x86sim_core::marks::Marks::All)
+            }
+        }
+        None => None,
+    };
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-        println!("{USAGE}");
+        println!("{}", USAGE.replace("{NET}", ax_net::USAGE).replace("{GPU}", ax_gpu::USAGE));
+        return Ok(());
+    }
+    // device-delete NAME [--stop] [--privileged] (cli/x86sim device delete): the device named, never a default one
+    if args[0] == "device-delete" {
+        let name = args.get(1).cloned().or(phone.clone()).ok_or_else(|| anyhow!("device delete NAME [--stop] [--privileged]"))?;
+        let inst = instance::find(&name).ok_or_else(|| anyhow!("no device {name:?} (x86sim device list)"))?;
+        let d = x86sim_core::devdelete::delete(&inst, stop, privileged)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&d)?);
+        } else {
+            print!("{}", d.text());
+        }
+        if !d.left.is_empty() {
+            std::process::exit(3);
+        }
         return Ok(());
     }
     let inst = pick(phone.as_deref())?;
@@ -124,7 +219,7 @@ fn run() -> Result<()> {
     match cmd.as_str() {
         "snapshot" | "snap" | "ss" => {
             let prev = ax::last(&inst);
-            let s = ax::snapshot(&inst, SnapOpts { all, ..Default::default() })?;
+            let s = ax::snapshot(&inst, SnapOpts { all, ocr, ..Default::default() })?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&s)?);
             } else if diff {
@@ -199,7 +294,35 @@ fn run() -> Result<()> {
             need("a target")?;
             print(ax::tap(&inst, &rest, ms.and_then(|m| m.parse().ok()).unwrap_or(800), after)?)
         }
-        "type" => print(ax::type_text(&inst, &rest, clear, submit, keys, after)?),
+        "type" => print(x86sim_core::axact::type_into(&inst, into.as_deref(), &rest, clear, submit, keys, after)?),
+        "fill" => {
+            let fields: Vec<x86sim_core::axact::FillField> = args
+                .iter()
+                .map(|a| {
+                    let (t, v) = a.split_once('=').ok_or_else(|| anyhow!("fill: TARGET=TEXT, not {a:?}"))?;
+                    Ok(x86sim_core::axact::FillField { target: t.to_string(), text: v.to_string(), clear: Some(!append) })
+                })
+                .collect::<Result<_>>()?;
+            let sub = match (submit, submit_tap) {
+                (_, Some(t)) => x86sim_core::axact::Submit::Tap(t),
+                (true, None) => x86sim_core::axact::Submit::Return,
+                _ => x86sim_core::axact::Submit::None,
+            };
+            print(x86sim_core::axact::fill(&inst, &fields, &sub, after)?)
+        }
+        "drag" => {
+            anyhow::ensure!(args.len() == 2, "drag FROM TO (each a target or \"X,Y\"; quote labels with spaces)");
+            print(x86sim_core::axact::drag(&inst, &args[0], &args[1], hold.and_then(|h| h.parse().ok()).unwrap_or(600), ms.and_then(|m| m.parse().ok()).unwrap_or(600), after)?)
+        }
+        "set-value" | "setvalue" => {
+            let t = args.first().cloned().ok_or_else(|| anyhow!("set-value TARGET VALUE"))?;
+            if args.len() < 2 {
+                let (e, s) = ax::resolve(&inst, &t)?;
+                println!("{}\n{}", e.line(s.screen), serde_json::to_string_pretty(&x86sim_core::axact::control_info(&inst, &e)?)?);
+            } else {
+                print(x86sim_core::axact::set_value(&inst, &t, &serde_json::Value::String(args[1..].join(" ")), after)?)
+            }
+        }
         "key" => {
             need("a key")?;
             print(ax::key(&inst, &rest, after)?)
@@ -220,6 +343,22 @@ fn run() -> Result<()> {
         "scroll-to" | "scrollto" => {
             need("a target")?;
             print(ax::scroll_to(&inst, &rest, dir.as_deref().unwrap_or("down"), max.and_then(|m| m.parse().ok()).unwrap_or(10), after)?)
+        }
+        "expect" | "wait-for" | "waitfor" if cmd == "expect" || xlabel.is_some() || xvalue.is_some() || xcontains.is_some() || xcount.is_some() || enabled.is_some() || selected.is_some() || focused.is_some() => {
+            need("a target")?;
+            let x = x86sim_core::axact::Expect {
+                exists: gone.then_some(false),
+                label: xlabel,
+                value: xvalue,
+                contains: xcontains,
+                enabled,
+                selected,
+                focused,
+                count: xcount.and_then(|c| c.parse().ok()),
+            };
+            let dflt = if cmd == "expect" { 0.0 } else { 20.0 };
+            let t = Duration::from_secs_f64(timeout.and_then(|t| t.parse().ok()).unwrap_or(dflt));
+            print(x86sim_core::axact::expect(&inst, &rest, &x, t)?)
         }
         "wait-for" | "waitfor" => {
             need("a target")?;
@@ -243,16 +382,57 @@ fn run() -> Result<()> {
             let b = args.first().cloned().ok_or_else(|| anyhow!("launch: a bundle id"))?;
             print(ax::launch(&inst, &b, &args[1..], after)?)
         }
+        "terminate" if kill => {
+            need("a bundle id")?;
+            let before = ax::last(&inst);
+            let pids = x86sim_core::appstate::kill_app(&inst, &rest)?;
+            print(ax::outcome(&inst, format!("killed {rest} (SIGKILL, pid {pids:?})"), before, after))
+        }
         "terminate" => {
             need("a bundle id")?;
             print(ax::terminate(&inst, &rest, after)?)
         }
+        "record" => {
+            let v = match args.first().map(|s| s.as_str()) {
+                Some("start") => x86sim_core::record::start(&inst, std::path::Path::new(args.get(1).map(|s| s.as_str()).unwrap_or("")), max.and_then(|m| m.parse().ok()).unwrap_or(300.0), "h264")?,
+                Some("stop") => x86sim_core::record::stop(&inst)?,
+                Some("status") | None => x86sim_core::record::status(&inst)?,
+                Some(o) => bail!("record start OUT.mp4 [--max S] | stop | status, not {o}"),
+            };
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        }
+        "app-state" | "appstate" => {
+            let v = x86sim_core::appstate::app_state(&inst, args.first().map(|s| s.as_str()))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if v.is_empty() {
+                println!("no app running");
+            } else {
+                for x in &v {
+                    println!("{}", x.text());
+                }
+            }
+        }
         "screenshot" | "shot" => {
             let div = scale.and_then(|s| s.parse().ok()).unwrap_or(inst.scale.round().max(1.0) as u32);
-            let (png, w, h) = ax::screenshot(&inst, div)?;
+            let mut listing = String::new();
+            let (png, w, h) = match (&target_opt, marks) {
+                (Some(t), _) => {
+                    let (p, w, h, e) = x86sim_core::marks::element_shot(&inst, t, div)?;
+                    listing = format!("{}\n", e.line((w as f64, h as f64)));
+                    (p, w, h)
+                }
+                (None, Some(m)) => {
+                    let (p, w, h, n, snap) = x86sim_core::marks::marked(&inst, m, div, ocr)?;
+                    listing = format!("{n} marks\n{}", snap.text());
+                    (p, w, h)
+                }
+                (None, None) => ax::screenshot(&inst, div)?,
+            };
             let out = args.first().cloned().unwrap_or_else(|| format!("x86sim-{}.png", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)));
             std::fs::write(&out, png)?;
             println!("{out} ({w}x{h})");
+            print!("{listing}");
         }
         o => bail!("unknown command {o}\n{USAGE}"),
     }

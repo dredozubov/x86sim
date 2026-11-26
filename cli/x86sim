@@ -27,6 +27,10 @@ Devices
   device create --model "iPhone 17 Pro" [name]
                        new arm64 device of that model (var/device-a64-<name>); boot it with A64_DEVICE=<dir>. An Apple TV
                        or Apple Watch model takes the newest tvOS / watchOS runtime in runtimes/
+  device delete NAME [--stop] [--privileged]
+                       delete a device: its folder, state and run folders, prefix and overlay work folder, frame ring;
+                       --stop stops a running one first; --privileged removes the overlay's root-owned work folder
+                       through pkexec (else it is reported with the command; exit 3)
   runtime list [ios|tvos|watchos|all] | url B | fetch B
                        27.x simulator runtimes from Apple (no Mac / Apple ID): fetch downloads build B into runtimes/
   runtime delete B [--all] [--stop] [--yes] [--dry-run] [--json]
@@ -56,21 +60,38 @@ Devices
 
 Agents (read the screen as text, act on elements; same core as the MCP server's snapshot / tap / ... tools)
   [--phone NAME] <command>   any command on a device by name / folder / path (default: x86sim.env's X86SIM_DEVICE)
-  snapshot [--diff] [--all] [--json]
+  snapshot [--diff] [--all] [--json] [--ocr]
                        the screen as text: the front app's accessibility elements, SpringBoard's (alerts, home screen,
                        status bar) and web content, one per line: @e3 role "label" value= id= [states] (x,y points).
-                       Refs stay with their element across snapshots. --diff: only changes since the last snapshot
+                       Refs stay with their element across snapshots. --diff: only changes since the last snapshot.
+                       Text in large Metal / game / canvas views with no elements is read from pixels ([ocr] lines);
+                       --ocr: the whole screen's text that no element says too
   find TARGET          what a target matches. TARGET: @e3 | id:IDENTIFIER | "label text" | X Y (points)
   tap TARGET | long-press TARGET [--ms N]
                        touch an element (scrolled into view first if needed); answers with the screen after it settled
                        (--after diff|none). tap X Y with two numbers stays device pixels (below)
-  type TEXT [--clear] [--submit] [--keys]
+  type TEXT [--into TARGET] [--clear] [--submit] [--keys]
                        into the focused field as the software keyboard does (any characters); --submit and a newline in
-                       TEXT press the Return key (submits a field or web form, a new line in a text view); --keys: key presses
+                       TEXT press the Return key (submits a field or web form, a new line in a text view); --keys: key presses;
+                       --into: tap TARGET, wait until it has the focus, then type (an error if the text would land elsewhere)
+  fill TARGET=TEXT... [--submit | --submit-tap TARGET] [--append]
+                       a form in one call: each field (by its label, placeholder, the label beside it, @ref or id:) is
+                       scrolled into view, tapped, given the focus, emptied (not with --append) and typed into
+  drag FROM TO [--hold MS] [--ms MS]
+                       press FROM (a target or "X,Y" points), hold to lift (default 600 ms), move to TO, drop
+  set-value TARGET [VALUE]
+                       set a slider / switch / stepper / segmented control / picker wheel / date picker / adjustable
+                       to VALUE as a touch would (the app hears it); no VALUE: the control and the values it takes
   key NAME|COMBO       return tab escape delete up down ... or cmd+a, shift+tab (a number: a HID usage)
   scroll up|down|left|right [SCREENS] [--at TARGET] | scroll-to TARGET [--dir D] | swipe up|down|left|right|home|back
-  wait-for TARGET [--gone] [--timeout S]
-                       until it shows (or goes); wakes on new frames
+  wait-for TARGET [--gone] [--timeout S] [--value V ...]
+                       until it shows (or goes); wakes on new frames; with expect's conditions: until they hold
+  expect TARGET [--gone] [--label L] [--value V] [--contains T] [--enabled|--disabled] [--selected|--unselected]
+         [--focused|--unfocused] [--count N] [--timeout S]
+                       check the screen: PASS, or FAIL (exit 1) with what is there instead / the nearest by text
+  app-state [BUNDLEID]
+                       installed, running, pid(s), foreground / background / suspended, memory, CPU, uptime, last
+                       exit (launchd's line); no BUNDLEID: every running app
   press BUTTON | open URL
                        a hardware button / a URL, answering with the screen
   ax-inspect [TARGET | X Y] [--json]
@@ -90,6 +111,9 @@ Display and input
   view [--bg]          GTK viewer window with mouse/keyboard input (simview.py; DISPLAY defaults to :0)
   screenshot [out.png] [divisor]
                        newest frame as PNG (fb2png.py; default ./x86sim-<time>.png, full size)
+  screenshot [out.png] --marks [actionable] | --target TARGET [--scale N]
+                       in points: every element outlined with its @ref (actionable: controls and [ocr] text only), or
+                       one element cropped with a margin
   tap X Y | swipe X1 Y1 X2 Y2 [ms] | pinch CX CY R1 R2 [ms] | pan2 X1 Y1 X2 Y2 [ms]
   type TEXT | key USAGE | home | lock | openurl URL | app BUNDLEID | dismiss [rounds] | raw LINE...
   crown DELTA [steps]  Apple Watch / Vision Pro: turn the Digital Crown
@@ -155,6 +179,14 @@ Apps (as xcrun simctl install/uninstall/launch)
   profile [PHONE] BUNDLEID|PID [--secs N] [--out FILE] [--format speedscope|gecko|text] [--period-us N]
                        CPU profile of the app (as Instruments' Time Profiler): top functions by self / total time per
                        thread, and a speedscope or Firefox Profiler file (the translator's sampler, profile.rs)
+  gpu [PHONE] [list] | gpu [PHONE] set auto|cpu|NAME|ID
+                       the host's GPUs and the one the device renders on (Metal through the GPU helper, mtlvk); set
+                       picks it for the next start: auto, cpu (no GPU: lavapipe), or a GPU by name (nvidia, amd), id
+                       or list index. Devices on the same GPU share one helper (launcher: Advanced > GPU; MCP sim_gpu)
+  net [PHONE] capture APP on|off [--relaunch] | log [APP] [--filter F] [--since S] [--follow S] | show ID | clear
+  net [PHONE] mock add URL [--status N] [--body B|--body-file F] [--latency MS] [--fail KIND] | mock list|remove ID|clear
+                       an app's network traffic (URLSession requests with headers, bodies, timings; other stacks as
+                       connections) and mock answers, without a proxy (host/simnet, docs/protocols/NET.md)
   spawn [--env K=V] [--timeout S] PROGRAM [args...]
                        run a simulator binary in the device (as simctl spawn): its output, its exit status
   io screenshot [out.png] | io recordVideo [--codec h264|hevc] [--secs N] OUT.mp4
@@ -167,8 +199,9 @@ Tests (as xcodebuild test-without-building; cli/libexec/xctest.py, `x86sim test 
                        run XCTest unit / logic tests and XCUITest UI tests (UI tests: the device's xctest feature):
                        per-test results, failures with file:line, junit.xml + results.json; exit 0 passed, 1 failed.
                        XCTest's frameworks come from Xcode (sdks/<Platform>.platform or the x86sim dev SDK)
-  test fetch-platform [ios|tvos|watchos|xros]
-                       copy Xcode's XCTest frameworks for that simulator from $X86SIM_MAC into sdks/
+  test fetch-platform [ios|tvos|watchos|xros] [--platform DIR]
+                       copy Xcode's XCTest frameworks for that simulator into sdks/, from the Darwin SDK that
+                       `x86sim dev setup sdk --xip Xcode.xip` builds on Linux (or DIR)
 
 Develop apps (omarchy-apple-dev, external/omarchy-apple-dev; `x86sim dev help` for all)
   dev status | setup [all|swift|toolchain|sdk --xip X|repair|verify] [--bg] | job [--follow]
@@ -179,6 +212,14 @@ Develop apps (omarchy-apple-dev, external/omarchy-apple-dev; `x86sim dev help` f
                        the package's XCTest / Swift Testing tests, built here and run on the device (x86sim test --spm)
   dev device | ship | ship-mac | convert | auth
                        real iPhones (device-run.sh), App Store / TestFlight (ship.sh), Xcode project conversion
+Apple Account (x86sim-account; `x86sim account help`; the launcher's Settings > Apple Account)
+  account login|logout|status
+                       one Apple ID sign-in (password + two-factor; the session in the keyring) for Xcode downloads
+                       and the dev toolchain's signing (--signing)
+  account download-xcode [VERSION]
+                       Xcode.xip from developer.apple.com (resumable, Apple's signature checked), then the dev SDK
+                       and the device types from it
+
 Pool (devices kept booted for agents / CI; x86sim-pool, see `x86sim pool help`)
   pool up N [--model M] [--preset lean]   clone and boot N devices (memory permitting)
   pool take [--ttl S] [--reset none|apps|restart|erase] [--pid PID|--hold-parent] [--wait S]
@@ -253,7 +294,10 @@ num() { case $1 in ''|*[!0-9.-]*) return 1 ;; esac; }
 case $c in
 	help|-h|--help) usage ;;
 	wait) exec python3 "$L/framecheck.py" wait "${1:-home}" "${2:-300}" ;;
-	device) exec python3 "$L/arm64/device-a64.py" "$@" ;;
+	device)
+		# delete: core/src/devdelete.rs (shared with the MCP tool sim_delete)
+		if [ "${1:-}" = delete ]; then shift; ax device-delete "$@"; fi
+		exec python3 "$L/arm64/device-a64.py" "$@" ;;
 	runtime)
 		if [ "${1:-}" = delete ]; then
 			# core rtdelete.rs (shared with the launcher's Versions page and the MCP tool runtime_delete)
@@ -262,8 +306,9 @@ case $c in
 		exec python3 "$L/arm64/runtime-fetch.py" "$@" ;;
 	logs) cmd_logs "$@" ;;
 	view) cmd_view "$@" ;;
-	screenshot|shot) cmd_screenshot "$@" ;;
-	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open) ax "$c" "$@" ;;
+	# marks / one element: the agent screenshot (x86sim-ax, points)
+	screenshot|shot) case " $* " in *" --marks"*|*" --target "*) ax screenshot "$@" ;; *) cmd_screenshot "$@" ;; esac ;;
+	snapshot|snap|find|long-press|scroll|scroll-to|wait-for|press|open|fill|drag|set-value|expect|app-state) ax "$c" "$@" ;;
 	# the Accessibility Inspector (x86sim-ax inspect / audit / action): a leading phone name as for the device commands
 	ax-audit|ax-inspect|ax-action)
 		if [ $# -ge 1 ] && case $1 in -*) false ;; *) true ;; esac && [ "$c" = ax-audit ]; then
@@ -282,6 +327,18 @@ case $c in
 		. "$X/cli/lib/pickdevice.sh"
 		if [ $# -ge 1 ] && case $1 in software|sw|hardware|hw|status) false ;; *) true ;; esac && pick_device "$1"; then shift; use_device; fi
 		ax keyboard "$@" ;;
+	gpu)
+		# the GPU a device renders on (x86sim-ax gpu, core gpu.rs); a leading <device> as for keyboard
+		. "$X/cli/lib/pickdevice.sh"
+		if [ $# -ge 1 ] && case $1 in list|ls|set|-*) false ;; *) true ;; esac && pick_device "$1"; then shift; use_device; fi
+		export X86SIM_DEVICE
+		ax gpu "$@" ;;
+	net)
+		# network capture of native apps (x86sim-ax net, core net.rs); a leading <device> as for keyboard
+		. "$X/cli/lib/pickdevice.sh"
+		if [ $# -ge 1 ] && case $1 in capture|log|ls|show|request|clear|mock|mocks|-*) false ;; *) true ;; esac && pick_device "$1"; then shift; use_device; fi
+		export X86SIM_DEVICE
+		ax net "$@" ;;
 	# type: into the focused field as the software keyboard (any text; --clear --submit; --keys: key presses)
 	type) ax type "$@" ;;
 	text) exec python3 "$L/simtouch.py" text "$*" ;;
@@ -340,6 +397,11 @@ case $c in
 	build) exec make -C "$X" "$@" ;;
 	dev)
 		b=$X/tools/launcher/target/release/x86sim-dev
+		[ -x "$b" ] || { echo "x86sim: $b not built (cd tools/launcher && cargo build --release)" >&2; exit 1; }
+		exec "$b" "$@" ;;
+	account)
+		# the Apple Account sign-in for Xcode downloads and signing (core account.rs; the launcher's Settings)
+		b=$X/tools/launcher/target/release/x86sim-account
 		[ -x "$b" ] || { echo "x86sim: $b not built (cd tools/launcher && cargo build --release)" >&2; exit 1; }
 		exec "$b" "$@" ;;
 	repos) exec "$L/repos.sh" "$@" ;;

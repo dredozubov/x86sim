@@ -1,12 +1,12 @@
-# x86Sim: sourced by build/mac-env.sh when the simulator-side binaries are built on Linux (X86SIM_BUILD=linux, the
-# default when sdks/iPhoneSimulator.sdk exists). Same commands as on the Mac: mac() runs them locally with
+# x86Sim: sourced by build/mac-env.sh: the simulator-side binaries are built on Linux. Xcode's command names work:
+# mac() runs them locally with
 # build/linux-bin first in PATH, where xcrun/codesign/lipo/plutil map to Linux clang + ld64.lld and the SDKs in sdks/.
 #   SDK_IOS / SDK_MAC   the Apple SDKs (make sdks: build/sdk/, or copied from Xcode; never committed)
 #   SIMCC / SIMCC_ARM64 arm64 iOS simulator (min 17.0); MACCC macOS x86_64 (min 10.15, simhost)
 X=${X:-$X86SIM_ROOT}
 SDK_IOS=${SDK_IOS:-$X/sdks/iPhoneSimulator.sdk}
 SDK_MAC=${SDK_MAC:-$X/sdks/MacOSX.sdk}
-[ -d "$SDK_IOS" ] && [ -d "$SDK_MAC" ] || { echo "linux build: missing $SDK_IOS or $SDK_MAC (or set X86SIM_BUILD=mac)" >&2; exit 1; }
+[ -d "$SDK_IOS" ] && [ -d "$SDK_MAC" ] || { echo "linux build: missing $SDK_IOS or $SDK_MAC: make sdks (docs/DEVELOPMENT.md)" >&2; exit 1; }
 command -v ld64.lld >/dev/null || { echo "linux build: ld64.lld not found (lld package)" >&2; exit 1; }
 export SDK_IOS SDK_MAC X86SIM_ROOT
 PATH="$X/build/linux-bin:$PATH"; export PATH

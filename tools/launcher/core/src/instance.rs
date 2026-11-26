@@ -25,6 +25,9 @@ pub struct Instance {
     pub runtime_root: PathBuf,
     /// the runtime's dyld cache is on disk (a 0-byte RuntimeRoot after a data loss is not)
     pub runtime_present: bool,
+    /// why the device can't run on its runtime (the runtime's profile refuses its model, sim::device_unavailable), as
+    /// CoreSimulator lists such a device "unavailable" and won't boot it; None when it can
+    pub unavailable: Option<String>,
     /// "iOS 27.2" (Platforms 1: "tvOS 27.2", "watchOS 27.2")
     pub ios: String,
     /// Platforms 1: "ios", "tvos" or "watchos" (the runtime's, else the model's)
@@ -81,6 +84,25 @@ pub fn inner_display(model_id: &str, ring: &Path) -> Option<InnerDisplay> {
 }
 
 impl Instance {
+    /// The device dir as the launcher has it and as the kernel resolves it: boot-a64.sh boots the real path
+    /// (`realpath`), which differs where a parent is a symlink (Fedora Atomic / Bazzite: /home -> /var/home), and
+    /// the processes, state files and environment carry that form
+    pub fn dir_forms(&self) -> Vec<String> {
+        let mut v = vec![self.dir.to_string_lossy().into_owned()];
+        if let Ok(c) = std::fs::canonicalize(&self.dir) {
+            let c = c.to_string_lossy().into_owned();
+            if c != v[0] {
+                v.push(c);
+            }
+        }
+        v
+    }
+
+    /// `s` names this device's dir (either form)
+    pub fn is_dir(&self, s: &str) -> bool {
+        self.dir_forms().iter().any(|f| f == s)
+    }
+
     /// The hinge angle host/simhid last set (<device>/data/hinge: degrees, 0 folded .. 180 flat); None for a
     /// one-screen phone or before simhid wrote it (the phone boots folded)
     pub fn hinge(&self) -> Option<f64> {
@@ -182,6 +204,7 @@ pub fn load(dir: &Path) -> Instance {
         runtime_dir,
         runtime_root,
         runtime_present,
+        unavailable: crate::sim::device_unavailable(dir),
         ios,
         build,
         platform,
@@ -260,6 +283,18 @@ pub struct Summary {
     pub gpu_memory_mb: Option<f64>,
     /// how many running phones share that helper
     pub gpu_shared_by: Option<usize>,
+    /// the GPU that helper renders on ("NVIDIA GeForce RTX 5090 · discrete", "CPU (llvmpipe)")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_name: Option<String>,
+    /// its id ("<uuid>,<vendor>:<device>"), the GPU setting's form
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_id: Option<String>,
+    /// how its guest buffers reach the GPU: "Shared", "Shared (udmabuf)", "Copied (why)" (None: not known)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_buffers: Option<String>,
+    /// that GPU in a word or two ("RTX 5090", "Radeon", "CPU")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_short: Option<String>,
     pub cpu_pct: f64,
     pub processes: usize,
     pub uptime_s: Option<f64>,
@@ -271,6 +306,9 @@ pub struct Summary {
     /// why the last check failed (empty when it answered)
     #[serde(skip_serializing_if = "String::is_empty")]
     pub hung_reason: String,
+    /// why the device can't boot on its runtime (Instance::unavailable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
 }
 
 /// Every phone's state; samples CPU over `sample_ms` (0: memory and state only). Probes each phone's SpringBoard
@@ -325,6 +363,10 @@ fn summaries_with(sample_ms: u64, probe: bool) -> Vec<Summary> {
             memory_mb: (s.pss_mb * 10.0).round() / 10.0,
             gpu_memory_mb: s.gpu.as_ref().map(|g| (g.pss_mb * 10.0).round() / 10.0),
             gpu_shared_by: s.gpu.as_ref().map(|g| g.users),
+            gpu_name: s.gpu.as_ref().and_then(|g| g.device.as_ref()).map(|d| d.label()),
+            gpu_short: s.gpu.as_ref().and_then(|g| g.device.as_ref()).map(|d| d.compact()),
+            gpu_id: s.gpu.as_ref().and_then(|g| g.device.as_ref()).map(|d| if d.kind == "cpu" { "cpu".into() } else { d.id.clone() }),
+            gpu_buffers: s.gpu.as_ref().and_then(|g| g.buffers.as_ref()).map(|b| b.summary()),
             cpu_pct: s.cpu_pct.round(),
             processes: s.procs.len(),
             uptime_s: s.uptime_s.map(|u| u.round()),
@@ -332,6 +374,7 @@ fn summaries_with(sample_ms: u64, probe: bool) -> Vec<Summary> {
             responsive: l.as_ref().and_then(|l| l.responsive),
             hung: l.as_ref().is_some_and(|l| l.hung),
             hung_reason: l.map(|l| l.why).unwrap_or_default(),
+            unavailable: i.unavailable.clone(),
         })
         .collect()
 }
@@ -348,8 +391,10 @@ pub struct BootSettings {
     pub jobs: String,
     /// A64_ENV extra K=V for launchd_sim
     pub extra_env: String,
-    /// share one mtlvk between phones when one is up
+    /// share one mtlvk between phones when one is up (only phones that want the same GPU share one)
     pub share_mtlvk: bool,
+    /// the GPU it renders on (MTLVK_DEVICE_ID): auto | cpu | a GPU's "<deviceUUID>,<vendor>:<device>" (crate::gpu)
+    pub gpu: String,
     /// the launcher's screen when drawn smaller than the phone: smooth (averaged) | sharp (every nth pixel) | full
     /// (the whole frame, scaled by the GPU). Applies at once, not at the next start.
     pub scaling: String,
@@ -357,7 +402,7 @@ pub struct BootSettings {
 
 impl Default for BootSettings {
     fn default() -> Self {
-        BootSettings { metal: "all".into(), mem_max: "12G".into(), jobs: "std".into(), extra_env: String::new(), share_mtlvk: true, scaling: "smooth".into() }
+        BootSettings { metal: "all".into(), mem_max: "12G".into(), jobs: "std".into(), extra_env: String::new(), share_mtlvk: true, gpu: "auto".into(), scaling: "smooth".into() }
     }
 }
 
@@ -390,6 +435,10 @@ pub struct GpuHelper {
     pub cpu_pct: f64,
     /// running phones rendering through it (1: this one only)
     pub users: usize,
+    /// the device it serves on (its .gpu record; None for an mtlvk older than the record)
+    pub device: Option<crate::gpu::HelperGpu>,
+    /// how guest buffers reach the GPU (shared or copied, and why; None for an mtlvk older than the state file)
+    pub buffers: Option<crate::gpu::GpuBuffers>,
 }
 
 /// Memory of the running phones together: each phone's own processes plus every GPU helper once (a shared helper was
@@ -529,8 +578,9 @@ impl Monitor {
         let mut seen_pids = std::collections::HashSet::new();
         let mut gpu_seen: HashMap<u32, (f64, f64)> = HashMap::new();
         for inst in insts {
-            let marker = format!("/Volumes/SystemRoot{}/data/var/run/launchd_bootstrap.plist", inst.dir.display());
-            let launchd = procs.iter().find(|(_, r)| r.comm == "launchd_sim" && r.cmd.contains(&marker)).map(|(p, _)| *p);
+            let forms = inst.dir_forms();
+            let markers: Vec<String> = forms.iter().map(|d| format!("/Volumes/SystemRoot{d}/data/var/run/launchd_bootstrap.plist")).collect();
+            let launchd = procs.iter().find(|(_, r)| r.comm == "launchd_sim" && markers.iter().any(|m| r.cmd.contains(m))).map(|(p, _)| *p);
             let mut pids = vec![];
             let mut prefix = inst.prefix.clone();
             let mut dserver = None;
@@ -557,9 +607,9 @@ impl Monitor {
             }
             // which state dir this boot uses: the one whose `device` file names this phone
             let mut state_dir = inst.state_dir.clone();
-            if read(&format!("{}/device", state_dir.display())).trim() != inst.dir.to_string_lossy() {
+            if !forms.iter().any(|f| read(&format!("{}/device", state_dir.display())).trim() == f) {
                 let def = repo_root().join("var/run-a64");
-                if read(&format!("{}/device", def.display())).trim() == inst.dir.to_string_lossy() {
+                if forms.iter().any(|f| read(&format!("{}/device", def.display())).trim() == f) {
                     state_dir = def;
                 }
             }
@@ -569,11 +619,11 @@ impl Monitor {
             let gpu_pid = dserver.and_then(|d| {
                 let env = read(&format!("/proc/{d}/environ"));
                 let sock = env.split('\0').find_map(|kv| kv.strip_prefix("X86SIM_MTLVK_SOCKET="))?.to_string();
-                procs.iter().find(|(_, r)| r.comm == "mtlvk" && r.cmd.split_whitespace().any(|a| a == sock)).map(|(p, _)| *p)
+                procs.iter().find(|(_, r)| r.comm == "mtlvk" && r.cmd.split_whitespace().any(|a| a == sock)).map(|(p, _)| (*p, PathBuf::from(&sock)))
             });
             let booting = procs.iter().any(|(pid, r)| r.comm == "boot-a64.sh" && !r.cmd.is_empty() && {
                 // few bash processes: reading their environ is cheap
-                read(&format!("/proc/{pid}/environ")).split('\0').any(|kv| kv == format!("A64_DEVICE={}", inst.dir.display()))
+                read(&format!("/proc/{pid}/environ")).split('\0').any(|kv| kv.strip_prefix("A64_DEVICE=").is_some_and(|d| forms.iter().any(|f| f == d)))
             });
             let mut plist = vec![];
             let (mut cpu, mut pss) = (0.0, 0.0);
@@ -598,11 +648,11 @@ impl Monitor {
             }
             plist.sort_by(|a, b| b.pss_mb.partial_cmp(&a.pss_mb).unwrap_or(std::cmp::Ordering::Equal));
             // a helper shared by several phones is sampled once a poll
-            let gpu = gpu_pid.and_then(|g| {
+            let gpu = gpu_pid.and_then(|(g, sock)| {
                 let r = procs.get(&g)?;
                 let (c, m) = *gpu_seen.entry(g).or_insert_with(|| self.sample(g, r.ticks, now, hz));
                 seen_pids.insert(g);
-                Some(GpuHelper { pid: g, pss_mb: m, cpu_pct: c, users: 0 })
+                Some(GpuHelper { pid: g, pss_mb: m, cpu_pct: c, users: 0, device: crate::gpu::helper_of_socket(&sock), buffers: crate::gpu::buffers_of_socket(&sock) })
             });
             let boot_time = launchd.and_then(|l| procs.get(&l)).map(|r| bt + r.start_ticks as f64 / hz);
             let uptime_s = boot_time.map(|b| (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0) - b).max(0.0));
@@ -670,14 +720,13 @@ pub fn boot_log(inst: &Instance) -> PathBuf {
     scratch().join(format!("launcher-boot-{}.log", inst.id))
 }
 
-/// A live mtlvk socket to share: this phone's own (a restart keeps it), else a running phone's, else one an off phone
-/// left up because others still render through it (its lifetime is its clients', see `stop_gpu_helpers`).
-fn shared_mtlvk(inst: &Instance, others: &[Status]) -> Option<PathBuf> {
+/// A live mtlvk socket to share, on the GPU this phone wants (`gpu`, BootSettings::gpu): this phone's own (a restart
+/// keeps it), else a running phone's, else one an off phone left up because others still render through it (its
+/// lifetime is its clients', see `stop_gpu_helpers`). Each state dir may hold one mtlvk per GPU it was booted on.
+fn shared_mtlvk(inst: &Instance, others: &[Status], gpu: &str) -> Option<PathBuf> {
+    let list = crate::gpu::list().ok();
     let live = |st: &Path| -> Option<PathBuf> {
-        let pid: u32 = read(&format!("{}/mtlvk.pid", st.display())).trim().parse().ok()?;
-        let comm = read(&format!("/proc/{pid}/comm"));
-        let sock = st.join("mtlvk.sock");
-        (comm.trim() == "mtlvk" && sock.exists()).then_some(sock)
+        crate::gpu::helpers_in(st).into_iter().map(|(_, sock)| sock).find(|sock| crate::gpu::serves(crate::gpu::helper_of_socket(sock).as_ref(), gpu, list.as_deref()))
     };
     if let Some(s) = live(&inst.state_dir) {
         return Some(s);
@@ -689,6 +738,9 @@ fn shared_mtlvk(inst: &Instance, others: &[Status]) -> Option<PathBuf> {
 /// Boots a phone in its own prefix / state dir / ring. `others`: the current statuses (to share a running mtlvk).
 pub fn start(inst: &Instance, others: &[Status]) -> Result<u32> {
     anyhow::ensure!(inst.runtime_present, "{} is not downloaded", inst.ios);
+    if let Some(why) = &inst.unavailable {
+        anyhow::bail!("{} is unavailable: {why}", inst.name);
+    }
     let s = load_settings(&inst.dir);
     let log = std::fs::File::create(boot_log(inst))?;
     let mut cmd = Command::new("setsid");
@@ -698,6 +750,7 @@ pub fn start(inst: &Instance, others: &[Status]) -> Result<u32> {
         .env("X86SIM_METAL", &s.metal)
         .env("X86SIM_MEM_MAX", &s.mem_max)
         .env("A64_JOBS", &s.jobs)
+        .env("MTLVK_DEVICE_ID", if s.gpu.is_empty() { "auto" } else { &s.gpu })
         .env("SECS", "20")
         .env("A64_DEVICE", &inst.dir)
         .env("A64_STATE", &inst.state_dir)
@@ -716,7 +769,7 @@ pub fn start(inst: &Instance, others: &[Status]) -> Result<u32> {
         cmd.env("SIMFB_RING_LINUX", format!("/dev/shm/{}", ring.file_name().unwrap_or_default().to_string_lossy()));
     }
     if s.share_mtlvk && s.metal != "0" {
-        if let Some(sock) = shared_mtlvk(inst, others) {
+        if let Some(sock) = shared_mtlvk(inst, others, &s.gpu) {
             cmd.env("A64_MTLVK_SOCKET", sock);
         }
     }
@@ -739,9 +792,10 @@ pub fn stop(inst: &Instance, st: Option<&Status>) -> Result<()> {
 /// boot starts mtlvk before its container, whose darlingserver is what names the socket).
 pub fn stop_gpu_helpers() {
     for i in list() {
-        let Ok(pid) = read(&format!("{}/mtlvk.pid", i.state_dir.display())).trim().parse::<u32>() else { continue };
-        if proc_age_s(pid).is_some_and(|a| a >= 120.0) {
-            stop_gpu_helper(&i.state_dir);
+        for (pid, sock) in crate::gpu::helpers_in(&i.state_dir) {
+            if proc_age_s(pid).is_some_and(|a| a >= 120.0) {
+                stop_one_gpu_helper(&sock.with_extension("pid"));
+            }
         }
     }
 }
@@ -762,15 +816,23 @@ pub fn restart(inst: &Instance, st: Option<&Status>, others: &[Status]) -> Resul
     start(inst, others)
 }
 
-/// Ends the mtlvk a boot started in `state_dir` if no running container uses its socket (a darlingserver's
+/// Ends the mtlvks a boot started in `state_dir` (one per GPU it was booted on) that no running container uses
+/// (`stop_one_gpu_helper`).
+pub fn stop_gpu_helper(state_dir: &Path) {
+    for pidfile in crate::gpu::pidfiles_in(state_dir) {
+        stop_one_gpu_helper(&pidfile);
+    }
+}
+
+/// Ends the mtlvk of `pidfile` (<state>/mtlvk<key>.pid) if no running container uses its socket (a darlingserver's
 /// environment names the socket its phone renders through) and no phone still booting was given it (its boot-a64.sh's
 /// A64_MTLVK_SOCKET, `start`: before its darlingserver is up, stopping the mtlvk's owner took the new phone's Metal away).
-pub fn stop_gpu_helper(state_dir: &Path) {
-    let Ok(pid) = read(&format!("{}/mtlvk.pid", state_dir.display())).trim().parse::<u32>() else { return };
+fn stop_one_gpu_helper(pidfile: &Path) {
+    let Ok(pid) = read(&pidfile.display().to_string()).trim().parse::<u32>() else { return };
     if read(&format!("/proc/{pid}/comm")).trim() != "mtlvk" {
         return;
     }
-    let sock = state_dir.join("mtlvk.sock");
+    let sock = pidfile.with_extension("sock");
     let want = format!("X86SIM_MTLVK_SOCKET={}", sock.display());
     let booting = format!("A64_MTLVK_SOCKET={}", sock.display());
     let used = std::fs::read_dir("/proc").into_iter().flatten().flatten().any(|e| {
@@ -802,8 +864,9 @@ pub fn stop_gpu_helper(state_dir: &Path) {
             libc::kill(pid as i32, libc::SIGKILL);
         }
     }
-    let _ = std::fs::remove_file(state_dir.join("mtlvk.pid"));
-    let _ = std::fs::remove_file(sock);
+    let _ = std::fs::remove_file(pidfile);
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_file(pidfile.with_extension("gpu"));
 }
 
 /// Stops a phone's container only (the dirs the running boot really uses, from its status).
@@ -832,16 +895,20 @@ pub fn log_sources(inst: &Instance, st: Option<&Status>) -> Vec<crate::logs::Src
         Some(s) => (s.state_dir.clone(), s.prefix.clone()),
         None => (inst.state_dir.clone(), inst.prefix.clone()),
     };
-    vec![
+    // one mtlvk log per GPU this state dir's boots started a helper on (mtlvk<key>.log; auto's is mtlvk.log)
+    let mut gpu_logs: Vec<PathBuf> = crate::gpu::pidfiles_in(&state_dir).into_iter().map(|p| p.with_extension("log")).filter(|p| p.file_name() != Some(std::ffi::OsStr::new("mtlvk.log"))).collect();
+    gpu_logs.insert(0, state_dir.join("mtlvk.log"));
+    let mut v = vec![
         Src::Dir("System", inst.log_dir.clone()),
         Src::Dir("Translator", prefix.join("private/var/tmp/x86sim-a64")),
         Src::File("Boot", "start", boot_log(inst)),
         Src::File("Boot", "launchd_sim", state_dir.join("lsim.out")),
         Src::File("Boot", "launchd", state_dir.join("launchd.log")),
         Src::File("Boot", "pre-translate", state_dir.join("aot-status.txt")),
-        Src::File("Graphics", "mtlvk", state_dir.join("mtlvk.log")),
         Src::File("Memory", "jetsam", state_dir.join("jetsam.log")),
-    ]
+    ];
+    v.extend(gpu_logs.into_iter().map(|p| Src::File("Graphics", "mtlvk", p)));
+    v
 }
 
 // ---- rename / delete ----
@@ -908,7 +975,7 @@ pub fn delete(inst: &Instance, st: Option<&Status>) -> Result<()> {
     for p in &plan {
         if p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("run-a64")) {
             let dev = read(&format!("{}/device", p.display()));
-            anyhow::ensure!(dev.trim().is_empty() || dev.trim() == inst.dir.to_string_lossy(), "{} belongs to {}", p.display(), dev.trim());
+            anyhow::ensure!(dev.trim().is_empty() || inst.is_dir(dev.trim()), "{} belongs to {}", p.display(), dev.trim());
         }
     }
     for p in &plan {

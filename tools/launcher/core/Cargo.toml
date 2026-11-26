@@ -34,6 +34,10 @@ name = "x86sim-pool"
 path = "src/bin/pool.rs"
 
 [[bin]]
+name = "x86sim-account"
+path = "src/bin/account.rs"
+
+[[bin]]
 name = "x86sim-devapp"
 path = "src/bin/devapp.rs"
 
@@ -54,3 +58,20 @@ sha1_smol = "1"
 # keeps it off the host's pkg-config and lets its CMake build under CMake 4)
 opus = "0.3"
 audiopus_sys = { version = "0.2", features = ["static"] }
+# OCR of frames (snapshot ocr, text in Metal / game / canvas views): pure Rust, models downloaded once (ocr.rs)
+ocrs = { version = "0.14", default-features = false, features = ["onnx"] }
+rten = { version = "0.28", default-features = false, features = ["onnx_format"] }
+rten-imageproc = "0.28"
+sha2 = "0.10"
+# Apple Account sign-in (account.rs): SRP-6a with PBKDF2-SHA256 as Apple's sign-in wants, base64 for its JSON, and the
+# .xip's zlib table of contents (HTTP stays curl)
+num-bigint = "0.4"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+base64 = "0.22"
+flate2 = "1"
+# Xcode's 3D device models (devicemodel.rs): Apple's .usdz read from the user's own Xcode.xip (never shipped); a pure Rust
+# USD reader, the package's zip, and JPEG textures decoded for the launcher
+openusd = "0.9"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+zune-jpeg = "0.5"
+zune-core = "0.5"

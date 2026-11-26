@@ -578,6 +578,10 @@ def main():
                                           for p in os.environ.get("X86SIM_INSERT", "").split(":") if p]),
         # simax: the accessibility reader for agents (host/simax), dlopened by libsimshim in processes with UIKit
         **({"X86SIM_AX_DYLIB": darling(host_path("host/simax/libsimax.dylib"))} if host_path("host/simax/libsimax.dylib") else {}),
+        # simnet: network capture for agents (host/simnet, docs/protocols/NET.md): libsimshim dlopens it only into
+        # third-party apps that have a capture file in <data>/x86sim-net/capture (net_capture / x86sim net capture)
+        **({"X86SIM_NET_DYLIB": darling(host_path("host/simnet/libsimnet.dylib"))} if host_path("host/simnet/libsimnet.dylib") else {}),
+        "X86SIM_NET_DIR": darling(data + "/x86sim-net"),
         "CFFIXED_USER_HOME": home,
         "HOME": home,
         "TMPDIR": home + "/tmp/",

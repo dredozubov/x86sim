@@ -21,7 +21,7 @@ impl App {
             Ok(_) => {
                 self.fetch_started.insert(build.to_string(), std::time::Instant::now());
                 self.fetching.insert(build.to_string(), x86sim_core::host::Fetch { build: build.to_string(), phase: "starting".into(), ..Default::default() });
-                self.say(format!("Downloading {label}. This takes a while (several GB)."));
+                self.say(format!("Downloading {label}"));
             }
             Err(e) => self.say(format!("Couldn't start the download: {e:#}")),
         }
@@ -41,7 +41,7 @@ impl App {
         let sorts = [("name", "Name"), ("newest", "Newest first"), ("oldest", "Oldest first"), ("model", "Model"), ("ios", "Version")];
         let mut sort = self.hub.sort.clone();
         // no subtitle: the count is on the nav item, what runs in the sidebar's footer
-        page_header(ui, "Devices", "", |ui| {
+        page_header(ui, "Devices", |ui| {
             add = ui.add(Btn::primary("Add device").icon(icon::PLUS).key("n")).on_hover_text("Add an iPhone, iPad, Apple TV or Apple Watch").clicked();
             if n > 1 {
                 let cur = sorts.iter().find(|s| s.0 == sort).map(|s| s.1).unwrap_or("Name");
@@ -69,7 +69,7 @@ impl App {
         }
         if self.insts.is_empty() {
             card(ui, |ui| {
-                empty_state(ui, icon::DEVICE_MOBILE, "No devices yet", "Add an iPhone, iPad, Apple TV or Apple Watch to get started. Each has its own apps, data and settings.", |ui| {
+                empty_state(ui, icon::DEVICE_MOBILE, "No devices", "", |ui| {
                     if ui.add(Btn::primary("Add device").icon(icon::PLUS).key("n")).clicked() {
                         add = true;
                     }
@@ -268,7 +268,8 @@ impl App {
                         let (r, dr) = ui.allocate_exact_size(egui::vec2(8.0, 16.0), egui::Sense::hover());
                         dot(ui.painter(), r.center(), col);
                         let up = st.as_ref().and_then(|s| s.uptime_s).map(|u| format!(" · up for {}", fmt_uptime(u))).unwrap_or_default();
-                        dr.on_hover_text(format!("{label}{up}"));
+                        let gpu = st.as_ref().filter(|_| phase != Phase::Off).and_then(|s| s.gpu.as_ref()).and_then(|g| g.device.as_ref()).map(|d| format!(" · {}", d.label())).unwrap_or_default();
+                        dr.on_hover_text(format!("{label}{up}{gpu}"));
                         if x86sim_core::instance::needs_restart(&inst, st.as_ref()) {
                             ui.label(egui::RichText::new(icon::ARROW_CLOCKWISE).family(icons()).size(13.0).color(pal.warn)).on_hover_text("Settings changed: restart to apply");
                         }
@@ -277,10 +278,17 @@ impl App {
                 });
                 let mut line = device_line(&inst.name, &inst.model, &inst.ios);
                 match &st {
-                    Some(s) if phase != Phase::Off && s.pss_mb >= 1.0 => line += &format!(" · {} · {:.0}%", fmt_mb(s.pss_mb), s.cpu_pct),
+                    Some(s) if phase != Phase::Off && s.pss_mb >= 1.0 => {
+                        line += &format!(" · {} · {:.0}%", fmt_mb(s.pss_mb), s.cpu_pct);
+                        // the GPU it renders on (its helper's), in a word or two
+                        if let Some(d) = s.gpu.as_ref().and_then(|g| g.device.as_ref()) {
+                            line += &format!(" · {}", d.compact());
+                        }
+                    }
                     _ if phase != Phase::Off && phase != Phase::Running => line += &format!(" · {}", label.to_lowercase()),
                     _ => {}
                 }
+                // truncated: egui shows the whole line (the GPU at its end) on hover
                 ui.add(egui::Label::new(muted(line)).truncate().selectable(false));
             });
             });
@@ -355,7 +363,6 @@ impl App {
                 ui.set_width(400.0);
                 ui.spacing_mut().item_spacing.y = 4.0;
                 ui.label(dialog_title("Add a device"));
-                ui.label(sub("It gets its own apps, data and settings."));
                 ui.add_space(S5);
                 let fw = ui.available_width();
                 ui.label(egui::RichText::new("Model").size(T_SMALL).family(medium()).color(pal().ink_2));
@@ -371,14 +378,15 @@ impl App {
                 let pname = x86sim_core::sim::platform_name(mp);
                 ui.label(egui::RichText::new(format!("{pname} version")).size(T_SMALL).family(medium()).color(pal().ink_2));
                 // Models 2: a runtime limited to some models (iOS 27.2 24B91016s: iPhone Duo) is picked for them and
-                // greyed out for the others
-                let fits = |r: &x86sim_core::host::Runtime| r.platform == mp && (r.restricted_to.is_empty() || r.restricted_to.contains(&mid));
+                // greyed out for the others; a runtime that refuses a model (24B8117: the iPhone Duo) is greyed out for it, as
+                // CoreSimulator decides it (sim::runtime_allows)
+                let fits = |r: &x86sim_core::host::Runtime| r.platform == mp && (r.restricted_to.is_empty() || r.restricted_to.contains(&mid)) && !r.unsupported.contains(&mid);
                 if d.model != d.last_model {
                     d.last_model = d.model;
                     if let Some(i) = self.runtimes.iter().position(|r| r.present && r.platform == mp && r.restricted_to.contains(&mid)) {
                         d.runtime = i;
                     } else if !self.runtimes.get(d.runtime).is_some_and(fits) {
-                        d.runtime = self.runtimes.iter().rposition(|r| r.present && r.platform == mp && r.restricted_to.is_empty()).unwrap_or(usize::MAX);
+                        d.runtime = self.runtimes.iter().rposition(|r| r.present && r.restricted_to.is_empty() && fits(r)).unwrap_or(usize::MAX);
                     }
                 }
                 let label = |r: &x86sim_core::host::Runtime| {
@@ -402,7 +410,7 @@ impl App {
                         if let Some(f) = self.fetching.get(build) {
                             busy(ui, &format!("{what}: {}", fetch_line(f)));
                         } else {
-                            ui.label(muted(format!("{pname} isn't installed yet.")));
+                            ui.label(muted("Not installed"));
                             if ui.add(Btn::secondary(format!("Download {what}")).icon(icon::DOWNLOAD_SIMPLE)).clicked() {
                                 self.download(build, &what);
                             }
@@ -411,12 +419,10 @@ impl App {
                 }
                 ui.add_space(S3);
                 ui.label(egui::RichText::new("Name").size(T_SMALL).family(medium()).color(pal().ink_2));
-                let r = ui.add(egui::TextEdit::singleline(&mut d.name).hint_text(egui::RichText::new("Optional, e.g. Test device").color(pal().ink_3)).desired_width(fw).margin(egui::Margin::symmetric(8, 6)));
+                let r = ui.add(egui::TextEdit::singleline(&mut d.name).hint_text(egui::RichText::new("Optional").color(pal().ink_3)).desired_width(fw).margin(egui::Margin::symmetric(8, 6)));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && self.runtimes.get(d.runtime).is_some_and(|r| r.present && fits(r)) && !d.working {
                     create = true;
                 }
-                ui.add_space(S3);
-                ui.label(muted(format!("The first start takes a few minutes while {pname} sets itself up.")));
                 ui.add_space(S5);
                 ui.horizontal(|ui| {
                     if d.working {
@@ -424,7 +430,7 @@ impl App {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let ok = self.runtimes.get(d.runtime).is_some_and(|r| r.present && fits(r)) && !d.working;
-                        if ui.add_enabled(ok, Btn::primary("Add device").key("Enter").min_w(96.0)).on_disabled_hover_text(if d.working { "Setting it up…" } else { "Pick an installed version first" }).clicked() {
+                        if ui.add_enabled(ok, Btn::primary("Add device").key("Enter").min_w(96.0)).on_hover_text("First start takes a few minutes").on_disabled_hover_text(if d.working { "Setting it up…" } else { "Pick an installed version first" }).clicked() {
                             create = true;
                         }
                         if ui.add_enabled(!d.working, Btn::secondary("Cancel").key("Esc").min_w(80.0)).clicked() {

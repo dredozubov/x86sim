@@ -23,7 +23,16 @@ x86sim-aot sim status                         # every phone: model, OS, off/star
 x86sim device models                          # models; then: x86sim device create --model "iPhone 17 Pro" qa
 x86sim-aot --device qa sim start              # boots in the background (stop / restart likewise)
 x86sim --phone qa wait home 300               # returns once the home screen is drawn
+x86sim device delete qa --stop                # when done: folder, state, prefix, ring (MCP sim_delete stop=true)
+x86sim gpu qa list                            # the host's GPUs; `x86sim gpu qa set amd|nvidia|cpu|auto` (MCP sim_gpu)
 ```
+
+Each device renders on its own GPU setting (auto by default; `cpu` = no GPU, lavapipe), applied at its next start.
+Devices on the same GPU share one GPU helper (mtlvk); `phones_list` says which GPU a running one renders on (`gpu_name`).
+
+`device delete` leaves the Darling overlay's root-owned work folder (`a64prefix-qa.workdir`) and prints the `pkexec rm`
+that removes it; `--privileged` runs it (a password dialog for the person at the desktop). The default device is never
+deleted.
 
 Or take a booted one from a pool (someone ran `x86sim pool up N`):
 
@@ -71,12 +80,17 @@ x86sim --phone qa tap "General"               # by label: exact, then prefix, th
 x86sim --phone qa tap id:com.apple.settings.general
 x86sim --phone qa find "Wi"                   # what a target would match, best first (no action)
 x86sim --phone qa type "me@example.com" --submit      # into the focused field; --clear empties it first
+x86sim --phone qa type "me@example.com" --into "Email"   # tap the field, wait until it has the focus, type
+x86sim --phone qa fill Email=me@example.com Password=s3cret --submit-tap "Sign In"   # a form in one call
+x86sim --phone qa set-value "Volume" 75%      # slider / switch on|off / stepper 7 or +2 / segment / wheel row / 2026-05-01T14:30
+x86sim --phone qa drag "Reorder Alpha" 354,292 # press, hold 600 ms to lift, move, drop (list rows, drag and drop, icons)
 x86sim --phone qa key cmd+a                   # return tab escape delete up down ... or combos
 x86sim --phone qa scroll down 1 --at @e5      # precise, in screens; scroll-to TARGET scrolls until it shows
 x86sim --phone qa swipe back                  # up/down/left/right, home, notifications, controlcenter, back
 x86sim --phone qa long-press @e9 --ms 800
 x86sim --phone qa press home                  # hardware button; open URL opens a URL / deep link
 x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappears; wakes on new frames
+x86sim --phone qa expect "Total" --contains "$42" --timeout 5   # PASS / FAIL (exit 1) with what is there instead
 ```
 
 - **Every action answers with the next screen**, after it has settled (no new frames, no transition running). Read
@@ -92,9 +106,36 @@ x86sim --phone qa wait-for "Done" --timeout 20        # --gone: until it disappe
   (`· inner screen` unfolded, `· outer screen`); taps go to that screen.
 - A process that does not answer in time is named in a `busy (no answer): <bundle> (pid N: ...)` line.
 - An element the app has loaded but scrolled out of view is scrolled in before a tap. `snapshot --all` lists those.
+- **Text in pixels** (OCR): a view drawing its own pixels (Metal, OpenGL, SpriteKit / SceneKit, a game engine, a web
+  page's `<canvas>`) that covers a quarter of the screen and has no elements inside is read from the frame by itself:
+  its text comes as `text` elements tagged `[ocr]` (`"ocr": true` in `--json`), with refs that stay, and an
+  `ocr: ...` line says which view, which frame and how long (about 0.1-0.4 s once per frame, then cached).
+  `snapshot --ocr` (MCP `ocr=true`) reads the whole screen and adds any text no element says (custom-drawn controls,
+  text in images). `tap "Start Game"`, `wait-for` and `find` look in the pixels by themselves when no element matches
+  (one or two letters read wrong still match). The models (~12 MB) download once into `~/.cache/x86sim/ocr`;
+  offline, the `ocr:` line says what to fetch. Latin script; `X86SIM_OCR=0` turns it off.
 - Prefer `id:` targets for your own app (set `accessibilityIdentifier`), labels for system UI.
 - `type` inserts text as the software keyboard does (any characters, no layout issues). `--keys` sends hardware key
-  presses instead (US layout), for games and key handlers. Tap the field first (or it types into the focused one).
+  presses instead (US layout), for games and key handlers. `--into TARGET` (MCP `target`) taps the field and waits
+  (on frames) until it has the focus before typing: no sleep between tap and type. Typing where the text would land
+  in another field is an error, and the answer names the field that got the text and its value (a secure field's
+  as dots).
+- `fill` (MCP `fields=[{target, text, clear}]`, `submit`: true for Return or a button's target) types a whole form:
+  each field scrolled into view and clear of the keyboard, tapped, focused, emptied (`--append` / `clear=false`
+  keeps its text) and typed; it stops at the first field that fails and says which were filled. A field target is
+  its label or placeholder, or the label written beside it (left of it on the row, or just above it).
+- `set_value` sets any control as a touch would (the app's bindings and delegates hear it), whatever it is: sliders
+  (a SwiftUI slider takes a percentage: its UIKit range is 0..1), switches, steppers (also SwiftUI's: it steps toward
+  the number its label shows; `+N` / `-N` always works), segmented controls, wheel pickers (target the wheel; SwiftUI
+  wheels have no identifiers, take the ref), date pickers, any adjustable element. `set-value TARGET` alone (MCP
+  `info=true`) says what the control is and what it takes.
+- `expect TARGET` checks instead of eyeballing a snapshot: `--label`, `--value`, `--contains`, `--enabled` /
+  `--disabled`, `--selected`, `--focused`, `--count N`, `--gone`; `--timeout S` waits on frames for it to become true.
+  A failure is an error that lists the matches and which condition each misses, or the nearest labels by text (a
+  typo). `wait-for` (MCP `wait_for`) takes the same conditions: `wait-for "Status" --value Done`. A field's value can
+  be checked through the label beside it: `expect "Email" --value me@example.com`.
+- `drag FROM TO` (targets or `x,y`): hold (`--hold`, MCP `hold_ms`, default 600 ms) lifts a row, a draggable item or a
+  home screen icon. The first drag and drop after a boot starts the drag service (druid) and may not drop: drag again.
 
 ### Accessibility checks
 
@@ -118,11 +159,17 @@ colours, images, rendering, or when the snapshot shows too little (games, Metal 
 
 ```sh
 x86sim --phone qa screenshot out.png 3        # newest frame; the number divides the size (3 on a 3x phone = points)
+x86sim --phone qa screenshot out.png --marks  # in points, every element outlined with its @ref beside it
+x86sim --phone qa screenshot out.png --marks actionable   # only what tap acts on (controls, links, fields, [ocr])
+x86sim --phone qa screenshot el.png --target @e7          # one element, cropped with a margin
 x86sim --phone qa io recordVideo --secs 10 out.mp4
+x86sim --phone qa record start out.mp4         # in the background (at most 300 s, --max S); record stop finishes it
 ```
 
 Without a divisor the PNG is full device pixels, while snapshot coordinates are points. The MCP `screenshot` tool
-returns points by default.
+returns points by default; `marks=true` / `marks=actionable` (and `ocr=true` for the whole screen's text) answer the
+marked image with the snapshot's text, `target=@e7` the crop. When working from an image, ask for marks: each tag is
+the ref to `tap`. The browser page's Capture group has "With marks" too.
 
 ## 5. Clean, repeatable screenshots
 
@@ -147,7 +194,15 @@ x86sim --phone qa logs com.example.myapp --relaunch   # restart it with os_log r
 x86sim --phone qa log stream --app com.example.myapp --match ERROR
 x86sim --phone qa launch --console com.example.myapp  # stdout / stderr here
 x86sim --phone qa logs                        # the phone's service logs; logs LABEL tails one
+x86sim --phone qa app-state com.example.myapp # running? pid, foreground / background / suspended, MB, CPU, last exit
+x86sim --phone qa terminate com.example.myapp --kill   # SIGKILL, as a crash would (MCP app_terminate signal=kill)
 ```
+
+Why an app died at launch shows in three places: `app_launch` fails when no process started or it died within 3 s,
+saying how (exit code, signal) and why when it was recorded; `app-state` has it as the last exit's reason; `logs`
+prints an `== abort reason` section. Reasons are what abort_with_payload / abort_with_reason were given (libobjc,
+libdispatch, the app's own calls; libsimshim writes them to `<data>/var/log/x86sim-exit/<exe>.<pid>.log`) and dyld's
+halts (library not loaded, symbol not found, wrong platform), which the translator logs.
 
 ## 6b. Debug with LLDB
 
@@ -175,6 +230,24 @@ speedscope / gecko file. Samples count CPU time only (an idle app gives no sampl
 Times are of translated x86-64 code: trust the ranking, not absolute numbers. `[translator...]` frames are the
 translator's own time, `[native] name` a library function run natively.
 
+## 6d. An app's network traffic
+
+```sh
+x86sim net qa capture com.example.myapp on --relaunch   # record from its launch (URLSession; other stacks: connections)
+x86sim net qa log --filter "status:4xx"                 # #id METHOD status URL duration size, one per request
+x86sim net qa show 4321.7                               # headers both ways, bodies, timings (dns/connect/tls/first byte)
+x86sim net qa mock add /api/login --method POST --status 500 --body '{"error":"down"}'
+x86sim net qa mock add /feed --fail offline             # or timeout, dns, refused, reset; --latency MS for slow
+x86sim net qa mock clear
+```
+
+MCP: `net_capture {app, relaunch: true}`, then `net_log {filter?, since?, follow_s?}`, `net_request {id}`,
+`net_mock {url, method?, status?, body?|body_file?, fail?, latency_ms?}` / `{action: "clear"}`. HTTPS is seen in the
+clear (the hook is a URLProtocol in the app, no proxy). Mocks apply at once to apps with capture on, so capture first.
+Third-party apps only; background-session transfers are not seen. Filters: words in the line, `status:5xx`,
+`method:POST`, `error`, `mock`, `kind:conn`, `-word` to exclude. `since` an id from the last `net_log` gives only
+newer requests.
+
 ## 7. Build, run, repeat (omarchy-apple-dev)
 
 ```sh
@@ -198,8 +271,8 @@ Prints XCTest's log, then the failing tests with `file:line` and `** TEST SUCCEE
 `results.json` (per test: result, duration, failures) and `junit.xml` go to the dir it names (`--out`, `--json -`
 for JSON only). MCP: `xctest_run`. App test targets and UI test runners come from a Mac's `xcodebuild
 build-for-testing` (copy the whole `Build/Products` dir with the `.xctestrun`). XCTest's frameworks come from Xcode:
-if it says "no XCTest frameworks", run `x86sim test fetch-platform` (needs `X86SIM_MAC`) or `x86sim dev setup sdk
---xip`. UI tests need the phone's `xctest` feature (on by default; `x86sim-aot --device qa features set xctest on`
+if it says "no XCTest frameworks", run `x86sim dev setup sdk --xip Xcode.xip` (the Darwin SDK, built on Linux from
+Xcode.xip, holds them). UI tests need the phone's `xctest` feature (on by default; `x86sim-aot --device qa features set xctest on`
 and a restart if someone turned it off). A run takes seconds for unit tests, ~5-10 s per UI test.
 
 ## 8. Show a phone to a human
@@ -239,7 +312,8 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 - The **first snapshot** of a running process turns on accessibility automation (as XCUITest does) and loads UIKit's
   accessibility bundles: it is 0.1-0.2 s slower, and the setting stays on in that phone.
 - An empty or thin snapshot means the screen has no accessibility elements (a game, a Metal view, a custom-drawn
-  control): fall back to a screenshot and `tap X Y` in device pixels.
+  control): try `snapshot --ocr` (text read from pixels, tappable by text or ref), then a screenshot with `--marks`,
+  and only then `tap X Y`.
 - **Per platform** (snapshot and actions checked on iPhone, iPad, Apple TV, Apple Watch and Vision Pro):
   - *iPad*: windowed apps are placed where they show; `front` lists the top window's app first, SpringBoard's window
     chrome (window controls, resize grabbers, a card per window behind) is the "app windows" group, and an element
@@ -264,13 +338,17 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 ## MCP
 
-The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `wait_for`, `screenshot`,
-`app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start` and the rest (90 tools;
+The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `app_state`, `sim_record_video` (`action=start|stop|status`), `screenshot`,
+`app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start`, `net_log`, `sim_gpu` and the rest (103 tools;
 README.md lists them by group). Every tool takes `phone`.
 
 ```sh
 claude mcp add x86sim -- /path/to/x86sim-*.AppImage mcp       # AppImage
 claude mcp add x86sim -- /path/to/x86sim/tools/launcher/target/release/x86sim-mcp   # checkout
 ```
+
+`batch` runs a known flow in one call: `steps=[{"tool": "tap", "target": "Log In"}, {"tool": "fill", ...}, {"tool":
+"expect", "target": "Welcome", "timeout": 10}, {"tool": "screenshot"}]`: one line per step, the screen once at the
+end; it stops at the first failing step (an expect's FAIL too) unless `stop_on_error=false`.
 
 `phone_take` leases are held by the MCP server's process: they end with the session or at `ttl_s`.

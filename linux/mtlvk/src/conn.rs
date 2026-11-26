@@ -359,6 +359,10 @@ pub struct State {
     /// x86Sim RAM 2: what each buffer/texture id is and roughly how many bytes of its own memory it holds
     /// ([`Kind`]), for the `mtlvk stats:` line.
     kinds: HashMap<u64, (Kind, u64)>,
+    /// x86Sim (issue #37): this connection's number, and the function names of each pipeline state, for the
+    /// watchdog's summary of a command buffer not complete in time (`crate::hang`).
+    pub conn: usize,
+    pso_names: HashMap<u64, String>,
 }
 
 /// x86Sim RAM 2: where a buffer's or texture's bytes live.
@@ -480,7 +484,7 @@ impl State {
         }
         Ok(State { device, objs: HashMap::new(), skip_draws: std::cell::Cell::new(false), mirrors: HashMap::new(), helper, out, log: std::env::var_os("MTLVK_LOG").is_some(), lib_bytes: HashMap::new(), func_src: HashMap::new(),
             vram_targets, proxies: HashMap::new(), idx: HashMap::new(), proxy_views: HashMap::new(), shared_vram: HashMap::new(), proxy_keys: HashMap::new(), buf_keys: HashMap::new(),
-            written: Default::default(), stats_seen: 0, kinds: HashMap::new() })
+            written: Default::default(), stats_seen: 0, kinds: HashMap::new(), conn: 0, pso_names: HashMap::new() })
     }
 
     /// x86Sim: note that a command writes texture `id` (a proxied one is copied back at the end of the command
@@ -863,7 +867,6 @@ impl State {
         let map_len = ((delta + length.max(1) + PAGE - 1) & !(PAGE - 1)) as usize;
         // SAFETY: mapping a memfd we were given.
         let base = unsafe { libc::mmap(std::ptr::null_mut(), map_len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd.as_raw_fd(), map_off as libc::off_t) };
-        drop(fd);
         if base == libc::MAP_FAILED {
             return Err(format!("mmap {map_len} at {map_off}: {}", std::io::Error::last_os_error()));
         }
@@ -871,29 +874,59 @@ impl State {
         // SAFETY: inside the mapping.
         let ptr = unsafe { map.base.add(delta as usize) };
         if shared {
-            let keep = map.clone();
             // The whole mapping (page-aligned, whole pages: NVIDIA's and RADV's minImportedHostPointerAlignment is the
-            // page) is imported as one block, the buffer placed at the plane's offset in it.
-            // SAFETY: the pages stay mapped (and writable) until the release drops `keep`, which the runtime runs
-            // once the block and every command buffer that used it are gone.
-            let r = unsafe {
-                self.device.import_host_memory(
-                    NonNull::new(map.base).unwrap(),
-                    map_len as u64,
-                    Some(Box::new(move || drop(keep))),
-                )
-            }
-            .and_then(|(block, _)| self.device.new_buffer(block.id, delta, length.max(1), None));
+            // page) is imported as one block, the buffer placed at the plane's offset in it. By its address first
+            // (VK_EXT_external_memory_host); where that is refused (amdgpu: libdrm asks USERPTR_ANONONLY, and these
+            // pages are shmem), as a udmabuf of the same memfd range (issue #39). Once udmabuf took a buffer whose
+            // address import was refused, udmabuf goes first.
+            let host = |this: &Self| {
+                let keep = map.clone();
+                // SAFETY: the pages stay mapped (and writable) until the release drops `keep`, which the runtime runs
+                // once the block and every command buffer that used it are gone.
+                unsafe { this.device.import_host_memory(NonNull::new(map.base).unwrap(), map_len as u64, Some(Box::new(move || drop(keep)))) }
+                    .and_then(|(block, _)| this.device.new_buffer(block.id, delta, length.max(1), None))
+                    .map_err(|e| e.to_string())
+            };
+            let dmabuf = |this: &Self| {
+                let dfd = crate::udmabuf::create(fd.as_raw_fd(), map_off, map_len as u64)?;
+                // The guest reaches the bytes through its own mapping of the memfd; ours is kept for the life of the
+                // block as for an address import. Such a block has no `contents` (only debug logs read it here).
+                let keep = map.clone();
+                this.device
+                    .import_dma_buf(dfd, map_len as u64, Some(Box::new(move || drop(keep))))
+                    .and_then(|(block, _)| this.device.new_buffer(block.id, delta, length.max(1), None))
+                    .map_err(|e| format!("import_dma_buf: {e}"))
+            };
+            use std::sync::atomic::Ordering::Relaxed;
+            let r = if crate::udmabuf::FIRST.load(Relaxed) {
+                dmabuf(self).map(|b| (b, "a udmabuf")).or_else(|e1| host(self).map(|b| (b, "its address")).map_err(|e2| format!("{e1}; {e2}")))
+            } else {
+                host(self).map(|b| (b, "its address")).or_else(|e1| {
+                    let r = dmabuf(self).map(|b| (b, "a udmabuf"));
+                    if r.is_ok() {
+                        eprintln!("mtlvk: buffer {id:#x}: address import refused ({e1}); imported as a udmabuf, as are the buffers after it");
+                        crate::udmabuf::FIRST.store(true, Relaxed);
+                    }
+                    r.map_err(|e2| format!("{e1}; udmabuf: {e2}"))
+                })
+            };
+            drop(fd);
             match r {
-                Ok(b) => {
+                Ok((b, how)) => {
+                    crate::bufstate::imported(how == "a udmabuf");
                     if self.log {
-                        eprintln!("mtlvk: buffer {id:#x}: {length} bytes imported without a copy");
+                        eprintln!("mtlvk: buffer {id:#x}: {length} bytes imported without a copy, as {how}");
                     }
                     self.objs.insert(id, Obj::Buf(b));
                     self.kinds.insert(id, (Kind::BufImported, length));
                     return Ok(false);
                 }
-                Err(e) => eprintln!("mtlvk: buffer {id:#x}: import refused ({e}); mirroring it"),
+                // the reason in full the first time it comes up; later ones only count (mtlvk stats, <socket>.state)
+                Err(e) => {
+                    if crate::bufstate::mirrored(&e) {
+                        eprintln!("mtlvk: buffer {id:#x}: import refused ({e}); mirroring it (further buffers refused for the same reason are mirrored without a line)");
+                    }
+                }
             }
         }
         let b = own_buffer(&self.device, length)?;
@@ -940,6 +973,9 @@ impl State {
     }
 
     fn cps_new(&mut self, id: u64, f: u64, max_total: u32, multiple: bool) -> Res<(u32, u32, u32)> {
+        if let Some((_, name)) = self.func_src.get(&f) {
+            self.pso_names.insert(id, name.clone());
+        }
         let f = self.func(f)?;
         let mut desc = ComputePipelineDescriptor::new(StageSource::Function(f.clone()));
         desc.max_total_threads_per_threadgroup = if max_total == 0 { None } else { Some(max_total) };
@@ -1175,6 +1211,9 @@ impl State {
 
     fn rps_new(&mut self, id: u64, r: &mut Rd) -> Res<()> {
         let (vf, ff) = (r.u64(), r.u64());
+        let fname = |f: u64| self.func_src.get(&f).map_or("?", |(_, n)| n.as_str()).to_owned();
+        let names = if ff == 0 { fname(vf) } else { format!("{}/{}", fname(vf), fname(ff)) };
+        self.pso_names.insert(id, names);
         let mut desc = RenderPipelineDescriptor::new(StageSource::Function(self.func(vf)?.clone()));
         if ff != 0 {
             desc.fragment = Some(StageSource::Function(self.func(ff)?.clone()));
@@ -1370,12 +1409,14 @@ impl State {
         let mut dump_targets: Vec<(Texture, u64)> = Vec::new();
         let mut dumps: Vec<(String, Buffer)> = Vec::new();
         let mut npass = 0u32;
+        let mut sum = crate::hang::Summary::default();
         for _ in 0..count {
             let (kind, size) = (r.u32(), r.u32());
             let body = r.bytes(size as usize);
             if r.short {
                 return Err("truncated command".into());
             }
+            self.summarize(&mut sum, kind, body);
             let mut c = Rd::new(body);
             if self.log {
                 eprintln!("mtlvk: cb {id:#x}: command {kind} ({size} bytes)");
@@ -1479,6 +1520,7 @@ impl State {
         }
         enc.end()?;
         let written: Vec<u64> = std::mem::take(&mut *self.written.borrow_mut()).into_iter().collect();
+        let written_len = written.len();
         if !written.is_empty() {
             let mut be = cb.blit_command_encoder().map_err(err("blit encoder"))?;
             let mut r = Ok(());
@@ -1491,6 +1533,7 @@ impl State {
             }
             be.end_encoding();
             r?;
+            sum.proxy_copies = written_len;
         }
         let mirrors: Vec<Mirror> = self.mirrors.values().cloned().collect();
         for m in &mirrors {
@@ -1502,7 +1545,12 @@ impl State {
         let out = self.out.clone();
         let t_commit = std::sync::Arc::new(std::sync::OnceLock::<std::time::Instant>::new());
         let t_commit2 = t_commit.clone();
+        let token = std::sync::Arc::new(std::sync::OnceLock::<u64>::new());
+        let token2 = token.clone();
         cb.add_completed_handler(move |cb: &CommandBuffer| {
+            if let Some(&t) = token2.get() {
+                crate::hang::done(t, matches!(cb.status(), CommandBufferStatus::Completed));
+            }
             if *TIMING {
                 let now = std::time::Instant::now();
                 let tc = *t_commit2.get().unwrap_or(&now);
@@ -1529,8 +1577,65 @@ impl State {
         })
         .map_err(err("completed handler"))?;
         let _ = t_commit.set(std::time::Instant::now());
-        cb.commit().map_err(err("commit"))?;
+        // noted before the commit: the completed handler can run before commit() returns
+        let t = crate::hang::committed(self.conn, id, sum);
+        let _ = token.set(t);
+        // a commit that fails runs no handler: its entry goes now
+        cb.commit().inspect_err(|_| crate::hang::done(t, false)).map_err(err("commit"))?;
         Ok(())
+    }
+
+    /// x86Sim (issue #37): what one command adds to its command buffer's summary (`crate::hang`), read from the
+    /// command's own bytes, apart from its decoding.
+    fn summarize(&self, sum: &mut crate::hang::Summary, kind: u32, body: &[u8]) {
+        let mut c = Rd::new(body);
+        match kind {
+            C_COPY_BB | C_COPY_BT | C_COPY_TB | C_COPY_TT | C_FILL | C_MIPMAPS => sum.blits += 1,
+            C_RENDER_PASS => {
+                sum.passes += 1;
+                if sum.targets.len() < 6 {
+                    // the first colour attachment named, or the depth one (MAX_COLOR + 1 records of 9 words + 4 f64)
+                    let rec = 8 + 6 * 4 + 4 * 8 + 8 + 4 + 4;
+                    let ids = (0..=MAX_COLOR).filter_map(|i| body.get(i * rec..i * rec + 8)).map(|b| u64::from_le_bytes(b.try_into().unwrap()));
+                    if let Some(t) = ids.filter(|&t| t != 0).find_map(|t| self.tex(t).ok()) {
+                        let d = t.descriptor();
+                        sum.targets.push((d.width, d.height));
+                    }
+                }
+            }
+            C_SIGNAL | C_WAIT => {
+                let (e, v) = (c.u64(), c.u64());
+                if kind == C_SIGNAL {
+                    sum.signals.push((e, v));
+                } else if let Ok(ev) = self.event(e) {
+                    sum.waits.push((e, ev.clone(), v));
+                }
+            }
+            C_CS_PIPELINE | C_RE_PIPELINE => {
+                let id = c.u64();
+                sum.pipeline(self.pso_names.get(&id).map(String::as_str));
+            }
+            C_CS_DISPATCH => {
+                let (k, _) = (c.u32(), c.u32());
+                let (g, t) = ([c.u64(), c.u64(), c.u64()], [c.u64(), c.u64(), c.u64()]);
+                let n = g.iter().product::<u64>().saturating_mul(if k == 0 { 1 } else { t.iter().product() });
+                sum.dispatches += 1;
+                sum.max_threads = sum.max_threads.max(n);
+            }
+            C_CS_DISPATCH_INDIRECT => sum.indirect_dispatches += 1,
+            C_RE_DRAW => {
+                let (_, _, count, inst) = (c.u32(), c.u32(), c.u32(), c.u32());
+                sum.draws += 1;
+                sum.max_draw = sum.max_draw.max(count as u64 * inst.max(1) as u64);
+            }
+            C_RE_DRAW_INDEXED => {
+                let (_, count, _, inst) = (c.u32(), c.u32(), c.u32(), c.u32());
+                sum.draws += 1;
+                sum.max_draw = sum.max_draw.max(count as u64 * inst.max(1) as u64);
+            }
+            C_RE_DRAW_INDIRECT | C_RE_DRAW_INDEXED_INDIRECT => sum.indirect_draws += 1,
+            _ => {}
+        }
     }
 
     /// x86Sim: MTLVK_DUMP_PASSES: log a compute command's buffer bindings, bytes and dispatches, and collect its
@@ -2072,6 +2177,7 @@ pub fn serve(n: usize, device: Device, stream: UnixStream) {
             return;
         }
     };
+    state.conn = n;
     let fd = stream.as_raw_fd();
     let mut reader = &stream;
     eprintln!("mtlvk: conn{n}: connected");

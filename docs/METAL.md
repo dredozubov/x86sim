@@ -46,7 +46,10 @@ Cross-process IOSurfaces (`com.apple.IOSurface.Remote`, host/iosurfaced/iosurfac
   executes commands with [steelbrain/metal2vulkan](../../external/metal2vulkan)'s runtime crate (cloned at f6a96b7,
   license GPL-2.0-or-later OR LGPL-3.0-or-later; mtlvk takes the same). Buffers are imported **without copies**:
   our mmap of the memfd is one `import_host_memory` block (VK_EXT_external_memory_host) and the buffer is placed in
-  it; if a driver refuses,
+  it; if a driver refuses (amdgpu always does: libdrm asks `AMDGPU_GEM_USERPTR_ANONONLY` and the pages are shmem,
+  issue #39), mtlvk makes a dma-buf of the same memfd range through `/dev/udmabuf` and imports that
+  (`VK_EXT_external_memory_dma_buf`; darlingserver seals its memfds `F_SEAL_SHRINK`, which udmabuf requires). Only where
+  that is refused too (no or no access to `/dev/udmabuf`, a range past its `size_limit_mb`, `MTLVK_UDMABUF=0`)
   mtlvk mirrors the buffer around each command buffer, and if Darling only has a snapshot fd, metalhostd copies
   (`BUF_WRITE`/`BUF_READ`). Textures live in mtlvk; replaceRegion/getBytes of Private textures go through a staging blit.
 - **Protocol**: `vkmtl_proto.h` (mirrored by `mtlvk/src/proto.rs`): 16-byte header, requests with seq get replies,
@@ -100,6 +103,14 @@ against a CPU decoder.
 Optional: `X86SIM_VKMTL_LOG=1` (metalhostd trace), `X86SIM_VKMTL_DUMP=1` (metalhostd saves every metallib it
 receives to `var/metal/captured/`), `X86SIM_METAL_PROFILE=<n>` (hostFeatureProfile, default 10001 =
 Mac2 + Common3, no tile shaders), `MTLVK_LOG=1` (mtlvk trace).
+Slow or hung GPU work (issue #37: amdgpu `ring gfx_0.0.0 timeout`, thread `m2v-submit`): mtlvk.log names the Vulkan
+driver and version at start, logs every command buffer still not complete `MTLVK_HANG_SECS` s after its commit
+(default 1, `0` = off) with what it carries (passes and target sizes, draws, dispatches, blits, its pipelines'
+function names, event waits with whether each is met: a wait not met is held on the host and never reaches the GPU)
+and how long it finally took, and logs the device's first loss with the driver's fault report (`VK_EXT_device_fault`,
+where the driver gives one), also with `MTLVK_HANG_SECS=0`. The device is not recreated: the phones on that mtlvk keep
+their last frame until restarted. On RADV, `RADV_DEBUG=hang` in mtlvk's environment (the launcher's) also writes a hang
+report (`~/radv_dumps_*`); it slows every submission.
 
 ## Build and run
 

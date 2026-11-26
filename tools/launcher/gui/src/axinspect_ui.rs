@@ -81,7 +81,7 @@ fn refresh(ctx: &egui::Context, inst: &Instance, st: &Shared) {
 pub fn tool(ui: &mut egui::Ui, inst: &Instance, live: bool) {
     let st = state(ui.ctx(), &inst.id);
     let on = st.lock().unwrap().on;
-    let tip = if on { "Inspecting: the element under the mouse is outlined, a click shows its accessibility properties (Accessibility in the side panel). Click to touch the screen again" } else { "Accessibility Inspector: point at an element to see its label, traits, actions and more" };
+    let tip = if on { "Inspecting · Click to touch the screen again" } else { "Accessibility Inspector" };
     if ui.add_enabled(live, if on { Btn::tinted("", pal().active) } else { Btn::ghost("") }.icon(icon::PERSON_SIMPLE_CIRCLE)).on_hover_text(tip).on_disabled_hover_text("Not running").clicked() {
         let mut s = st.lock().unwrap();
         s.on = !on;
@@ -234,7 +234,7 @@ fn run_audit(ctx: &egui::Context, inst: &Instance, st: &Shared) {
 /// The side panel's Accessibility section
 pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
     if !live {
-        ui.label(muted("Start the device to inspect its screen."));
+        ui.label(muted("Off"));
         ui.add_space(S3);
         return;
     }
@@ -246,14 +246,14 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
     };
     ui.horizontal_wrapped(|ui| {
         if ui.add(if on { Btn::tinted("Inspecting", pal().active) } else { Btn::secondary("Inspect") }.icon(icon::PERSON_SIMPLE_CIRCLE).small())
-            .on_hover_text("Point at an element on the screen to see its accessibility properties (touches pause while inspecting)").clicked() {
+            .on_hover_text("Point at an element; touches pause meanwhile").clicked() {
             st.lock().unwrap().on = !on;
             if !on {
                 refresh(&ctx, inst, &st);
             }
         }
         if ui.add_enabled(!auditing, Btn::secondary(if auditing { "Auditing…" } else { "Run audit" }).icon(icon::LIST_CHECKS).small())
-            .on_hover_text("Accessibility audit of the app in front: labels, touch targets, contrast, Dynamic Type, duplicates, hidden controls, traits").clicked() {
+            .on_hover_text("Audit of the app in front").clicked() {
             run_audit(&ctx, inst, &st);
         }
     });
@@ -261,7 +261,7 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
         if ui.checkbox(&mut all_frames, "All frames").changed() {
             st.lock().unwrap().all_frames = all_frames;
         }
-        if ui.checkbox(&mut dynamic_type, "Dynamic Type").on_hover_text("The audit also re-checks at the largest accessibility text size (the device's text size changes for a few seconds, then goes back)").changed() {
+        if ui.checkbox(&mut dynamic_type, "Dynamic Type").on_hover_text("Also checks the largest text size; the device's changes for a few seconds").changed() {
             st.lock().unwrap().dynamic_type = dynamic_type;
         }
     });
@@ -283,7 +283,7 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
         element_pane(ui, inst, &st, &e);
     } else if on {
         let xr = snap.as_ref().is_some_and(|s| s.platform == "xros");
-        ui.label(muted(if xr { "Vision Pro: pick an element below (its frame is in its window's own points)." } else { "Point at an element on the screen." }));
+        ui.label(muted("Nothing selected")).on_hover_text(if xr { "Pick one below; frames are in window points" } else { "Point at one on the screen" });
         if let (true, Some(sn)) = (xr, &snap) {
             for e in sn.elements.iter().filter(|e| e.role != "webview").take(200) {
                 if ui.selectable_label(false, format!("@{} {} {}", e.r, e.role, e.label.as_deref().unwrap_or(""))).clicked() {

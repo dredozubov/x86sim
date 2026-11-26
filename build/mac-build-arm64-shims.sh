@@ -3,7 +3,7 @@
 # the guest's frameworks, so they must be guest code): simshim, SimFramebuffer (simfb), SimulatorHID (simhid),
 # metalhostd (+vkmtl), iosurfaced, mtlprobe, openurl, netconfig, fpsim2host, nisimhost, fseventsd, mmhost. Output under host/<name>/arm64/ (mksimdevice.py picks
 # them up).
-# Usage: build/mac-build-arm64-shims.sh [simshim simax simaudio simfb simhid metalhostd iosurfaced mtlprobe openurl netconfig fpsim2host nisimhost fseventsd mmhost]
+# Usage: build/mac-build-arm64-shims.sh [simshim simax simnet simaudio simfb simhid metalhostd iosurfaced mtlprobe openurl netconfig fpsim2host nisimhost fseventsd mmhost]
 # Platforms 1: X86SIM_PLATFORM=tvos|watchos builds the same for the tvOS / watchOS simulator (dyld_sim takes only
 # Mach-Os of its own platform) into host/<name>/arm64-tvos|arm64-watchos (default ios: host/<name>/arm64).
 set -e
@@ -18,8 +18,8 @@ xros) SIMSDK=xrsimulator; T="-target arm64-apple-xros1.0-simulator"; SUF=-xros ;
 esac
 W=$(mktemp -d "$X86SIM_SCRATCH/macbuild.XXXXXX"); trap 'rm -rf "$W"' EXIT
 CC="xcrun -sdk $SIMSDK clang $T"
-# build <dir> <dest> <commands>: stdin (a tar of the sources) is unpacked into /tmp/<dir> on the build host (mac(): the
-# Mac over ssh, or this machine with build/linux-env.sh), <commands> make the file named like <dest> there, and it comes
+# build <dir> <dest> <commands>: stdin (a tar of the sources) is unpacked into /tmp/<dir> by mac() (build/linux-env.sh:
+# here, in a fresh sh), <commands> make the file named like <dest> there, and it comes
 # back as <dest>. A fixed <dir> per target: -g records it, so an unchanged source rebuilds the same binary.
 # build_exe: the same for an executable.
 build() {
@@ -34,20 +34,26 @@ build_exe() { build "$@" && chmod +x "$2"; }
 what=${*:-simshim simfb simhid}
 for w in $what; do case $w in
 simshim)
-	tar cf - -C "$X/host/simshim/compat" simshim.c -C "$X/host/simshim/diag" oslogdiag.m diagpath.h |
+	tar cf - -C "$X/host/simshim/compat" simshim.c simshim_net.c simshim_abort.c -C "$X/host/simshim/diag" oslogdiag.m diagpath.h |
 	build a64sh "$X/host/simshim/arm64$SUF/compat/libsimshim.dylib" "
 		cc() { $CC -O1 -Wall -Wno-unused-variable -Wno-deprecated-declarations \"\$@\"; } &&
-		cc -c -o simshim.o simshim.c && cc -c -DSIMSHIM_OSLOG -o oslog.o oslogdiag.m &&
-		cc -dynamiclib -framework IOKit -framework CoreFoundation -lobjc -lsqlite3 -Wl,-U,_BSPathExistsOnSystemPartition -o libsimshim.dylib simshim.o oslog.o" ;;
+		cc -c -o simshim.o simshim.c && cc -c -o simshim_net.o simshim_net.c && cc -c -o abort.o simshim_abort.c && cc -c -DSIMSHIM_OSLOG -o oslog.o oslogdiag.m &&
+		cc -dynamiclib -framework IOKit -framework CoreFoundation -lobjc -lsqlite3 -Wl,-U,_BSPathExistsOnSystemPartition -o libsimshim.dylib simshim.o simshim_net.o oslog.o abort.o" ;;
+simnet)
+	# network capture for agents (net_capture / net_log / net_mock): libsimshim dlopens it only into third-party apps
+	# whose capture is on (docs/protocols/NET.md)
+	tar cf - -C "$X/host/simnet" simnet.m | build a64net "$X/host/simnet/arm64$SUF/libsimnet.dylib" "$CC \
+		-O1 -Wall -Wno-unused-function -Wno-deprecated-declarations -Wno-unguarded-availability-new -fobjc-arc -dynamiclib \
+		-framework Foundation -o libsimnet.dylib simnet.m" ;;
 simax)
 	# the accessibility reader for agents (snapshot / type; libsimshim dlopens it in processes with UIKit)
 	# WebKit where the platform has it (not tvOS / watchOS); the visionOS / watchOS SDKs with headers are the -xcode ones
 	axsdk=; axweb="-framework WebKit"
 	case ${X86SIM_PLATFORM:-ios} in tvos) axweb= ;; watchos) axweb=; axsdk="SDK_WATCHOS=$X/sdks/WatchSimulator-xcode.sdk" ;;
 		xros) axsdk="SDK_XROS=$X/sdks/XRSimulator-xcode.sdk" ;; esac
-	tar cf - -C "$X/host/simax" simax.m | build a64ax "$X/host/simax/arm64$SUF/libsimax.dylib" "$axsdk $CC \
+	tar cf - -C "$X/host/simax" simax.m simax_engines.m simax_unity.m simax_pixels.m simax_actions.m simax_controls.m | build a64ax "$X/host/simax/arm64$SUF/libsimax.dylib" "$axsdk $CC \
 		-O1 -Wall -Wno-unused-function -Wno-deprecated-declarations -Wno-unguarded-availability-new -fobjc-arc -dynamiclib \
-		-framework Foundation -framework CoreGraphics -framework QuartzCore -framework UIKit $axweb -o libsimax.dylib simax.m" ;;
+		-framework Foundation -framework CoreGraphics -framework QuartzCore -framework UIKit $axweb -o libsimax.dylib simax.m simax_engines.m simax_unity.m simax_pixels.m simax_actions.m simax_controls.m" ;;
 simaudio)
 	# Speed 27: the audio devices (CoreAudio HAL stand-in, host/simaudio) for arm64 processes:
 	# flat namespace + dynamic lookup, CoreAudio references weak (inert in processes without CoreAudio)

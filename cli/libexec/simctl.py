@@ -255,6 +255,12 @@ def cmd_launch(a):
     r = check(request("launch", timeout=50, **o), "launch")
     if r.get("waiting"):
         r["pid"] = pidof(o["bundle"], wait=20) or -1
+    if not r.get("pid") or r.get("pid", -1) <= 0:
+        # x86Sim: FrontBoard answered without a process: look for one a little longer, else this launch failed (it
+        # printed "<bundle>: -1" and exited 0 before)
+        r["pid"] = pidof(o["bundle"], wait=5) or -1
+        if r["pid"] <= 0:
+            die("x86sim launch: %s: no process started (pid -1); see x86sim app-state %s / x86sim logs %s" % (o["bundle"], o["bundle"], o["bundle"]))
     print("%s: %s" % (o["bundle"], r.get("pid")), flush=True)
     if o.get("waitForDebugger"):
         print("x86sim: %s waits for a debugger (pid %s); see README: Debugging" % (o["bundle"], r.get("pid")),

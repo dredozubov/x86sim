@@ -91,6 +91,8 @@ core.[0-9]*
 !/host/simshim/arm64-xros/compat/libsimshim.dylib
 !/host/simfb/arm64-xros/SimFramebuffer.framework/
 !/host/simhid/arm64-xros/SimulatorHID.framework/
-/build/metal-research/toolchain/
 # release build outputs (build/release/build.sh, appimage.sh)
 /build/release/out/
+
+# a local unpack of Apple's Metal toolchain (Apple content: never committed; build/metal-toolchain.py keeps it in sdks/)
+/build/metal-research/

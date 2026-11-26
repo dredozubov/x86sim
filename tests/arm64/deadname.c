@@ -1,8 +1,9 @@
 // x86Sim (2026-11-24): Mach port notifications caused by another process's death. A survivor holding a send right to a
 // port of a process that dies must get MACH_NOTIFY_DEAD_NAME (raw, and libdispatch's DISPATCH_MACH_SEND_DEAD); a port
 // whose only sender dies MACH_NOTIFY_NO_SENDERS; a receive right a dying process holds, with a port-destroyed request,
-// must come back in MACH_NOTIFY_PORT_DESTROYED; the dead process's task port and task name port become dead names; its
-// exit is a DISPATCH_SOURCE_TYPE_PROC event; and XPC sees it both ways (a server's peer connection is invalidated, a
+// must come back in MACH_NOTIFY_PORT_DESTROYED; a send-possible request on a dying port is answered with a dead-name
+// notification, a dead-name request on a send right its holder drops with MACH_NOTIFY_PORT_DELETED; the dead process's
+// task port and task name port become dead names; its exit is a DISPATCH_SOURCE_TYPE_PROC event; and XPC sees it both ways (a server's peer connection is invalidated, a
 // client's connection interrupted). Rounds: the child forked or posix_spawned, exiting or SIGKILLed, idle or "busy"
 // (its ports watched by libdispatch, a thread parked in a receive), then XPC.
 // Why: a report against x86Sim 0.5.2 said dead-name notifications lost across processes (XPC interruption unnoticed,
@@ -10,6 +11,9 @@
 // passes in a bare container and inside a booted phone's container, and a watcher holding send rights to all 106
 // receive rights of Maps got 106 dead-name notifications when Maps was terminated. The prompt that stays after its app
 // quits (Maps' location prompt) stays on Apple's own simulator too. This stays as the regression test.
+// 2026-11-25: send-possible and port-deleted added; 85 checks pass, bare and in a booted phone's container. A location
+// or contacts prompt whose app is terminated or SIGKILLed stays up on Apple's iOS 27.2 simulator as on x86Sim, and the
+// next launch shows it again (tests/ax/perm_e2e.py), so the stale prompt is Apple's behaviour, not a lost notification.
 // The children get the parent's ports by task_for_pid + mach_port_extract_right (Darling's fork does not carry
 // mach_ports_register's ports over). The in-process checks are the control.
 // Usage: deadname.sim [fork|forkkill|spawn|spawnkill|forkbusy|forkkillbusy|spawnbusy|spawnkillbusy|xpc]   (default all)
@@ -33,7 +37,7 @@
 typedef struct {
 	mach_msg_header_t h;
 	mach_msg_body_t b;
-	mach_msg_port_descriptor_t p[3];
+	mach_msg_port_descriptor_t p[5];
 } rights_msg_t;
 typedef struct { rights_msg_t m; mach_msg_max_trailer_t t; } rights_rcv_t;
 typedef union {
@@ -41,6 +45,7 @@ typedef union {
 	mach_dead_name_notification_t dn;
 	mach_no_senders_notification_t ns;
 	mach_port_destroyed_notification_t pd;
+	mach_port_deleted_notification_t pdel;
 	char buf[256];
 } notif_t;
 
@@ -109,17 +114,19 @@ static void child(pid_t parent, mach_port_t hello_name, int wait_kill, int busy)
 	CHECK(task_for_pid(mach_task_self(), parent, &ptask));
 	CHECK(mach_port_extract_right(ptask, hello_name, MACH_MSG_TYPE_MAKE_SEND, &hello, &t));
 	mach_port_deallocate(mach_task_self(), ptask);
-	mach_port_t dn = new_port(), dd = new_port(), inbox = new_port();
+	mach_port_t dn = new_port(), dd = new_port(), inbox = new_port(), sp = new_port(), del = new_port();
 	rights_msg_t m;
 	memset(&m, 0, sizeof m);
 	m.h.msgh_bits = MACH_MSGH_BITS_SET(MACH_MSG_TYPE_COPY_SEND, 0, 0, MACH_MSGH_BITS_COMPLEX);
 	m.h.msgh_size = sizeof m;
 	m.h.msgh_remote_port = hello;
 	m.h.msgh_id = 1;
-	m.b.msgh_descriptor_count = 3;
+	m.b.msgh_descriptor_count = 5;
 	m.p[0] = (mach_msg_port_descriptor_t){ .name = dn, .disposition = MACH_MSG_TYPE_MAKE_SEND, .type = MACH_MSG_PORT_DESCRIPTOR };
 	m.p[1] = (mach_msg_port_descriptor_t){ .name = dd, .disposition = MACH_MSG_TYPE_MAKE_SEND, .type = MACH_MSG_PORT_DESCRIPTOR };
 	m.p[2] = (mach_msg_port_descriptor_t){ .name = inbox, .disposition = MACH_MSG_TYPE_MAKE_SEND, .type = MACH_MSG_PORT_DESCRIPTOR };
+	m.p[3] = (mach_msg_port_descriptor_t){ .name = sp, .disposition = MACH_MSG_TYPE_MAKE_SEND, .type = MACH_MSG_PORT_DESCRIPTOR };
+	m.p[4] = (mach_msg_port_descriptor_t){ .name = del, .disposition = MACH_MSG_TYPE_MAKE_SEND, .type = MACH_MSG_PORT_DESCRIPTOR };
 	if (busy) {
 		// as a real process: its ports watched by libdispatch (a kqchan in darlingserver) and a thread parked in a
 		// receive (a microthread waiting in darlingserver) when it dies
@@ -166,9 +173,14 @@ static void scenario(const char *mode, const char *self) {
 	rights_rcv_t r;
 	memset(&r, 0, sizeof r);
 	CHECK(mach_msg(&r.m.h, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof r, hello, 30000, MACH_PORT_NULL));
-	mach_port_t dn = r.m.p[0].name, dd = r.m.p[1].name, inbox = r.m.p[2].name;
+	mach_port_t dn = r.m.p[0].name, dd = r.m.p[1].name, inbox = r.m.p[2].name, sp = r.m.p[3].name, del = r.m.p[4].name;
 
 	request(dn, MACH_NOTIFY_DEAD_NAME, 0, notify);
+	// a send-possible request (its queue never fills) is answered by a dead-name notification when the receiver dies
+	request(sp, MACH_NOTIFY_SEND_POSSIBLE, 0, notify);
+	// port deleted: a dead-name request on a send right the requester drops while the receiver lives
+	request(del, MACH_NOTIFY_DEAD_NAME, 0, notify);
+	CHECK(mach_port_deallocate(mach_task_self(), del));
 	dispatch_semaphore_t dsem = dispatch_semaphore_create(0);
 	dispatch_queue_t q = dispatch_queue_create("deadname", NULL);
 	dispatch_source_t ds = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_SEND, dd, DISPATCH_MACH_SEND_DEAD, q);
@@ -215,12 +227,14 @@ static void scenario(const char *mode, const char *self) {
 	printf("DEADNAME: [%s] child exited (status 0x%x)\n", mode, st);
 
 	// the notifications go to one port, in any order
-	int got_dn = 0, got_ns = 0, got_pd = 0, got_task = 0, got_name = 0;
+	int got_dn = 0, got_ns = 0, got_pd = 0, got_task = 0, got_name = 0, got_sp = 0, got_del = 0;
 	notif_t n;
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 7; i++) {
 		memset(&n, 0, sizeof n);
 		if (mach_msg(&n.h, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof n, notify, 5000, MACH_PORT_NULL)) break;
 		if (n.h.msgh_id == MACH_NOTIFY_DEAD_NAME && n.dn.not_port == dn) got_dn = 1;
+		else if (n.h.msgh_id == MACH_NOTIFY_DEAD_NAME && n.dn.not_port == sp) got_sp = 1;
+		else if (n.h.msgh_id == MACH_NOTIFY_PORT_DELETED && n.pdel.not_port == del) got_del = 1;
 		else if (n.h.msgh_id == MACH_NOTIFY_DEAD_NAME && n.dn.not_port == ctask) got_task = 1;
 		else if (n.h.msgh_id == MACH_NOTIFY_DEAD_NAME && n.dn.not_port == cname) got_name = 1;
 		else if (n.h.msgh_id == MACH_NOTIFY_NO_SENDERS) got_ns = 1;
@@ -232,6 +246,8 @@ static void scenario(const char *mode, const char *self) {
 #define R(s, ok) do { snprintf(what, sizeof what, "[%s] %s", mode, s); result(what, ok); } while (0)
 	R("peer's port is a dead name", (type & MACH_PORT_TYPE_DEAD_NAME) != 0);
 	R("dead-name", got_dn);
+	R("send-possible request -> dead-name", got_sp);
+	R("port-deleted (request on a dropped send right)", got_del);
 	R("DISPATCH_MACH_SEND_DEAD", dispatch_semaphore_wait(dsem, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) == 0);
 	R("no-senders", got_ns);
 	R("port-destroyed", got_pd);

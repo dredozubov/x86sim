@@ -695,6 +695,11 @@ impl Viewer {
         self.hid.press(button);
     }
 
+    /// A raw host/simhid line ("appswitcher", "gesture doubletap")
+    pub fn send(&mut self, line: &str) {
+        self.hid.send(line);
+    }
+
     pub fn hold(&self, button: &str, ms: u64) {
         self.hid.hold(button, ms);
     }

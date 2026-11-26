@@ -298,8 +298,8 @@ metadata, on a copy (the input is never changed):
 App Store downloads are encrypted with FairPlay (`LC_ENCRYPTION_INFO` cryptid 1) for the device they were bought
 on and are refused with a message saying so; export a development, ad-hoc or enterprise build instead. Binaries
 without an arm64 slice (armv7, arm64e only, x86_64) are refused too. `x86sim-devapp inspect X.ipa` shows what a
-bundle holds; `tests/apps/build-ipa.sh` builds a small device `.ipa` (an embedded fat framework, entitlements) on a
-Mac as a fixture.
+bundle holds; `tests/apps/build-ipa.sh` builds a small device `.ipa` (an embedded fat framework, entitlements) on
+Linux as a fixture.
 
 ### Tests (XCTest, XCUITest)
 
@@ -329,8 +329,9 @@ x86sim test qa --spm MyPackage                          # a Swift package's test
   / `x86sim test --spm`, which builds its tests on Linux with the `x86sim dev` toolchain. Test bundles inside an Xcode
   project (an app's unit tests, UI test runners) need Xcode's build system.
 - **XCTest's frameworks** (`XCTest.framework`, `XCTestCore`, `XCUIAutomation`, `libXCTestBundleInject.dylib`) are
-  Xcode's, not the runtime's: `x86sim test` takes them from `sdks/<Platform>.platform` (`x86sim test fetch-platform`
-  copies them from `$X86SIM_MAC`), `--platform DIR`, or the SDK `x86sim dev setup sdk --xip` installed.
+  Xcode's, not the runtime's: `x86sim test` takes them from the Darwin SDK `x86sim dev setup sdk --xip Xcode.xip` builds
+  on Linux (Xcode.xip from developer.apple.com, a free Apple ID; Apple publishes no XCTest download without one),
+  `sdks/<Platform>.platform` (`x86sim test fetch-platform` copies them there) or `--platform DIR`.
 - **Every platform**: `tests/apps/XCTestDemo` builds for iOS, tvOS, watchOS and visionOS (`X86SIM_PLATFORM=tvos
   tests/apps/XCTestDemo/build.sh`; `run.sh <phone>` picks the phone's). Its unit, logic and UI tests give Apple's
   results on iPhone, iPad, Apple TV, Apple Watch and Vision Pro.
@@ -592,11 +593,12 @@ else the configured one. Erase, clone and keychain reset need it.
 | Tests | `xctest_run` (XCTest / XCUITest: an `.xctestrun` or bundles; per-test results, see [Tests](#tests-xctest-xcuitest)) |
 | Debugging | `debug_start`, `debug_command`, `debug_stop` (an lldb session on an app, see [Debugging (LLDB)](#debugging-lldb)) |
 | Profiling | `profile_start`, `profile_stop` (CPU profile of an app, see [Profiling (CPU)](#profiling-cpu)) |
+| Network | `net_capture`, `net_log`, `net_request`, `net_mock` (an app's requests with headers, bodies and timings, and mock answers; no proxy: docs/protocols/NET.md) |
 | Screen as text and actions | `snapshot`, `tap`, `long_press`, `type`, `key`, `scroll`, `scroll_to`, `swipe`, `pinch`, `wait_for`, `press`, `open_url`, `screenshot` |
 | Accessibility Inspector | `ax_inspect`, `ax_audit`, `ax_action` |
 | Hardware | `sim_button`, `sim_crown`, `sim_fold`, `sim_shake`, `sim_orientation`, `sim_biometric`, `sim_gamepad`, `sim_pointer`, `sim_system`, `sim_keyboard`, `sim_memory_warning` |
 | Device services (as simctl) | `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia` |
-| Settings (as simctl) | `sim_ui`, `sim_status_bar`, `sim_pasteboard`, `sim_keychain_reset`, `sim_locale`, `sim_timezone`, `sim_fidelity`, `sim_erase`, `sim_clone` |
+| Settings (as simctl) | `sim_ui`, `sim_status_bar`, `sim_pasteboard`, `sim_keychain_reset`, `sim_locale`, `sim_timezone`, `sim_fidelity`, `sim_gpu`, `sim_erase`, `sim_clone` |
 | Capture | `sim_screenshot` (a PNG file), `sim_record_video` |
 | Pool | `pool_status`, `phone_take`, `phone_release` |
 | Sharing | `share_start`, `share_stop`, `share_status`, `share_link` (they return the URLs) |
@@ -695,11 +697,33 @@ x86sim dev new HelloApp               # a SwiftUI app (xtool new), set up for iO
 x86sim dev run HelloApp --phone QA    # build for that device's platform, install and launch: the edit-run loop
 x86sim dev test HelloApp              # the same, then check it still runs and take a screenshot
 x86sim dev device | ship | ship-mac | convert | auth   # real iPhones, App Store / TestFlight, Xcode projects
+x86sim dev setup cocoapods            # a pinned Ruby and CocoaPods in your home directory, for Podfile projects
+x86sim dev pod ios install            # pod install on Linux (React Native, Expo, Flutter plugins with a Podfile)
+x86sim dev run MyExpoApp --phone QA   # React Native / Expo: npm install, expo prebuild, pod install, the build,
+                                      # install, launch, Metro on localhost:8081 (edits arrive by Fast Refresh)
+x86sim dev reload                     # reload the JavaScript (r in Metro); x86sim dev metro DIR --stop ends Metro
 ```
+
+- **React Native and Expo** apps build entirely on Linux: a pinned Ruby and CocoaPods run `pod install`, and the
+  fork's `tools/xcbuild.py` builds the CocoaPods workspace (Pods.xcodeproj and the app's project) with the Swift
+  toolchain, the way `xcodebuild` does, script phases (codegen, Expo's scripts) included. Debug builds load their
+  JavaScript from Metro on the host, which the phones reach as their own localhost. `x86sim dev device` makes a
+  Release device build and installs it with `xtool install`. `tests/dev/rn_e2e.py` checks a fresh Expo app and a
+  bare React Native app on a phone through MCP.
 
 - **Build** Swift, SwiftUI, Objective-C, C and C++ apps with Swift and xtool, along with Flutter and Kotlin
   Multiplatform, as simulator builds for x86Sim (`ship.sh --simulator`) or device builds for an iPhone. Linux versions
   of `actool`, `ibtool`, `momc` and `xcstringstool` are included, and Xcode projects can be converted.
+- **Kotlin Multiplatform**: an app whose `xtool.env` names its Gradle build (`KMP_GRADLE_ROOT`) builds with
+  `kmp/build-app.sh` (Gradle, Kotlin/Native's link for `ios_simulator_arm64`, the app): `x86sim dev run` works on it
+  as on any xtool app (`tests/dev/kmp_e2e.py`: a Compose Multiplatform counter on a phone).
+- **.NET for iOS**: a directory with a `net*-ios` `.csproj` builds with `dotnet/build.sh` (the iOS workload on Linux,
+  NativeAOT; set up once with `external/omarchy-apple-dev/dotnet/setup.sh`): `x86sim dev run` builds, installs and
+  launches it (`tests/dev/dotnet_e2e.py`: a UIKit counter in C# on a phone).
+- **Rust apps**: a cargo package is built with cargo for `aarch64-apple-ios-sim` / `aarch64-apple-ios` with the same
+  SDK and `ld64.lld` (the fork's `rust/`: `rust/setup.sh` adds the rustup targets, `rust/build.py` makes the `.app`);
+  `x86sim dev run <crate dir>` builds, installs and launches it. Status per setup, checked by `tests/dev/rust_e2e.py`
+  on a phone: plain Rust (UIKit through objc2), Tauri 2 (its Swift half built with Linux Swift), Dioxus mobile and Bevy run. See `external/omarchy-apple-dev/rust/README.md`.
 - **Run on a device**: `device-run.sh` (`x86sim dev device`) pairs an iPhone, installs and launches the app, attaches
   LLDB, streams its console and symbolicates crash reports.
 - **Publish**: `ship.sh` (`x86sim dev ship`) builds a release `.ipa`, creates certificates and profiles, signs it and

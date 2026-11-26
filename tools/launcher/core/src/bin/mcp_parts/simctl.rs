@@ -33,8 +33,8 @@ pub fn tools(phone: &Value) -> Vec<Value> {
                "inputSchema": {"type": "object", "properties": {"phone": phone, "zone": {"type": "string"}}}}),
         json!({"name": "sim_fidelity", "description": "Speed vs looks per device: fast = a 3x iPhone drawn at 2x (same layout, 4/9 of the pixels) plus Reduce Transparency and Reduce Motion; high = native scale and every effect. Effects change at once on a running device, the scale at its next boot (sim_restart). Without preset: reads it.",
                "inputSchema": {"type": "object", "properties": {"phone": phone, "preset": {"type": "string", "enum": ["fast", "high"]}}}}),
-        json!({"name": "sim_record_video", "description": "Record the running device's screen to an MP4 (simctl io recordVideo) for secs seconds (default 5, max 300); returns the file's path and size.",
-               "inputSchema": {"type": "object", "properties": {"phone": phone, "path": {"type": "string"}, "secs": {"type": "number"}, "codec": {"type": "string", "enum": ["h264", "hevc"]}}, "required": ["path"]}}),
+        json!({"name": "sim_record_video", "description": "Record the running device's screen to an MP4 (simctl io recordVideo). action=start begins recording into path and returns at once (it ends by itself after max_secs, default 300); action=stop finishes the file and answers its path, length (secs) and size; action=status says whether it is recording and for how long. Without action: records for secs seconds (default 5, max 300) and answers when done.",
+               "inputSchema": {"type": "object", "properties": {"phone": phone, "action": {"type": "string", "enum": ["start", "stop", "status"]}, "path": {"type": "string"}, "secs": {"type": "number"}, "max_secs": {"type": "number"}, "codec": {"type": "string", "enum": ["h264", "hevc"]}}}}),
         json!({"name": "sim_screenshot", "description": "The running device's newest frame as a PNG (simctl io screenshot); returns the path.",
                "inputSchema": {"type": "object", "properties": {"phone": phone, "path": {"type": "string"}}, "required": ["path"]}}),
     ]
@@ -47,6 +47,9 @@ fn x86sim(dev: &std::path::Path, cmd: &str, args: &[String]) -> anyhow::Result<S
         .arg(dev)
         .args(args)
         .current_dir(repo_root())
+        // the named device's frame ring (cli/x86sim picks it from `dev`), not one this server inherited from a shell
+        // that sourced cli/lib/config.sh (io screenshot / recordVideo read the configured device's then)
+        .env_remove("SIMFB_RING_LINUX")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -226,6 +229,13 @@ pub fn call(name: &str, a: &Value, phone: &dyn Fn() -> anyhow::Result<instance::
                 }
                 "sim_timezone" => opt("zone").map(|z| positional("zone", z)).transpose().and_then(|z| x86sim(&d, "timezone", &z.into_iter().collect::<Vec<_>>())).map(|t| json!({"phone": inst.name, "timezone": t})),
                 "sim_fidelity" => opt("preset").map(|z| positional("preset", z)).transpose().and_then(|z| x86sim(&d, "fidelity", &z.into_iter().collect::<Vec<_>>())).map(|t| json!({"phone": inst.name, "fidelity": t})),
+                // start / stop / status: a recording in the background (x86sim_core::record)
+                "sim_record_video" if a["action"].is_string() => match a["action"].as_str().unwrap_or("") {
+                    "start" => x86sim_core::record::start(&inst, std::path::Path::new(&opt("path").unwrap_or_default()), a["max_secs"].as_f64().unwrap_or(300.0), &opt("codec").unwrap_or_else(|| "h264".into())),
+                    "stop" => x86sim_core::record::stop(&inst),
+                    "status" => x86sim_core::record::status(&inst),
+                    o => Err(anyhow::anyhow!("action {o:?}: start, stop or status")),
+                },
                 "sim_record_video" => {
                     let path = opt("path").unwrap_or_default();
                     let secs = a["secs"].as_f64().unwrap_or(5.0).clamp(0.5, 300.0);

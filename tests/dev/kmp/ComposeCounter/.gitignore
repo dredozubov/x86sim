@@ -1,0 +1,7 @@
+/.gradle/
+/.kotlin/
+/build/
+/shared/build/
+/gradlew
+/gradlew.bat
+/gradle/

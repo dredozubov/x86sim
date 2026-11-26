@@ -5,10 +5,13 @@
 //! find it there and talk to it over loopback with its control token.
 /// the Accessibility Inspector's routes (/api/phones/<id>/ax/...)
 pub mod axapi;
+pub mod netapi;
+pub mod device;
 pub mod audio;
 /// Web Inspector routes (control role): x86sim inspect, the viewer's Inspect button
 pub mod inspect;
 pub mod server;
+pub mod theme;
 pub mod tunnel;
 pub mod video;
 pub mod ws;
@@ -30,6 +33,38 @@ pub enum Role {
     Control,
     /// watch only
     View,
+}
+
+/// The server's tokens kept across restarts (the main control / view tokens and the links made), 0600 in
+/// ~/.config/x86sim: a restart does not break the links people hold. `x86sim serve --new-tokens` removes it.
+pub fn tokens_path() -> PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config"));
+    base.join("x86sim/serve-tokens.json")
+}
+
+pub fn load_tokens() -> Vec<TokenRec> {
+    if cfg!(test) {
+        return vec![];
+    }
+    std::fs::read(tokens_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn save_tokens(t: &[TokenRec]) {
+    if cfg!(test) {
+        return;
+    }
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let p = tokens_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let tmp = p.with_extension("tmp");
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp) {
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        let _ = f.write_all(serde_json::to_string_pretty(t).unwrap_or_default().as_bytes());
+        let _ = std::fs::rename(&tmp, &p);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -344,6 +379,13 @@ pub fn link(phone: Option<&str>, role: Role, ttl_s: u64) -> Result<Value> {
 }
 
 /// The QR code as an SVG (dark modules on white, a 4-module quiet zone)
+/// `text` as a QR code's modules, row by row (true: dark), and its width: for a window that draws its own (the launcher)
+pub fn qr_matrix(text: &str) -> Option<(usize, Vec<bool>)> {
+    let q = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let dark = q.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect();
+    Some((q.width(), dark))
+}
+
 pub fn qr_svg(q: &qrcode::QrCode) -> String {
     let w = q.width();
     let c = q.to_colors();

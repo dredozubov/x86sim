@@ -1,4 +1,5 @@
-// makes res/sdkcovChapters.mov and res/sdkcovStall.mov on a Mac (swiftc -parse-as-library sdkcovMovies.swift && ./sdkcovMovies: /tmp/sdkcovChapters.mov):
+// makes res/sdkcovChapters.mov and res/sdkcovStall.mov: an iOS simulator program, built on Linux and run on a phone by
+// res/sdkcovRes.sh (`sdkcovMovies [DIR]` writes both into DIR, default the program's own directory):
 // the movie checks/P21_Gaps.swift's p21ChapterMovie writes (64x64 video, 3 s, a QuickTime text track "Opening",
 // "Middle", "Credits" associated as its chapter list), for watchOS, which has no AVAssetWriter
 // (func:AVFoundation.chapters-bundled-movie in checks/P22_Gaps.swift), and the 6 s video + AAC movie p21AVMovie writes
@@ -7,6 +8,13 @@ import AVFoundation
 import CoreMedia
 struct E: Error { let s: String }
 func expect(_ c: Bool, _ s: @autoclosure () -> String) throws { if !c { throw E(s: s()) } }
+// H.264 settings pinned to what the first movies (made on a Mac) had: an encoder's default bitrate differs (x86Sim's
+// simulator encoder wrote 25-53 kbps where the Mac wrote 10-15), so the files stay about their old size (6.4 KB, 36.7 KB)
+func h264(_ side: Int, kbps: Int) -> [String: Any] {
+    [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: side, AVVideoHeightKey: side,
+     AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: kbps * 1000, AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                                       AVVideoMaxKeyFrameIntervalKey: 30]]
+}
 func p1Solid(_ w: Int, _ h: Int, _ bgr: [UInt8]) -> CVPixelBuffer {
     var pb: CVPixelBuffer?
     CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA, [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pb)
@@ -19,7 +27,7 @@ func p1Solid(_ w: Int, _ h: Int, _ bgr: [UInt8]) -> CVPixelBuffer {
 func p21ChapterMovie(_ url: URL, titles: [String]) async throws {
     try? FileManager.default.removeItem(at: url)
     let w = try AVAssetWriter(outputURL: url, fileType: .mov)
-    let vin = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64])
+    let vin = AVAssetWriterInput(mediaType: .video, outputSettings: h264(64, kbps: 9))
     let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: vin, sourcePixelBufferAttributes: nil)
     w.add(vin)
     var fd: CMFormatDescription?
@@ -97,7 +105,7 @@ func p21AVMovie(_ url: URL) async throws {
     try? FileManager.default.removeItem(at: url)
     let w = try AVAssetWriter(outputURL: url, fileType: .mov)
     w.shouldOptimizeForNetworkUse = true
-    let vin = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 160])
+    let vin = AVAssetWriterInput(mediaType: .video, outputSettings: h264(160, kbps: 14))
     let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: vin, sourcePixelBufferAttributes: nil)
     let ain = AVAssetWriterInput(mediaType: .audio, outputSettings: p1AAC)
     w.add(vin); w.add(ain)
@@ -124,9 +132,11 @@ func p21AVMovie(_ url: URL) async throws {
     try expect(w.status == .completed, "finishWriting: \(String(describing: w.error))")
 }
 @main struct Main { static func main() async throws {
-    let u = URL(fileURLWithPath: "/tmp/sdkcovChapters.mov")
+    let dir = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().path
+    let u = URL(fileURLWithPath: dir).appendingPathComponent("sdkcovChapters.mov")
     try await p21ChapterMovie(u, titles: ["Opening", "Middle", "Credits"])
     let g = try await AVURLAsset(url: u).loadChapterMetadataGroups(bestMatchingPreferredLanguages: ["en", "und"])
-    print("chapters", g.count)
-    try await p21AVMovie(URL(fileURLWithPath: "/tmp/sdkcovStall.mov"))
+    print("chapters", g.count, (try? FileManager.default.attributesOfItem(atPath: u.path)[.size]).map { "\($0) bytes" } ?? "?")
+    try await p21AVMovie(URL(fileURLWithPath: dir).appendingPathComponent("sdkcovStall.mov"))
+    print("stall", (try? FileManager.default.attributesOfItem(atPath: URL(fileURLWithPath: dir).appendingPathComponent("sdkcovStall.mov").path)[.size]).map { "\($0)" } ?? "?")
 } }

@@ -9,8 +9,10 @@ elements. The host side is `tools/launcher/core/src/ax.rs`: the MCP tools `snaps
 `mksimdevice.py` sets `X86SIM_AX_DYLIB` in every simulator process's environment. libsimshim's `shim_ax_init`
 dlopens that dylib only when UIKitCore is among the images loaded at launch, so daemons never load it. Its
 constructor waits for `UIApplicationDidFinishLaunchingNotification`, which means many daemons that link UIKit
-(sharingd, mobileassetd and others) never open a socket. `X86SIM_AX_OFF=1` turns it off, and `X86SIM_AX_LOG=1`
-logs to stderr.
+(sharingd, mobileassetd and others) never open a socket. An app whose executable links no UIKit and loads it later
+(a Unity app: its `main` loads UnityFramework, which links UIKit) gets it too: libsimshim watches image loads and
+dlopens it from the main queue once UIKitCore arrives, and the reader, finding the application already running,
+starts at once. `X86SIM_AX_OFF=1` turns it off, and `X86SIM_AX_LOG=1` logs to stderr.
 
 The first `tree` request in a process loads UIKit's accessibility bundles by turning accessibility automation on,
 as XCUITest does (`_AXSApplicationAccessibilitySetEnabled`, `_AXSSetAutomationEnabled`, `_UIAccessibilityInitialize`).
@@ -56,8 +58,11 @@ says whether that screen is `UIScreen.mainScreen` and `display` gives its displa
 | op | arguments | answer |
 |---|---|---|
 | `info` | | the fields above; SpringBoard's also `locked` (`SBLockScreenManager isUILocked`) and `suspended` (pids FrontBoard suspended) |
-| `tree` | `fg` (only walk when on screen), `all` (include elements scrolled out of view), `noax`, `timeout` | plus `elements`, `focus` (oid of the first responder), `focus_item` (the focus engine's item: `oid`, `class`, `frame`, `label`; tvOS's remote focus), `animating`, `web_pending` |
-| `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `value` |
+| `tree` | `fg` (only walk when on screen), `all` (include elements scrolled out of view), `noax`, `timeout` | plus `elements`, `focus` (oid of the first responder), `focus_item` (the focus engine's item: `oid`, `class`, `frame`, `label`; tvOS's remote focus), `animating`, `web_pending`, `pixels` (below) |
+| `type` | `text`, `clear`, `submit` (the host sends no `submit` nor newlines: it presses the Return key itself) | `typed`, `field` (class), `oid` (the field), `value` |
+| `focus` | | the first responder (see below) |
+| `control` | `oid` | what control the element is and the values it takes (see below) |
+| `setvalue` | `oid`, `value` (text, or a list: one per picker wheel), `quiet` | sets it as a touch would (see below) |
 | `scroll` | `oid` | `ok` (`accessibilityScrollToVisible`, else `scrollRectToVisible` in the nearest scroll view) |
 | `activate` | `oid`, `tap` | `ok` (`accessibilityActivate`); with `tap`, when that answers NO, a tap made in the process at the element's activation point (a UITouch with an IOHIDEvent digitizer event through `sendEvent:`): `tapped`, `at` |
 | `scrollby` | `dir` (up down left right), `amount` (part of the view) | scrolls the largest visible scroll view that scrolls that way: `ok`, `moved`, `view` |
@@ -84,8 +89,41 @@ plain view provides its subviews. Hidden views and `accessibilityElementsHidden`
 `accessibilityViewIsModal` hides its siblings. Off-screen elements are dropped unless `all` is set.
 
 Roles: `textfield`, `searchfield`, `switch`, `adjustable`, `key`, `tabbar`, `link`, `button`, `heading`,
-`image`, `text`, `icon` (SpringBoard), `element` (anything else with a label, value or identifier), and the web
-roles below.
+`image`, `text`, `icon` (SpringBoard), `node` (a game's object: Engines below), `element` (anything else with a label,
+value or identifier), and the web roles below.
+
+### `focus`: who has the keyboard
+
+`focus` (simax_actions.m) answers the process's first responder without a walk: `focused` (false: none, nothing
+else), `oid`, `class`, `text_input` (it takes typed text: `UIKeyInput`), `kind` (`textfield`, `securefield`,
+`searchfield`, `textview`, `web` (WebKit's content view: the page's `document.activeElement` is the field),
+`keyinput`, `other`), `frame` (screen points), `inside` (the oids of the views it is in, nearest first, up to 40),
+and for a native field `value` (a secure field's as dots), `placeholder`, `label`, `id`. The host's `type` with a
+target (core/src/axact.rs) taps the element, then asks this on every new frame until the field is the element, inside
+it, or under its centre (a SwiftUI node over its UITextField); a web field: until the DOM's focus is on it.
+
+### `control` and `setvalue`: sliders, switches, pickers
+
+`control` (simax_controls.m) finds the UIKit control an element stands for: the element itself, a view it is inside
+(a segment of a UISegmentedControl; a date picker's own wheels stand for the UIDatePicker), or, for a SwiftUI node, the
+control under it (the same place, its centre on it, or inside it: a Toggle's node is its whole row). It answers
+`kind` (`slider`, `switch`, `stepper`, `segmented`, `picker`, `datepicker`, `adjustable` for any other element with
+the adjustable trait, `none`), `class` and the values: `min` / `max` / `value` (slider; a SwiftUI slider's UISlider
+runs 0 to 1 whatever the app's range), `min` / `max` / `step` / `value` (stepper), `values` and `value` (segment titles;
+switch on / off), `mode` / `value` / `min` / `max` (date picker: ISO dates, `HH:mm` for times), `components` (each
+wheel's row titles), `titles` (false: the rows draw no text simax can read, SwiftUI's wheels) and `value`.
+
+`setvalue` sets it the way a touch leaves it: the control's value, then its ValueChanged actions (a UIKit target, a
+SwiftUI binding), one step at a time for a stepper, and for a picker `selectRow:inComponent:` followed by the
+delegate's `pickerView:didSelectRow:inComponent:` (what the end of a scroll calls). Values: a number or a percentage
+of the range (`"50%"`) for a slider; `on` / `off` for a switch; a number, or `+N` / `-N` steps, for a stepper (SwiftUI's
+Stepper keeps its count in the app: absolute values answer an error with `swiftui`, and the host steps toward the
+number the stepper's label shows); a segment's title (or `#index`); per picker wheel a row's title, exact, prefix or
+part of it (`""` keeps a wheel); for a date picker `2026-05-01`, `2026-05-01T14:30` or `14:30`; for an adjustable
+element the value it should read (increments / decrements until it does). A picker without titles takes `#row` on the
+wheel the element is (`quiet`: the delegate is not told, while the host reads each row's text from the wheel's
+accessibility value); text answers an error with `titles: false`, `rows`, `row`, `component`. The answer is the
+control's `kind` and `value` afterwards and `was`, or an `error` naming what the control takes.
 
 ### The inspector (`tree` with `full`)
 
@@ -136,6 +174,107 @@ the content box and clipped to it. Elements of a hidden iframe, or of one that c
 
 Web content gets about 80% of the request's `timeout`. Frames that have not answered by then are left out and
 counted in `web_pending`, so a busy WebContent process does not cost the whole snapshot.
+
+## Engines
+
+Content UIKit's accessibility does not describe: game views and engines that draw everything themselves. Their readers
+are `host/simax/simax_engines.m` (and one file per engine), hooked into the walk: a game view's elements are added where
+the view is, in the view's window, with frames in screen points as any other.
+
+### Game views: SpriteKit and SceneKit nodes
+
+`host/simax/simax_engines.m`. A game draws its world in one view, so UIKit's accessibility sees one view and nothing in
+it unless the developer gave nodes accessibility. In an `SKView` or `SCNView`, every *named* node that shows becomes an
+element besides what the view's own accessibility lists (SpriteKit lists label nodes' text by itself; a node listed
+that way is not listed twice): role `node`, `label` the node's name, `class` the node's class, `oid` the node.
+
+- SpriteKit: the presented scene's tree. Hidden nodes, nodes with alpha under 0.01 and their subtrees are skipped. The
+  frame is `calculateAccumulatedFrame` (the node with its children) taken from its parent's coordinates through the
+  scene to the view (`convertPoint:toNode:`, `convertPointToView:`), clipped to the view; a node outside the view is not
+  listed.
+- SceneKit: the root node's tree, by presentation node (where actions and animations put it now). A node's bounding box
+  (its subtree's) is projected corner by corner (`projectPoint:`); corners behind the camera are dropped and a node with
+  none in front is not listed, nor is one without geometry (a camera, a light). A node is covered, and not listed, when
+  a hit test through its center (`SCNHitTestSearchModeAll`, hidden nodes ignored) meets another node first and it only
+  later.
+- `key` is `sk:<name>#<n>` / `scn:<name>#<n>`, the n-th node of that name in the tree, so a moving node keeps its ref,
+  and `tap "Player"`, `wait_for "Enemy" gone=true` work on games built with names.
+
+
+### Engines that wait for a screen reader
+
+Flutter builds its accessibility tree (the `SemanticsObject`s under a `FlutterView`) only while it believes an assistive
+technology runs; so do Unity 2023.2+ (`AccessibilityHierarchy`, `AssistiveSupport`), Unreal's Slate accessibility and
+Godot 4.5+ (AccessKit). Flutter's own simulator builds turn semantics on anyway. A device build converted for the
+simulator (tests/apps/flutter_demo, Flutter stable with Dart 3.14) turned out to show its tree in x86Sim without the
+switch too, since accessibility automation is on in the process; the switch is there for engine versions and engines that
+ask only whether VoiceOver runs. At the first `tree` request of a process (none for `noax`), simax
+looks for those engines' images: `Flutter.framework`, `UnityFramework.framework`, and the image that defines Unreal's
+`FIOSView` or Godot's `GDTView` / `GodotView` (both link into the app's executable). In each, the pointers its calls to
+`UIAccessibilityIsVoiceOverRunning` go through (`__got`, `__auth_got`, `__la_symbol_ptr`) are rebound to a function
+that answers yes, and `UIAccessibilityVoiceOverStatusDidChangeNotification` is posted, so the engine looks again and
+builds its tree. Nothing else in the process sees VoiceOver on: UIKit, the app's own code and other frameworks still get
+no. A process without those engines is not touched. Flutter's `Semantics(identifier:)` is the element's `id`
+(`tap id:...`). `X86SIM_AX_LOG=1` logs `engines: screen reader on for flutter:<pointers rebound>`.
+
+
+### Unity (IL2CPP)
+
+`host/simax/simax_unity.m`. A `UnityView` that lists no accessibility elements of its own (a game without an
+accessibility plugin or `AccessibilityHierarchy`) is read through IL2CPP's reflection API, which `UnityFramework`
+exports (`il2cpp_*`), on the main thread, where Unity's player loop runs:
+
+- uGUI and TextMeshPro: active `Button` (role `button`, label: its first `Text` / `TMP_Text` child), `Toggle` (`switch`,
+  value `1` / `0`), `Slider` (`adjustable`, value, `min`, `max`), `InputField` / `TMP_InputField` (`textfield`: the
+  placeholder's text as label, the text as value, `focused` from `isFocused`), and `Text` / `TMP_Text` (`text`) that is
+  not part of a control. `enabled` false when `IsInteractable()` is false. The frame is the `RectTransform`'s world
+  corners through its root canvas: a screen space overlay canvas draws in screen pixels; a camera or world space one
+  goes through its camera (`WorldToScreenPoint`; world space without one: `Camera.main`). Unity's screen pixels (origin
+  bottom left, `Screen.width` / `height`) are scaled to the `UnityView`'s points.
+- UI Toolkit: each `UIDocument`'s visual tree: `Button`, `Toggle`, `Slider` / `SliderInt`, `TextField`, `Label`, their
+  `worldBound` from the panel to the screen through `RuntimePanelUtils.ScreenToPanel`. A control's insides are part of
+  it.
+- Game objects: active ones with a name and an enabled renderer that a camera sees (`isVisible`) or an enabled
+  collider (3D or 2D) are `node` elements, as SpriteKit's and SceneKit's: their `bounds` projected with `Camera.main`,
+  corners behind it dropped.
+- Objects are found with `Object.FindObjectsByType` (2023.1+) or `FindObjectsOfType`. A game that never calls them
+  has both managed wrappers stripped (a real Unity 6.3 IL2CPP build); the engine still registers the native call
+  behind them, which `il2cpp_resolve_icall` finds by name
+  (`UnityEngine.Object::FindObjectsByType(System.Type,UnityEngine.FindObjectsInactive,UnityEngine.FindObjectsSortMode)`).
+  Without that too, the loaded scenes' root objects are walked down their transforms (`SceneManager.GetSceneAt`,
+  `Scene.GetRootGameObjects`, `GetComponents`).
+- `key` is `unity:<instance id>` (`GetInstanceID`: the object's for its life), `uitk:<document id>/<child indexes>` for
+  UI Toolkit; `oid` is the component (the game object for a node).
+
+`type` goes to Unity first: a focused `InputField` / `TMP_InputField` gets the text through its `text` setter (which
+fires `onValueChanged`; `clear` replaces, else it appends), the field's `TouchScreenKeyboard`, when it has one up, the
+same text (the field reads it back every frame), and then `onEndEdit` is invoked. A focused UI Toolkit `TextField` gets
+its `value` set (a `ChangeEvent`). `insertText:` reaches neither. Without a focused Unity field, `type` goes on as for
+any app. Engines without exported reflection (Unreal, Godot, cocos2d) have no reader of their own.
+
+### Views that draw their own pixels (`pixels`)
+
+`tree` also lists the views on screen that render without UIKit's views (`simax_pixels.m`): a view whose layer is a
+`CAMetalLayer` or `CAEAGLLayer`, or one as a sublayer covering it (MTKView, GLKView, game engines such as Unity's or Godot's, Flutter), an `SKView` or an `SCNView`,
+covering at least 1/16 of its window. They are noted while the walk passes them, also when they set
+`accessibilityElementsHidden` (a game hiding nothing but saying so). Each has `frame` (screen points, clipped to the
+window), `class`, `kind` (`metal`, `opengl`, `spritekit`, `scenekit`), `win` and `oid`; at most 16. The DOM walk gives a
+`<canvas>` the role `canvas`.
+
+The host (`core/src/ocr.rs`) reads the text of each one that covers a quarter of the screen and has no element of its
+app inside (an element as large as the view itself does not count) from the frame with OCR, and adds it as `text`
+elements with `ocr: true`. A canvas element without an accessible name becomes such a view (one with a name stays, as
+an `image`). Text in the status bar's area is left out (its elements say it). The snapshot's `ocr` says which frame was
+read (`frame`, the ring's sequence number), how long it took (`ms`), whether that frame had been read before
+(`cached`), the views read and what failed (`error`: no models, offline). `snapshot` with `ocr` reads the whole screen
+and keeps the text no element says: not inside a labelled element smaller than a quarter of the screen, not an
+element's label within 60 x 40 points. An OCR element's `key` and `oid` are `ocr:<text>@<x/32>,<y/32>`.
+
+The engine is ocrs (rten runtime, pure Rust) with its text detection and recognition models, downloaded once into
+`~/.cache/x86sim/ocr` and checked by SHA-256 (`X86SIM_OCR_MODELS_URL`: another place to fetch them from). The picture is
+read at one pixel per point (`X86SIM_OCR_PPP`); the detector's fixed input size is met by tiles overlapping by a third.
+Results are cached per frame (in the process and in `<state dir>/ocr-cache.json`), keyed by the ring, the boot and the
+frame number. `X86SIM_OCR=0` turns it off; a Vision Pro has no flat screen to read.
 
 ## Host
 

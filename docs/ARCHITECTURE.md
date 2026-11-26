@@ -183,7 +183,7 @@ socket (VKMTL protocol, [protocols/METAL.md](protocols/METAL.md)) to `linux/mtlv
 it on Vulkan with **metal2vulkan** (`external/metal2vulkan`, branch x86sim: Metal API on Vulkan + AIR to SPIR-V
 translation). Buffer and texture memory is shared without copies: simulator memory is memfd-backed (darlingserver),
 metalhostd obtains the fd with syscall 599 and passes it with `SCM_RIGHTS`; mtlvk imports it
-(`VK_EXT_external_memory_host`). Render targets over IOSurfaces of the screen's size are the exception: mtlvk draws
+(`VK_EXT_external_memory_host`; on amdgpu, which refuses that for shmem pages, as a `/dev/udmabuf` dma-buf). Render targets over IOSurfaces of the screen's size are the exception: mtlvk draws
 them in VRAM and copies them to the surface's pages once per command buffer (blending into host pages crossed PCIe
 for every layer). CoreAnimation's render server, the wallpaper and apps all use it
 (`X86SIM_METAL=all`, the default of the launcher and of boot-a64.sh run by hand; `0` = software rendering). Details: [METAL.md](METAL.md).

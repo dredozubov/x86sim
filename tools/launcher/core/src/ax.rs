@@ -34,7 +34,13 @@ const XR_HUD: &str = "com.apple.RealityHUD";
 const TV_SYSTEM_UI: &str = "com.apple.TVSystemUIService";
 
 fn is_shell(bundle: &str) -> bool {
-    SHELLS.contains(&bundle) || [TV_HOME, TV_SYSTEM_UI, WATCH_FACE, XR_HOME, XR_HUD].contains(&bundle)
+    SHELLS.contains(&bundle) || [TV_HOME, TV_SYSTEM_UI, WATCH_FACE, XR_HOME, XR_HUD].contains(&bundle) || is_wallpaper(bundle)
+}
+
+/// A wallpaper's process: iOS 27's home and lock screen poster extensions (com.apple.MercuryPoster, PosterBoard, the
+/// photo / emoji / gradient posters) draw under SpringBoard with a foreground scene of their own; never the app in front
+fn is_wallpaper(bundle: &str) -> bool {
+    bundle.contains("Poster")
 }
 
 fn is_false(b: &bool) -> bool {
@@ -109,6 +115,9 @@ pub struct El {
     /// web content of an iframe: the frame's URL
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub frame_url: Option<String>,
+    /// text read from the pixels (OCR: ocr.rs), not an accessibility element
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub ocr: bool,
 }
 
 impl El {
@@ -140,7 +149,7 @@ impl El {
                 s += &format!(" id={i}");
             }
         }
-        for (on, f) in [(!self.enabled, "disabled"), (self.selected, "selected"), (self.focused, "focused"), (self.offscreen, "offscreen"), (self.covered, "covered")] {
+        for (on, f) in [(!self.enabled, "disabled"), (self.selected, "selected"), (self.focused, "focused"), (self.offscreen, "offscreen"), (self.covered, "covered"), (self.ocr, "ocr")] {
             if on {
                 s += &format!(" [{f}]");
             }
@@ -151,7 +160,7 @@ impl El {
     }
 }
 
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     let t: String = s.chars().take(160).collect();
     let t = t.replace('\n', " ").replace('"', "\\\"");
     if s.chars().count() > 160 {
@@ -201,6 +210,9 @@ pub struct Snapshot {
     /// SnapOpts::full: interactive views VoiceOver cannot reach (simax `hidden`, with `app` and `pid` added)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub hidden: Vec<Value>,
+    /// text read from the frame (OCR): which frame, how long it took, what was read
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ocr: Option<crate::ocr::OcrInfo>,
 }
 
 impl Snapshot {
@@ -295,6 +307,9 @@ impl Snapshot {
         }
         if !self.busy.is_empty() {
             out += &format!("busy (no answer): {}\n", self.busy.join(", "));
+        }
+        if let Some(o) = &self.ocr {
+            out += &o.line();
         }
         if let Some(f) = self.focus {
             // tvOS: name what has the focus (an element above shows [focused]; else where it is)
@@ -457,7 +472,7 @@ pub fn ask_pid(inst: &Instance, pid: u32, req: &Value, timeout: Duration) -> Res
     ask(&sock, req, timeout)?.ok_or_else(|| anyhow!("process {pid} did not answer"))
 }
 
-fn pid_of_sock(p: &Path) -> u32 {
+pub(crate) fn pid_of_sock(p: &Path) -> u32 {
     p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.rsplit('-').next()).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
@@ -479,13 +494,16 @@ struct RefState {
     /// threads never run); they get a short timeout until they answer again
     #[serde(default)]
     stuck: HashSet<u32>,
+    /// the text elements the last whole-screen OCR read (snapshot ocr=true): a later one gives them their refs again
+    #[serde(default)]
+    ocr_prev: Vec<El>,
 }
 
 fn refs_path(inst: &Instance) -> PathBuf {
     inst.state_dir.join("ax-refs.json")
 }
 
-fn boot_id(inst: &Instance) -> String {
+pub(crate) fn boot_id(inst: &Instance) -> String {
     // the frame ring is made anew at every boot (its ctime moves with every frame: inode and birth time)
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(&inst.ring).map(|m| format!("{}.{:?}", m.ino(), m.created().ok())).unwrap_or_default()
@@ -589,6 +607,9 @@ pub struct SnapOpts {
     pub all: bool,
     /// per process answer timeout
     pub timeout_ms: u64,
+    /// also read the text of the whole screen from its pixels (OCR) and add what no element says; without it only
+    /// large views with no elements inside (Metal, OpenGL, games, a web page's canvas) are read
+    pub ocr: bool,
 }
 
 fn layer_of(bundle: &str, window: &str, class: &str, id: &str) -> &'static str {
@@ -628,6 +649,33 @@ fn layer_of(bundle: &str, window: &str, class: &str, id: &str) -> &'static str {
 /// (the front window's "window-controls:<bundle>" and its resize grabber, a "card:<bundle>:..." over each window behind
 /// it, back to front). Those are the "window" layer, not a system overlay (the app switcher has no window controls).
 /// Answers each windowed app's stacking order (higher: nearer the front); empty when no app is in a window.
+/// Unity's reader (simax_unity.m) skips a control's own Text / TMP_Text child by asking the engine for the text's
+/// parent control, a call code stripping can remove from a real build: then each button's caption came twice, as the
+/// button's label and as a text element. A Unity text element whose label is a control's label or value, centered
+/// inside that control, is the control's caption: it goes.
+fn drop_engine_captions(els: &mut Vec<El>) {
+    let unity = |e: &El| e.key.as_deref().is_some_and(|k| k.starts_with("unity:"));
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let controls: Vec<(u32, [f64; 4], String, String)> = els
+        .iter()
+        .filter(|e| unity(e) && actionable(&e.role))
+        .map(|e| (e.pid, e.frame, norm(e.label.as_deref().unwrap_or("")), norm(e.value.as_deref().unwrap_or(""))))
+        .collect();
+    if controls.is_empty() {
+        return;
+    }
+    els.retain(|e| {
+        if !unity(e) || e.role != "text" {
+            return true;
+        }
+        let l = norm(e.label.as_deref().unwrap_or(""));
+        let (cx, cy) = (e.frame[0] + e.frame[2] / 2.0, e.frame[1] + e.frame[3] / 2.0);
+        !controls.iter().any(|(pid, f, cl, cv)| {
+            *pid == e.pid && !l.is_empty() && (l == *cl || l == *cv) && cx >= f[0] && cx <= f[0] + f[2] && cy >= f[1] && cy <= f[1] + f[3]
+        })
+    });
+}
+
 fn windows_z(snap: &mut Snapshot) -> HashMap<String, i32> {
     let mut z = HashMap::new();
     let chrome = |e: &El| e.app == SPRINGBOARD && e.window == "SBMainSwitcherWindow";
@@ -801,6 +849,8 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     let mut spaces: Vec<(u8, String, Space)> = Vec::new();
     let geo = Geometry::of(inst);
     let mut silent: Vec<String> = Vec::new();
+    // views that draw their own pixels (simax `pixels`): OCR reads those with no elements inside
+    let mut pixels: Vec<crate::ocr::Region> = Vec::new();
     let n_answers = answers.len();
     // SpringBoard's word on the device: locked, and the processes FrontBoard suspended
     let sb = answers.iter().filter_map(|a| a.1.as_ref().ok()).find(|v| v["bundle"] == SPRINGBOARD);
@@ -911,6 +961,29 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
                 key: s(&e["key"]),
                 rot,
                 frame_url: s(&e["frame_url"]),
+                ocr: false,
+            });
+        }
+        for p in v["pixels"].as_array().into_iter().flatten() {
+            // an app that only draws pixels (a game) is still the app in front
+            has_app_content |= !SHELLS.contains(&bundle.as_str());
+            let win = p["win"].as_u64().unwrap_or(0) as usize;
+            let window = wins.get(win).cloned().unwrap_or_default();
+            let rot = match win_space.get(win) {
+                Some(Some(sp)) => sp.rot,
+                Some(None) => continue,
+                None => proc_space.map(|s| s.rot).unwrap_or(0),
+            };
+            let class = p["class"].as_str().unwrap_or("").to_string();
+            pixels.push(crate::ocr::Region {
+                frame: p["frame"].as_array().map(|f| [0, 1, 2, 3].map(|i| f.get(i).and_then(Value::as_f64).unwrap_or(0.0))).unwrap_or_default(),
+                layer: layer_of(&bundle, &window, &class, "").to_string(),
+                kind: p["kind"].as_str().unwrap_or("").to_string(),
+                class,
+                app: bundle.clone(),
+                pid,
+                window,
+                rot,
             });
         }
         for h in v["hidden"].as_array().into_iter().flatten() {
@@ -924,7 +997,7 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
             fronts.push((pid, bundle.clone(), state == "active"));
         }
         if let Some(sp) = proc_space {
-            let rank = if bundle != SPRINGBOARD && has_app_content && state == "active" { 0 } else if bundle == SPRINGBOARD { 1 } else { 2 };
+            let rank = if bundle != SPRINGBOARD && !is_wallpaper(&bundle) && has_app_content && state == "active" { 0 } else if bundle == SPRINGBOARD { 1 } else { 2 };
             spaces.push((rank, bundle.clone(), sp));
         }
     }
@@ -937,6 +1010,8 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     if inst.inner.is_some() {
         snap.display = Some(if inst.inner_active() { "inner" } else { "outer" }.into());
     }
+    // a game engine's control and the caption inside it, read as two elements: the control says it
+    drop_engine_captions(&mut snap.elements);
     // watchOS: Carousel's app grid covers the watch face (which stays active under it)
     if snap.elements.iter().any(|e| e.app == "com.apple.Carousel" && e.layer == "home") {
         snap.elements.retain(|e| e.app != WATCH_FACE);
@@ -981,14 +1056,26 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     for (i, e) in idx.into_iter().zip(home) {
         snap.elements[i] = e;
     }
+    // text in pixels (views with no elements, the whole screen with ocr)
+    crate::ocr::augment(inst, &mut snap, pixels, opt.ocr);
     let mut next = st.next.max(1);
-    assign_refs(&mut snap.elements, &st.last.elements, &mut next);
+    let mut prev = std::mem::take(&mut st.last.elements);
+    prev.extend(st.ocr_prev.iter().filter(|o| !prev.iter().any(|p| p.r == o.r)).cloned().collect::<Vec<_>>());
+    assign_refs(&mut snap.elements, &prev, &mut next);
+    if opt.ocr {
+        st.ocr_prev = snap.elements.iter().filter(|e| e.ocr).cloned().collect();
+    }
     snap.ms = t0.elapsed().as_millis() as u64;
     st.next = next;
     // the full picture is remembered (an --all snapshot's off-screen elements keep their refs too)
     st.last = snap.clone();
     save_refs(inst, &st);
     Ok(snap)
+}
+
+/// The refs the last whole-screen OCR gave (text read from pixels)
+pub(crate) fn ocr_refs(inst: &Instance) -> Vec<String> {
+    load_refs(inst).ocr_prev.into_iter().map(|e| e.r).collect()
 }
 
 /// The last snapshot taken of the phone (for diffs and refs), if it is of this boot
@@ -1066,12 +1153,15 @@ pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a
                     Some(0)
                 } else if id == t || val == t {
                     Some(1)
-                } else if !l.is_empty() && l.starts_with(&t) {
+                } else if !l.is_empty() && holds_at(&l, &t, true) {
                     Some(2)
-                } else if l.contains(&t) {
+                } else if holds_at(&l, &t, false) {
                     Some(3)
-                } else if val.contains(&t) {
+                } else if holds_at(&val, &t, false) {
                     Some(4)
+                } else if e.ocr && crate::ocr::near(&l, &t) {
+                    // text read from pixels: a letter or two read wrong
+                    Some(2)
                 } else {
                     None
                 }
@@ -1085,6 +1175,28 @@ pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a
     let front_rank = |app: &str| snap.front.iter().position(|f| f == app).unwrap_or(usize::MAX);
     v.sort_by_key(|(q, e)| (e.offscreen || e.covered, layer_rank(&e.layer), *q, front_rank(&e.app), !actionable(&e.role), e.role == "webview"));
     v.into_iter().map(|x| x.1).collect()
+}
+
+/// `hay` holds `needle` (at its start with `prefix`), and not as a part of a longer number: "Score: 1" is not in
+/// "Score: 10" (a counter a wait is for), "Item 2" not in "Item 12"
+fn holds_at(hay: &str, needle: &str, prefix: bool) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let digit_at = |s: &str, end: bool| if end { s.chars().next_back() } else { s.chars().next() }.is_some_and(|c| c.is_ascii_digit());
+    let (n0, n1) = (digit_at(needle, false), digit_at(needle, true));
+    let mut from = 0;
+    while let Some(i) = hay[from..].find(needle).map(|i| i + from) {
+        if prefix && i > 0 {
+            return false;
+        }
+        let j = i + needle.len();
+        if !(n0 && digit_at(&hay[..i], true)) && !(n1 && digit_at(&hay[j..], false)) {
+            return true;
+        }
+        from = i + hay[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 pub fn find<'a>(snap: &'a Snapshot, target: &str) -> Result<&'a El> {
@@ -1151,7 +1263,7 @@ impl Snapshot {
 
 /// The touch / key channel to the phone for points in a space: the panel in use (an unfolded phone's inner screen)
 /// and the turn from the interface's picture to the panel
-fn hid_for(inst: &Instance, sp: Space) -> Hid {
+pub(crate) fn hid_for(inst: &Instance, sp: Space) -> Hid {
     let mut h = Hid::new(&inst.sock);
     match panel(inst).0 {
         Some((id, native)) => h.display = Some((id, (native + sp.rot) % 360)),
@@ -1286,8 +1398,18 @@ pub fn drag(inst: &Instance, sp: Space, from: (f64, f64), to: (f64, f64), ms: u6
 /// Resolves a target to an element of a fresh snapshot (a ref: of the last one, checked against the screen now)
 pub fn resolve(inst: &Instance, target: &str) -> Result<(El, Snapshot)> {
     let snap = snapshot(inst, SnapOpts::default())?;
-    let e = find(&snap, target)?.clone();
-    Ok((e, snap))
+    let err = match find(&snap, target) {
+        Ok(e) => return Ok((e.clone(), snap)),
+        Err(e) => e,
+    };
+    // text no element says, or a ref a whole-screen OCR gave: read the screen's pixels too
+    if crate::ocr::worth_a_look(inst, &parse_target(target)) {
+        let s2 = snapshot(inst, SnapOpts { ocr: true, ..Default::default() })?;
+        if let Ok(e) = find(&s2, target) {
+            return Ok((e.clone(), s2));
+        }
+    }
+    Err(err)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1586,7 +1708,7 @@ fn wait_front_change(inst: &Instance, front: Vec<String>, timeout: Duration) -> 
     false
 }
 
-fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
+pub(crate) fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
     let sock = sock_of_pid(inst, e.pid).ok_or_else(|| anyhow!("{} is gone", e.app))?;
     let r = ask(&sock, &json!({"op": "scroll", "oid": e.oid}), Duration::from_secs(3))?.ok_or_else(|| anyhow!("{} is gone", e.app))?;
     if let Some(err) = r["error"].as_str() {
@@ -1982,16 +2104,29 @@ pub fn scroll_to(inst: &Instance, target: &str, direction: &str, max_steps: u32,
     bail!("{target:?} not found after {max_steps} scrolls {direction}")
 }
 
-/// Waits until a target is on screen (or, `gone`, no longer is). Wakes on new frames, not on a timer.
+/// Waits until a target is on screen (or, `gone`, no longer is), matched as tap matches it (exact, prefix, substring).
+/// Wakes on new frames, not on a timer.
 pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) -> Result<Outcome> {
     let t0 = Instant::now();
     let t = parse_target(target);
     let mut ring = Ring::new(&screen_ring(inst));
+    // text no element says: also looked for in the pixels (OCR, once per new frame)
+    let ocr = crate::ocr::worth_a_look(inst, &t);
+    let mut gone_q: Option<u8> = None;
     loop {
         let seq = ring.seq();
-        let snap = snapshot(inst, SnapOpts::default());
+        let mut snap = snapshot(inst, SnapOpts::default());
+        if ocr && matches!(&snap, Ok(s) if find_all_q(s, &t, 2).into_iter().all(|e| e.offscreen || e.covered)) {
+            snap = snapshot(inst, SnapOpts { ocr: true, ..Default::default() });
+        }
         if let Ok(snap) = &snap {
-            let hit = find_all_q(snap, &t, 2).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
+            // tap's rules: exact, then prefix, then a part of the label (or value), best first. gone: what the target
+            // matched when the wait began, no looser (a node "Coin" taken while a score label "Coin 1" stays: the
+            // substring match must not keep the wait going)
+            if gone && gone_q.is_none() {
+                gone_q = Some((0..=4u8).find(|q| find_all_q(snap, &t, *q).into_iter().any(|e| !e.offscreen && !e.covered)).unwrap_or(u8::MAX));
+            }
+            let hit = find_all_q(snap, &t, gone_q.unwrap_or(u8::MAX)).into_iter().find(|e| !e.offscreen && !e.covered).cloned();
             if hit.is_some() != gone {
                 let ms = t0.elapsed().as_millis();
                 let did = match hit {
@@ -2057,7 +2192,8 @@ pub fn launch(inst: &Instance, bundle: &str, args: &[String], after: After) -> R
 /// `launch` with environment variables for the app (KEY, VALUE)
 pub fn launch_env(inst: &Instance, bundle: &str, args: &[String], env: &[(String, String)], after: After) -> Result<Outcome> {
     let before = last(inst);
-    let a = crate::apps::launch_env(inst, bundle, args, env)?;
+    // a launch that started nothing, or an app that died at once, is an error with why (appstate.rs)
+    let a = crate::appstate::launch_checked(inst, bundle, args, env)?;
     if after != After::None {
         wait_front_is(inst, bundle, Duration::from_secs(20));
     }
@@ -2076,10 +2212,24 @@ pub fn terminate(inst: &Instance, bundle: &str, after: After) -> Result<Outcome>
 /// The newest frame upright as PNG, scaled down by `div` (the device's scale gives a picture in points: the same
 /// coordinates as the snapshot's)
 pub fn screenshot(inst: &Instance, div: u32) -> Result<(Vec<u8>, u32, u32)> {
+    // upright as the front app's interface stands (its points are the snapshot's), on the panel in use
+    let (rgb, ow, oh, _) = upright_frame(inst, front_space(inst).rot, div)?;
+    let mut out = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut out, ow as u32, oh as u32);
+        e.set_color(png::ColorType::Rgb);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header()?.write_image_data(&rgb)?;
+    }
+    Ok((out, ow as u32, oh as u32))
+}
+
+/// The newest frame as RGB, upright for an interface turned `rot` (a Space's), scaled down by `div`: (pixels, width,
+/// height, the frame's sequence number)
+pub fn upright_frame(inst: &Instance, rot: u32, div: u32) -> Result<(Vec<u8>, usize, usize, u64)> {
     let mut ring = Ring::new(&screen_ring(inst));
     let f = ring.latest().ok_or_else(|| anyhow!("{}: no frame (is the device running?)", inst.name))?;
-    // upright as the front app's interface stands (its points are the snapshot's), on the panel in use
-    let rot = (panel(inst).0.map(|p| p.1).unwrap_or(0) + front_space(inst).rot) % 360;
+    let rot = (panel(inst).0.map(|p| p.1).unwrap_or(0) + rot) % 360;
     let div = div.max(1) as usize;
     let (w, h, s) = (f.w as usize, f.h as usize, f.stride as usize);
     let (sw, sh) = (w / div, h / div);
@@ -2119,14 +2269,7 @@ pub fn screenshot(inst: &Instance, div: u32) -> Result<(Vec<u8>, u32, u32)> {
             rgb.extend_from_slice(&small[o..o + 3]);
         }
     }
-    let mut out = Vec::new();
-    {
-        let mut e = png::Encoder::new(&mut out, ow as u32, oh as u32);
-        e.set_color(png::ColorType::Rgb);
-        e.set_depth(png::BitDepth::Eight);
-        e.write_header()?.write_image_data(&rgb)?;
-    }
-    Ok((out, ow as u32, oh as u32))
+    Ok((rgb, ow, oh, f.seq))
 }
 
 pub fn base64(b: &[u8]) -> String {
@@ -2148,6 +2291,56 @@ mod tests {
 
     fn el(r: &str, pid: u32, oid: &str, role: &str, label: &str, y: f64) -> El {
         El { r: r.into(), pid, oid: oid.into(), role: role.into(), label: Some(label.into()), app: "a".into(), layer: "app".into(), frame: [0.0, y, 100.0, 40.0], enabled: true, ..Default::default() }
+    }
+
+    #[test]
+    fn unity_captions_once() {
+        // what a stripped Unity build gave: each control and the Text inside it
+        let u = |role: &str, label: &str, value: Option<&str>, frame: [f64; 4], id: u32| El {
+            key: Some(format!("unity:{id}")),
+            value: value.map(str::to_string),
+            frame,
+            ..el("", 7, &id.to_string(), role, label, 0.0)
+        };
+        let mut els = vec![
+            u("text", "Unity on x86Sim", None, [100.0, 180.0, 200.0, 40.0], 1),
+            u("button", "Play", None, [140.0, 317.0, 120.0, 40.0], 2),
+            u("text", "Play", None, [150.0, 322.0, 100.0, 30.0], 3),
+            u("textfield", "Your name", None, [100.0, 437.0, 200.0, 40.0], 4),
+            u("text", "Your name", None, [105.0, 442.0, 190.0, 30.0], 5),
+            u("text", "Score: 0", None, [140.0, 537.0, 120.0, 40.0], 6),
+            // the same words elsewhere on the screen stay (a heading "Play" above the button)
+            u("text", "Play", None, [140.0, 250.0, 120.0, 40.0], 8),
+        ];
+        // a UIKit label with a button's caption inside it is not the engine's
+        let mut uikit = el("", 7, "99", "text", "Play", 0.0);
+        uikit.frame = [150.0, 322.0, 100.0, 30.0];
+        els.push(uikit);
+        drop_engine_captions(&mut els);
+        let got: Vec<(&str, &str)> = els.iter().map(|e| (e.role.as_str(), e.label.as_deref().unwrap_or(""))).collect();
+        assert_eq!(
+            got,
+            [("text", "Unity on x86Sim"), ("button", "Play"), ("textfield", "Your name"), ("text", "Score: 0"), ("text", "Play"), ("text", "Play")]
+        );
+    }
+
+    #[test]
+    fn numbers_match_exactly() {
+        assert!(holds_at("score: 10", "score: 10", true));
+        assert!(!holds_at("score: 10", "score: 1", true));
+        assert!(!holds_at("item 12", "item 2", false));
+        assert!(!holds_at("level 21", "1", false));
+        assert!(holds_at("12 apples, 1 pear", "1 pear", false));
+        assert!(holds_at("taps: 1 so far", "taps: 1", true));
+        assert!(holds_at("settings", "set", true));
+        // wait_for "Taps: 1" while the counter (read by OCR) still says 0, or already 10: no match
+        let ocr = |label: &str| El { ocr: true, ..el("e1", 1, "ocr:x", "text", label, 100.0) };
+        let snap = |label: &str| Snapshot { elements: vec![ocr(label)], ..Default::default() };
+        let t = parse_target("Taps: 1");
+        assert!(find_all(&snap("Taps: 0"), &t).is_empty());
+        assert!(find_all(&snap("Taps: 10"), &t).is_empty());
+        assert_eq!(find_all(&snap("Tsps: 1"), &t).len(), 1);
+        assert_eq!(find_all(&snap("Taps: 1"), &t).len(), 1);
     }
 
     #[test]

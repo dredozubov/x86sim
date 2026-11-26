@@ -15,7 +15,7 @@
 //! (24 from one address other than loopback).
 use super::audio;
 use super::tunnel::{self, Kind, Tunnel};
-use super::video::{self, Codec, Out, StreamKey};
+use super::video::{self, Codec, Out, Screen, StreamKey};
 use super::ws;
 use super::{now_s, random_token, Options, Role, State, TokenRec};
 use crate::hid::{self, Hid};
@@ -35,6 +35,30 @@ const APP_CSS: &str = include_str!("web/app.css");
 const AX_JS: &str = include_str!("web/axinspect.js");
 const AX_CSS: &str = include_str!("web/axinspect.css");
 const MIC_JS: &str = include_str!("web/mic.js");
+const DUO_JS: &str = include_str!("web/duo3d.js");
+// the device page's panels the launcher has (device.rs)
+const PANELS_JS: &str = include_str!("web/panels.js");
+// the device page's tool icons: the launcher's Phosphor font (MIT), cut to the glyphs the page uses
+const ICONS_TTF: &[u8] = include_bytes!("web/icons.ttf");
+// the Network section (netapi.rs)
+const NET_JS: &str = include_str!("web/netpanel.js");
+
+/// The page's build: a hash of every embedded page file. A page loaded from another build reloads itself when its
+/// socket reconnects to this one (a server restarted on new code; an open tab otherwise keeps running the old scripts)
+fn web_build() -> String {
+    use std::sync::OnceLock;
+    static B: OnceLock<String> = OnceLock::new();
+    B.get_or_init(|| {
+        let mut h: u64 = 1469598103934665603;
+        for part in [INDEX.as_bytes(), APP_JS.as_bytes(), APP_CSS.as_bytes(), AX_JS.as_bytes(), AX_CSS.as_bytes(), MIC_JS.as_bytes(), DUO_JS.as_bytes(), PANELS_JS.as_bytes(), NET_JS.as_bytes(), ICONS_TTF] {
+            for b in part {
+                h = (h ^ *b as u64).wrapping_mul(1099511628211);
+            }
+        }
+        format!("{h:016x}")
+    })
+    .clone()
+}
 
 pub struct Server {
     pub opts: Options,
@@ -43,6 +67,8 @@ pub struct Server {
     tunnels: Mutex<Vec<Tunnel>>,
     phones_cache: Mutex<(Option<Instant>, Value)>,
     thumbs: Mutex<HashMap<(String, u32), (Instant, Vec<u8>)>>,
+    /// the device page's panels (device.rs)
+    devices: super::device::Devices,
     started: u64,
     pub stop: AtomicBool,
 }
@@ -202,6 +228,13 @@ fn json_resp(s: &mut TcpStream, code: u16, v: &Value) {
     respond(s, code, "application/json", &[], v.to_string().as_bytes());
 }
 
+fn answer(s: &mut TcpStream, r: super::device::Answer) {
+    match r {
+        Ok(v) => json_resp(s, 200, &v),
+        Err((code, e)) => json_resp(s, code, &json!({"error": e})),
+    }
+}
+
 fn host_only(h: &str) -> &str {
     // "[::1]:7380" -> "[::1]", "localhost:7380" -> "localhost"
     if h.starts_with('[') {
@@ -285,10 +318,15 @@ fn cookie(req: &Req, name: &str) -> Option<String> {
 impl Server {
     pub fn new(opts: Options, port: u16) -> Arc<Server> {
         let exp = opts.ttl_s.map(|t| now_s().saturating_add(t));
-        let tokens = vec![
-            TokenRec { token: random_token(), role: Role::Control, phone: None, expires: exp, label: "control".into() },
-            TokenRec { token: random_token(), role: Role::View, phone: None, expires: exp, label: "view".into() },
-        ];
+        // the tokens of the last run (links people hold keep working across restarts), unless the main tokens were to
+        // expire (--ttl) or none were kept (x86sim serve --new-tokens removes them)
+        let kept = if opts.ttl_s.is_none() { super::load_tokens() } else { vec![] };
+        let main = |label: &str, role: Role| {
+            kept.iter().find(|r| r.label == label && r.expires.is_none()).cloned().unwrap_or(TokenRec { token: random_token(), role, phone: None, expires: exp, label: label.into() })
+        };
+        let now = now_s();
+        let mut tokens = vec![main("control", Role::Control), main("view", Role::View)];
+        tokens.extend(kept.iter().filter(|r| r.label.starts_with("link:") && r.expires.is_none_or(|e| e > now)).cloned());
         Arc::new(Server {
             opts,
             port,
@@ -296,6 +334,7 @@ impl Server {
             tunnels: Mutex::new(vec![]),
             phones_cache: Mutex::new((None, Value::Null)),
             thumbs: Mutex::new(HashMap::new()),
+            devices: Default::default(),
             started: now_s(),
             stop: AtomicBool::new(false),
         })
@@ -363,6 +402,10 @@ impl Server {
             let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
             let _ = f.write_all(serde_json::to_string_pretty(&self.state()).unwrap_or_default().as_bytes());
             let _ = std::fs::rename(&tmp, &p);
+        }
+        // the tokens for the next run (not --ttl ones: they expire with this server)
+        if self.opts.ttl_s.is_none() {
+            super::save_tokens(&self.tokens.lock().unwrap());
         }
     }
 
@@ -442,6 +485,8 @@ impl Server {
                     "state": s.map(|s| s.state.clone()).unwrap_or_else(|| "off".into()),
                     "home": s.is_some_and(|s| s.home),
                     "memory_mb": s.map(|s| s.memory_mb), "cpu_pct": s.map(|s| s.cpu_pct), "uptime_s": s.and_then(|s| s.uptime_s),
+                    // the GPU it renders on (its GPU helper's)
+                    "gpu": s.and_then(|s| s.gpu_name.as_ref().map(|n| json!({"name": n, "short": s.gpu_short.clone().unwrap_or_default()}))),
                     "screen": [t.size.0, t.size.1], "two_screens": i.inner.is_some(), "inner_active": i.inner_active(),
                     "orientation": i.orientation(), "hinge": i.hinge(),
                     "ipad": i.model.contains("iPad"),
@@ -551,8 +596,43 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         "/app.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], APP_JS.as_bytes()),
         "/app.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], APP_CSS.as_bytes()),
         "/axinspect.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], AX_JS.as_bytes()),
+
+        "/panels.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], PANELS_JS.as_bytes()),
+        "/icons.ttf" => return respond(&mut s, 200, "font/ttf", &[], ICONS_TTF),
+        // this machine's Omarchy theme as the page's CSS variables (empty without Omarchy) and its generation, for the
+        // page's Desktop look (share/theme.rs): colours only, no data
+        "/theme.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], super::theme::css().unwrap_or_default().as_bytes()),
+        // pushed, not polled: a WebSocket (it passes every tunnel; Cloudflare's quick tunnels hold back Server-Sent
+        // Events) with the generation now, then one message per theme switch, a ping every 25 s meanwhile
+        "/ws-theme" => {
+            let Some(key) = req.headers.get("sec-websocket-key").cloned() else { return json_resp(&mut s, 400, &json!({"error": "not a websocket"})) };
+            let resp = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n", super::ws::accept_key(&key));
+            if s.write_all(resp.as_bytes()).is_err() {
+                return;
+            }
+            let (mut last, mut first) = (String::new(), true);
+            loop {
+                let g = super::theme::wait_change(if first { "" } else { &last }, Duration::from_secs(25));
+                let r = if first || g != last {
+                    super::ws::write(&mut s, 1, json!({"available": !g.is_empty(), "generation": g}).to_string().as_bytes())
+                } else {
+                    super::ws::write(&mut s, 9, b"")
+                };
+                if r.is_err() || srv.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                last = g;
+                first = false;
+            }
+        }
+        "/api/theme" => {
+            let gen = super::theme::generation();
+            return json_resp(&mut s, 200, &json!({"available": !gen.is_empty(), "generation": gen}));
+        }
+        "/netpanel.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], NET_JS.as_bytes()),
         "/axinspect.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], AX_CSS.as_bytes()),
         "/mic.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], MIC_JS.as_bytes()),
+        "/duo3d.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], DUO_JS.as_bytes()),
         "/favicon.ico" => return respond(&mut s, 204, "image/x-icon", &[], b""),
         _ => {}
     }
@@ -573,6 +653,25 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
     // server-wide: tunnels, the main tokens, links. A link (however broad) never manages the server or other links
     let owner = control && g.owner;
     match (req.method.as_str(), seg.as_slice()) {
+        // the Desktop look's font (theme.css names it): this machine's monospace font, for the token's holders only
+        ("GET", ["theme-font"]) => match super::theme::mono_font().and_then(|(_, f)| std::fs::read(&f).ok().map(|b| (f, b))) {
+            Some((f, b)) => {
+                let ct = match f.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+                    Some("otf") => "font/otf",
+                    Some("woff2") => "font/woff2",
+                    Some("woff") => "font/woff",
+                    _ => "font/ttf",
+                };
+                respond(&mut s, 200, ct, &[], &b)
+            }
+            None => json_resp(&mut s, 404, &json!({"error": "no monospace font"})),
+        },
+        // Apple's iPhone Duo model for the 3D phone (duo3d.js), when this machine has it (devicemodel.rs): for the token's
+        // holders only, never public (it is Apple's, from the user's own Xcode)
+        ("GET", ["devicemodel", "duo"]) => match crate::devicemodel::duo_web() {
+            Some(b) => respond(&mut s, 200, "application/octet-stream", &[], &b),
+            None => respond(&mut s, 404, "text/plain", &[], b"no device model: x86sim account download-xcode"),
+        },
         ("GET", ["api", "me"]) => json_resp(&mut s, 200, &json!({"role": g.role, "phone": g.phone, "expires": g.expires, "local": g.token.is_none(), "owner": owner, "server": {"started": srv.started, "version": env!("CARGO_PKG_VERSION")}})),
         ("GET", ["api", "phones"]) => {
             let all = srv.phones();
@@ -580,7 +679,7 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
             json_resp(&mut s, 200, &Value::Array(v))
         }
         ("GET", ["api", "status"]) if owner => {
-            let streams: Vec<Value> = video::streams().into_iter().map(|(k, st)| json!({"phone": k.phone, "codec": format!("{:?}", k.codec), "width": k.width, "quality": k.quality, "fps": k.fps, "stats": st})).collect();
+            let streams: Vec<Value> = video::streams().into_iter().map(|(k, st)| json!({"phone": k.phone, "codec": format!("{:?}", k.codec), "width": k.width, "quality": k.quality, "fps": k.fps, "screen": format!("{:?}", k.screen), "stats": st})).collect();
             let mut st = serde_json::to_value(srv.state()).unwrap_or_default();
             st["control_token"] = Value::Null;
             st["view_token"] = Value::Null;
@@ -606,6 +705,17 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
                         None => respond(&mut s, 204, "image/jpeg", &[], b""),
                     }
                 }
+                // ?marks=all|actionable: every element outlined with its @ref (marks.rs), in points
+                "screenshot.png" if req.query.get("marks").and_then(|m| crate::marks::Marks::parse(m)).is_some() => {
+                    let m = req.query.get("marks").and_then(|m| crate::marks::Marks::parse(m)).unwrap_or(crate::marks::Marks::All);
+                    match crate::marks::marked(&inst, m, inst.scale.round().max(1.0) as u32, false) {
+                        Ok((png, ..)) => {
+                            let name = format!("{}-{}-marks.png", inst.name.replace(|c: char| !c.is_ascii_alphanumeric(), "-"), now_s());
+                            respond(&mut s, 200, "image/png", &[("Content-Disposition", format!("attachment; filename=\"{name}\""))], &png)
+                        }
+                        Err(e) => json_resp(&mut s, 409, &json!({"error": format!("{e:#}")})),
+                    }
+                }
                 "screenshot.png" => match video::snapshot_png(&inst) {
                     Some(png) => {
                         let name = format!("{}-{}.png", inst.name.replace(|c: char| !c.is_ascii_alphanumeric(), "-"), now_s());
@@ -622,8 +732,31 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
                         Err(e) => json_resp(&mut s, 409, &json!({"error": format!("{e:#}")})),
                     }
                 }
+                // the device page's panels (device.rs): the overview and Performance for anyone who sees the device,
+                // logs and settings for control links
+                "detail" => answer(&mut s, srv.devices.detail(&inst)),
+                "logs" if control => {
+                    let after = req.query.get("after").and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let q = |k: &str| req.query.get(k).cloned().unwrap_or_default();
+                    answer(&mut s, srv.devices.logs(&inst, after, &q("group"), &q("q")))
+                }
+                "features" if control => answer(&mut s, srv.devices.features(&inst)),
+                "simulate" if control => answer(&mut s, srv.devices.simulate(&inst)),
+                "gpu" if control => answer(&mut s, srv.devices.gpu(&inst)),
                 _ => json_resp(&mut s, 404, &json!({"error": "not found"})),
             }
+        }
+        ("POST", ["api", "phones", id, "features" | "simulate" | "gpu" | "restart"]) if control && srv.visible(&g, id) => {
+            let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
+            let b: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            let r = match seg[3] {
+                "features" => srv.devices.set_feature(&inst, &b),
+                "simulate" => srv.devices.set_simulate(&inst, &b),
+                "gpu" => srv.devices.set_gpu(&inst, &b),
+                _ => srv.devices.restart(&inst),
+            };
+            srv.phones_cache.lock().unwrap().0 = None;
+            answer(&mut s, r)
         }
         ("POST", ["api", "phones", id, act]) if control && srv.visible(&g, id) => {
             let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
@@ -736,6 +869,12 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
             let (code, v) = super::axapi::handle(&req, &inst, what, control);
             json_resp(&mut s, code, &v)
         }
+        // the Network section (netapi.rs)
+        (_, ["api", "phones", id, "net", what]) if srv.visible(&g, id) => {
+            let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
+            let (code, v) = super::netapi::handle(&req, &inst, what, control);
+            json_resp(&mut s, code, &v)
+        }
         _ => json_resp(&mut s, if owner { 404 } else { 403 }, &json!({"error": "not found or not allowed"})),
     }
 }
@@ -746,7 +885,11 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let width = q.get("w").and_then(|v| v.parse::<u32>().ok()).unwrap_or(720).clamp(160, 2048) / 16 * 16;
     let quality = q.get("q").and_then(|v| v.parse::<u8>().ok()).unwrap_or(1).min(2);
     let fps = q.get("fps").and_then(|v| v.parse::<u32>().ok()).unwrap_or(30).clamp(5, 60);
-    let (tx, rx) = mpsc::sync_channel::<Out>(6);
+    // a two-screen phone drawn in 3D (duo3d.js): both screens, the inner one as kind 1 / 2, the outer one as
+    // video::OUTER + 1 / 2, each at its own width (`w`, `w2`)
+    let both = q.get("duo").map(String::as_str) == Some("1") && inst.inner.is_some();
+    let width2 = q.get("w2").and_then(|v| v.parse::<u32>().ok()).unwrap_or(width / 2).clamp(160, 2048) / 16 * 16;
+    let (tx, rx) = mpsc::sync_channel::<Out>(if both { 10 } else { 6 });
     let w = match s.try_clone() {
         Ok(w) => w,
         Err(_) => return,
@@ -790,12 +933,14 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let state = |inst: &Instance| json!({"t": "state", "orientation": inst.orientation(), "hinge": inst.hinge(), "inner_active": inst.inner_active(), "running": crate::ring::Ring::new(&inst.ring).seq() != 0});
     let _ = tx.send(Out::Text(
         json!({"t": "hello", "role": g.role, "phone": inst.id, "name": inst.name, "model": inst.model, "platform": inst.platform, "two_screens": inst.inner.is_some(),
-               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label})).collect::<Vec<_>>()})
+               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "build": web_build(), "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle, "orientation": p.orientation})).collect::<Vec<_>>()})
         .to_string(),
     ));
-    let (streamer, sub) = video::join(&inst, StreamKey { phone: inst.id.clone(), codec, width, quality, fps }, tx.clone());
+    let key = |screen, width| StreamKey { phone: inst.id.clone(), codec, width, quality, fps, screen };
+    let (streamer, sub) = video::join(&inst, key(if both { Screen::Inner } else { Screen::Auto }, width), tx.clone());
+    let outer = both.then(|| video::join(&inst, key(Screen::Outer, width2), tx.clone()));
     let mut r = s;
-    let _ = r.set_read_timeout(Some(Duration::from_millis(1000)));
+    let _ = r.set_read_timeout(Some(Duration::from_millis(if inst.inner.is_some() { 250 } else { 1000 })));
     let mut input = Input::new(&inst);
     // the phone's sound once the page asks for it ({"t": "audio", "on": true, "codec": "opus" | "pcm"}), the viewer's
     // microphone once it sends one (control role)
@@ -805,7 +950,8 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let mut last_state = Value::Null;
     let mut last_check = Instant::now() - Duration::from_secs(5);
     loop {
-        if last_check.elapsed() >= Duration::from_millis(900) {
+        // a two-screen phone's hinge is drawn as it moves: its state is looked at more often
+        if last_check.elapsed() >= Duration::from_millis(if inst.inner.is_some() { 250 } else { 900 }) {
             last_check = Instant::now();
             let st = state(&inst);
             if st != last_state {
@@ -824,7 +970,13 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
             Ok(ws::Msg::Text(t)) => {
                 let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
                 match v["t"].as_str() {
-                    Some("key-frame") => streamer.request_key(),
+                    Some("key-frame") => {
+                        // {"s": "outer"}: the outer screen's stream of a both-screens socket
+                        match (&outer, v["s"].as_str()) {
+                            (Some((o, _)), Some("outer")) => o.request_key(),
+                            _ => streamer.request_key(),
+                        }
+                    }
                     Some("ping") => {
                         let _ = tx.send(Out::Text(json!({"t": "pong", "c": v["c"]}).to_string()));
                     }
@@ -869,6 +1021,9 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     }
     input.release();
     streamer.leave(sub);
+    if let Some((o, id)) = &outer {
+        o.leave(*id);
+    }
     if let Some((a, id)) = sound.take() {
         a.leave(id);
     }
@@ -908,6 +1063,23 @@ impl Input {
         self.size = t.size;
     }
 
+    /// Aims at the screen a touch names ("inner" / "outer": a two-screen phone drawn in 3D, x and y on that
+    /// screen's picture as streamed by video::target_of), else at the one shown
+    fn aim_at(&mut self, screen: Option<&str>) {
+        let which = match screen {
+            Some("inner") => Screen::Inner,
+            Some("outer") => Screen::Outer,
+            _ => return self.aim(),
+        };
+        if self.inst.inner.is_none() {
+            return self.aim();
+        }
+        let t = video::target_of(&self.inst, which, &mut self.orient);
+        self.hid.display = t.display;
+        self.hid.main_rot = t.main_rot;
+        self.size = t.size;
+    }
+
     /// lets go of anything held when the viewer goes away (a closed tab must not leave a button pressed)
     fn release(&mut self) {
         for b in std::mem::take(&mut self.down_buttons) {
@@ -932,7 +1104,7 @@ impl Input {
             "touch" => {
                 let p = phase(v)?;
                 if p == "down" {
-                    self.aim();
+                    self.aim_at(v["s"].as_str());
                 }
                 let (x, y) = (f("x"), f("y"));
                 let edge = if p == "down" && v["edge"].as_bool() != Some(false) { hid::edge_at(x, y, self.size.0, self.size.1) } else { None };
@@ -941,7 +1113,7 @@ impl Input {
             "touch2" => {
                 let p = phase(v)?;
                 if p == "down" {
-                    self.aim();
+                    self.aim_at(v["s"].as_str());
                 }
                 self.hid.touch2(p, f("x1"), f("y1"), f("x2"), f("y2"));
             }
@@ -1004,6 +1176,8 @@ impl Input {
                     "down" => "pointer button down".into(),
                     "up" => "pointer button up".into(),
                     "click" => "pointer click".into(),
+                    // an iPad's pointer capture ends: the pointer goes away
+                    "remove" => "pointer remove".into(),
                     "scroll" => format!("pointer scroll {:.2} {:.2}", f("dx").clamp(-2000.0, 2000.0), f("dy").clamp(-2000.0, 2000.0)),
                     a => return Err(format!("pointer: at, down, up, click or scroll, not {a:?}")),
                 };
@@ -1013,6 +1187,11 @@ impl Input {
             "shake" => self.hid.shake(),
             "hinge" => {
                 self.inst.inner.as_ref().ok_or("this device has one screen")?;
+                // an angle (the launcher's hinge slider): 0 folded .. 180 flat, moved over `ms`
+                if let Some(deg) = v["deg"].as_f64() {
+                    self.hid.hinge(deg.clamp(0.0, 180.0), v["ms"].as_u64().unwrap_or(300).clamp(20, 2000) as u32);
+                    return Ok(());
+                }
                 let k = v["pose"].as_str().unwrap_or("");
                 let pose = hid::HINGE_POSES.iter().find(|p| p.key == k).ok_or("unknown pose")?;
                 self.hid.hinge_pose(pose);

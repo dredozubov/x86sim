@@ -72,7 +72,7 @@ impl RtDeleteUi {
             egui::Frame::new().fill(pal().raised).stroke(egui::Stroke::new(1.0_f32, pal().border)).corner_radius(radius()).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let Some(p) = plan else {
-                    busy(ui, "Measuring what it takes on disk…");
+                    busy(ui, "Measuring…");
                     return;
                 };
                 ui.horizontal(|ui| {
@@ -80,25 +80,10 @@ impl RtDeleteUi {
                     ui.label(egui::RichText::new(icon::WARNING_CIRCLE).family(icons()).size(14.0).color(pal().warn));
                     ui.label(body(format!("Delete {} ({})?", p.label, p.build)));
                 });
-                ui.add_space(S2);
-                ui.label(sub(format!(
-                    "The version only: {}. Its pre-translated code stays, so downloading it again starts fast.",
-                    rtdelete::gb(p.runtime_bytes)
-                )));
-                ui.label(sub(format!(
-                    "Everything: {} ({} more: its pre-translated code and caches). Data other versions use is kept.",
-                    rtdelete::gb(p.runtime_bytes + p.caches_bytes),
-                    rtdelete::gb(p.caches_bytes)
-                )));
                 if !p.devices.is_empty() {
-                    let names: Vec<String> = p.devices.iter().map(|d| if d.state == "off" { d.name.clone() } else { format!("{} ({})", d.name, d.state) }).collect();
+                    let names: Vec<String> = p.devices.iter().map(|d| if d.state == "off" { d.name.clone() } else { format!("{} · {}", d.name, d.state) }).collect();
                     ui.add_space(S1);
-                    ui.label(sub(format!(
-                        "Used by {} device{}: {}. They can't start until this version is downloaded again.",
-                        p.devices.len(),
-                        if p.devices.len() == 1 { "" } else { "s" },
-                        names.join(", ")
-                    )));
+                    ui.label(sub(format!("Used by {}", names.join(", ")))).on_hover_text("They can't start until it is downloaded again");
                 }
                 let blocker = p.blocker();
                 if let Some(b) = &blocker {
@@ -116,10 +101,10 @@ impl RtDeleteUi {
                     ui.spacing_mut().item_spacing.x = S2;
                     let ok = blocker.is_none() && self.running.is_none();
                     let mut go = None;
-                    if ui.add_enabled(ok, Btn::danger("Delete the version only").small()).on_hover_text("The runtime files; pre-translated code stays").clicked() {
+                    if ui.add_enabled(ok, Btn::danger(format!("Version only · {}", rtdelete::gb(p.runtime_bytes))).small()).on_hover_text("Pre-translated code stays, so a new download starts fast").clicked() {
                         go = Some(false);
                     }
-                    if ui.add_enabled(ok, Btn::danger("Delete everything").small()).on_hover_text("Also its pre-translated code and caches").clicked() {
+                    if ui.add_enabled(ok, Btn::danger(format!("Everything · {}", rtdelete::gb(p.runtime_bytes + p.caches_bytes))).small()).on_hover_text("Also its pre-translated code and caches; data other versions use stays").clicked() {
                         go = Some(true);
                     }
                     if ui.add(Btn::secondary("Cancel").small()).clicked() {

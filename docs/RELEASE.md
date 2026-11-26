@@ -20,7 +20,7 @@ GitHub's runners, other distros.
 | mtlvk | `make mtlvk` (Rust, Vulkan through the loader) | no | needs the user's Vulkan driver at run time |
 | Launcher | `cargo build --release` in tools/launcher (launcher, x86sim-aot, x86sim-mcp) | no | no |
 | iOS runtime | `runtime-fetch.py fetch 24B8117`: Apple catalogue + gdmf, 8 GB download (curl, resumable), `ipsw fw aea` decrypt, aaextract.py, `7z x -snld`, symlink repair (extract-runtime.py). ~45 GB free during, ~27 GB after | no | Apple content: per machine, never redistributed |
-| macOS host data | `fetch-macos-host.sh`: GeoServicesData from a **Mac** (Maps tiles) | no | Apple content, needs a Mac: **not in the release** (Maps shows no tiles; boot-a64 prints a note) |
+| Maps seed | boot-a64.sh writes `runtimes/geo-seed` (geod's seed manifest; geod downloads Apple's resources itself) | no | nothing to ship |
 | AOT image | x86sim-aot / Pre-translate page: built from the runtime, keyed by the translator's codegen version (read from libarm64jit.so's `g_build`, core/src/key.rs) | no | derived from Apple's code: local only |
 | First phone | `device-a64.py create` / launcher "Add phone"; a fresh phone's first boot can stall once (the launcher restarts it automatically) | no | |
 | Kernel | overlayfs (Darling's container), 6.11+ for PROCMAP_QUERY (faster darlingserver; older kernels fall back), no binfmt, no kernel module, no ptrace needs for normal use | - | |

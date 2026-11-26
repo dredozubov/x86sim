@@ -7,7 +7,9 @@ design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - **Linux x86-64** with a recent kernel. Darling needs its usual setup: FUSE/overlayfs and a setuid-root `darling`
   binary.
-- **A Vulkan GPU**: NVIDIA (proprietary driver) or AMD (RADV), with `VK_EXT_external_memory_host`. Development used an
+- **A Vulkan GPU**: NVIDIA (proprietary driver) or AMD (RADV), with `VK_EXT_external_memory_host`. On AMD also
+  read-write access to `/dev/udmabuf` (the `udmabuf` module; RADV refuses host-pointer imports of Darling's memory,
+  and without udmabuf every buffer is mirrored). Development used an
   NVIDIA RTX 5090. Without a usable GPU, `X86SIM_METAL=0` falls back to software rendering.
 - **Darling's build dependencies**: clang/LLVM, cmake, ninja, bison, flex, FUSE, libcap, Python 3, and the rest of
   Darling's [build list](https://docs.darlinghq.org/build-instructions.html); dynarmic also needs boost headers.
@@ -133,13 +135,15 @@ visionOS: as on Apple's simulator the model reads available and generation is re
 
 ## Simulator-side binaries
 
+Everything builds on Linux (AGENTS.md); `docs/LINUX-BUILD.md` lists every committed binary and generated file, where
+it was made and how it rebuilds here.
+
 The Mach-O files in `host/` and `tests/` (`simhost`, `arm64host`, `SimFramebuffer.framework`, `SimulatorHID.framework`,
 `libsimshim.dylib`, `libsimaudio.dylib`, `iosurfaced`, `metalhostd`, `fpsim2host`, `netconfig`, `openurl`, `mtlprobe`,
 `iosprobe`, the probes, diagnostic shims and sample apps) are our own code and are committed, so nothing needs building
 to run. To rebuild them on Linux, put the SDKs in `sdks/` (gitignored, never committed), then run the usual scripts,
 e.g. `make mac` and `build/mac-build-arm64-shims.sh`: with `sdks/` present they build locally (`build/linux-env.sh`:
-clang + ld64.lld, `build/linux-swiftc.sh`). `X86SIM_BUILD=mac` with `X86SIM_MAC=user@mac` builds on a Mac over ssh
-instead. Two ways to fill `sdks/`:
+clang + ld64.lld, `build/linux-swiftc.sh`). Two ways to fill `sdks/`:
 
 - **`make sdks`: no Mac, no Xcode, no Apple ID.** `build/sdk/macos-sdk.py` downloads `MacOSX.sdk` from Apple's public
   software-update CDN (the Command Line Tools SDK package `xcode-select --install` fetches; about 70 MB).
@@ -159,8 +163,10 @@ and `WatchSimulator.sdk`, from Xcode or made by `build/sdk/sim-sdk.py --runtime 
 the iOS one. Xcode's WatchSimulator.sdk has no IOKit, IOSurface, Metal or SystemConfiguration (private on watchOS),
 which our binaries need: use the substitute for watchOS.
 
-`cargo install apple-codesign` for signing either way. Metal shader sources are the exception: `build/linux-metal.sh`
-serves recorded Mac-built libraries (`build/metal-cache`) and a changed shader still needs a Mac.
+`cargo install apple-codesign` for signing either way. Metal shaders (`xcrun metal` / `metallib`, the probe library and
+sdkcov's Core Image kernels) compile with Apple's own Metal toolchain, a public download like the runtimes
+(`build/metal-toolchain.py fetch`: about 840 MB from Apple, 380 MB kept in `sdks/metal-<build>/`), run under Darling by
+`build/linux-metal.sh`.
 
 A committed binary can be checked against its source this way too: rebuild it and compare (the only differences
 should be the LC_UUID, the code signature and clang's temp-object names in the debug map).

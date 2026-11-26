@@ -79,6 +79,7 @@ struct GuestThread final : Dynarmic::A64::UserCallbacks {
     // synchronous fault of one of them is fatal, as on XNU)
     u64 alt_sp = 0, alt_size = 0;
     uint32_t in_handler = 0;
+    uint32_t blocked_faults = 0;  // Darwin SIGBUS / SIGSEGV bits the guest blocked (kept out of the Linux mask: h_sigmask)
     // Darling's thread suspension (SIGRTMIN, thread_suspend / task_suspend) deferred to a safe point (signals.cpp)
     bool native = false;                  // inside a thunk handler (not in a nested call())
     int tid = 0;
@@ -253,6 +254,9 @@ extern "C" void a64_tramp_entry();           // callconv.S
 void h_sigaction(GuestThread &t, u32 i);  // signals.cpp
 void h_platform_sigaction(GuestThread &t, u32 i);
 void h_sigaltstack(GuestThread &t, u32 i);
+void h_sigmask(GuestThread &t, u32 i);
+void h_disable_threadsignal(GuestThread &t, u32 i);
+void open_fault_signals();  // SIGSEGV / SIGBUS unblocked on this Linux thread (see h_sigmask)
 void deliver_signals(GuestThread &t);
 // Guest handlers for synchronous signals (signals.cpp). Darwin signal numbers.
 bool guest_sig_action_set(int dsig);       // a handler or SIG_IGN

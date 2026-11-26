@@ -9,8 +9,10 @@
 //!     checks (tools/sdk-state.sh: the SDK's darwin-sdk-version.txt against the pinned xtool's stamp);
 //!   - setup jobs: one background installer run at a time (log, step, exit code in $X86SIM_SCRATCH/dev), so the GUI and
 //!     MCP see the same progress; x86Sim never runs sudo for it (--user-only; system packages are shown as a command);
-//!   - build(): an xtool project for the simulator (ship.sh --simulator: Xcode's app layout, icon catalog), the
-//!     triple from the phone's platform; run(): build, start the phone if asked, install and launch (the key loop);
+//!   - project discovery and build(): the fork's tools/build-project detects a project's kind and runs every step its
+//!     build needs (ship.sh, Swift Build, CocoaPods, Carthage, the shells' CLIs...); x86Sim holds the build lock,
+//!     keeps the log and checks what `x86sim dev setup` installs; run(): build, start the phone if asked, install and
+//!     launch (the key loop);
 //!   - pass-throughs for device runs, App Store builds and Xcode project conversion.
 use crate::aot::{repo_root, scratch};
 use crate::instance::Instance;
@@ -84,7 +86,8 @@ pub fn env() -> Vec<(String, String)> {
             path.push(d.into());
         }
     }
-    let mut v = vec![("PATH".to_string(), std::env::join_paths(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())];
+    // the omarchy-apple-dev tree, for the `pod` wrapper (it moves with the AppImage)
+    let mut v = vec![("OAD_DIR".to_string(), fork_dir().to_string_lossy().into_owned()), ("PATH".to_string(), std::env::join_paths(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())];
     if std::env::var_os("XDG_CONFIG_HOME").is_none() && swiftpm_dir() == home().join(".config/swiftpm") {
         v.push(("XDG_CONFIG_HOME".into(), home().join(".config").to_string_lossy().into_owned()));
     }
@@ -189,11 +192,11 @@ pub fn packages_command() -> String {
     let (id, like, _) = linux_id();
     let fam = format!("{id} {like}");
     if fam.contains("arch") {
-        "sudo pacman -S --needed usbmuxd zip base-devel git libimobiledevice openssl poppler libheif".into()
+        "sudo pacman -S --needed usbmuxd zip base-devel git libimobiledevice openssl poppler libheif ninja rsync".into()
     } else if fam.contains("debian") || fam.contains("ubuntu") {
-        "sudo apt install build-essential git zip unzip curl pkg-config libimobiledevice-dev libssl-dev libcurl4-openssl-dev libxml2-dev libncurses6 python3 python3-venv usbmuxd poppler-utils libheif-examples (Ubuntu 24.04's libimobiledevice is too old for xtool: see external/omarchy-apple-dev/docs/DISTROS.md)".into()
+        "sudo apt install build-essential git zip unzip curl pkg-config libimobiledevice-dev libssl-dev libcurl4-openssl-dev libxml2-dev libncurses6 python3 python3-venv usbmuxd poppler-utils libheif-examples ninja-build rsync (Ubuntu 24.04's libimobiledevice is too old for xtool: see external/omarchy-apple-dev/docs/DISTROS.md)".into()
     } else if fam.contains("fedora") || fam.contains("rhel") {
-        "sudo dnf install gcc gcc-c++ make git zip unzip curl pkgconf libimobiledevice-devel openssl-devel libcurl-devel libxml2-devel ncurses-libs python3 usbmuxd poppler-utils libheif-tools".into()
+        "sudo dnf install gcc gcc-c++ make git zip unzip curl pkgconf libimobiledevice-devel openssl-devel libcurl-devel libxml2-devel ncurses-libs python3 usbmuxd poppler-utils libheif-tools ninja-build rsync".into()
     } else {
         "install: a C compiler, git, zip, curl, pkg-config, libimobiledevice (development files), openssl (development files), python3 with venv, usbmuxd (external/omarchy-apple-dev/docs/DISTROS.md)".into()
     }
@@ -307,7 +310,8 @@ pub fn status() -> Status {
 
     // device installs and publishing (optional for x86Sim)
     let venv = home().join("pymobile3-venv/bin/python").exists();
-    let auth = std::fs::read_dir(home().join(".local/share/xtool")).is_ok_and(|mut d| d.next().is_some());
+    // xtool keeps its sign-in in ~/.config/xtool/data (XTLAuthToken); older builds used ~/.local/share/xtool
+    let auth = xdg("XDG_CONFIG_HOME", ".config").join("xtool/data/XTLAuthToken").exists() || std::fs::read_dir(home().join(".local/share/xtool")).is_ok_and(|mut d| d.next().is_some());
     v.push(piece(
         "device",
         "Real devices",
@@ -317,8 +321,22 @@ pub fn status() -> Status {
             (true, false) => "pymobiledevice3 ready; not signed in to an Apple ID (only for installs on a real iPhone)".to_string(),
             (false, _) => "pymobiledevice3 not installed (only for real iPhones; the toolchain step installs it)".to_string(),
         },
-        if auth { "" } else { "x86sim dev auth (interactive Apple ID sign-in, in a terminal)" },
+        if auth { "" } else { "x86sim account login --signing (or Settings > Apple Account in the launcher)" },
     ));
+
+    // CocoaPods (optional: React Native, Expo, Flutter plugins with a Podfile)
+    if let Some(p) = crate::devpods::status_piece() {
+        v.push(p);
+    }
+    // Rust apps (optional)
+    let (state, detail, fix) = crate::devrust::status();
+    v.push(piece("rust", "Rust", state, detail, fix));
+    // Swift Build (optional: Xcode projects and workspaces)
+    if let Some(p) = crate::devxcode::status_piece() {
+        v.push(p);
+    }
+    // dependency managers / project generators (optional: Carthage, ...)
+    v.extend(crate::devgen::status_pieces());
 
     // the Swift toolchain's lldb for `x86sim debug` (optional: /usr/bin/lldb is the fallback)
     if let Some(p) = swift_lldb_status() {
@@ -362,7 +380,12 @@ fn job_steps(kind: &str) -> &'static [&'static str] {
         "swift" => &["== swift: download", "== swift: unpack", "== swift: check"],
         "verify" => &["== verify: new project", "== verify: build"],
         "lldb" => &["== swift lldb: /", "== swift lldb: download", "== swift lldb: unpack", "== swift lldb: toolchain view"],
+        "cocoapods" => &["== cocoapods", "== Ruby", "== CocoaPods"],
+        "swiftbuild" => &["== swiftbuild", "== download sweetpad"],
+        k if crate::devgen::is_tool(k) => crate::devgen::job_steps(k),
         "repair" => &["== repair", "Installed actool", "Building OpenAppleMacrosServer"],
+        // Download Xcode (account.rs get_xcode)
+        "xcode" => &["== xcode: sign-in", "== xcode: download", "== xcode: verify", "== xcode: sdk", "== xcode: device types", "== xcode: done"],
         _ => &["== swift", "== 1", "== 3.", "== 4.", "== 5.", "== 6.", "Installed actool", "Building OpenAppleMacrosServer", "== 7."],
     }
 }
@@ -389,7 +412,13 @@ pub fn job() -> Option<Job> {
     }
     let last = text.lines().rev().map(|l| l.rsplit('\r').find(|s| !s.trim().is_empty()).unwrap_or("").trim().to_string()).find(|l| !l.is_empty()).unwrap_or_default();
     let running = rc.is_none() && alive(pid);
-    let progress = if rc == Some(0) { 1.0 } else { seen as f32 / (steps.len() as f32 + 1.0) };
+    let mut progress = if rc == Some(0) { 1.0 } else { seen as f32 / (steps.len() as f32 + 1.0) };
+    // Download Xcode: the download's own percentage within its step ("download: 41.2% ...")
+    if kind == "xcode" && rc.is_none() && seen == 2 {
+        if let Some(p) = last.strip_prefix("download: ").and_then(|r| r.split('%').next()).and_then(|p| p.trim().parse::<f32>().ok()) {
+            progress = (1.0 + p / 100.0) / (steps.len() as f32 + 1.0);
+        }
+    }
     Some(Job { kind, pid, running, rc: rc.or(if running { None } else { Some(-1) }), log, step, last, progress, started })
 }
 
@@ -416,7 +445,7 @@ pub fn start_job(kind: &str, args: &[String]) -> Result<Job> {
     if let Some(j) = job().filter(|j| j.running) {
         bail!("a setup job is already running ({}, pid {}): wait for it or cancel it", j.kind, j.pid);
     }
-    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "all"), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb or all");
+    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "cocoapods" | "swiftbuild" | "all" | "xcode") || crate::devgen::is_tool(kind), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb, cocoapods, swiftbuild, xcode or all");
     let d = work_dir();
     std::fs::create_dir_all(&d)?;
     for f in ["job.rc", "job.log"] {
@@ -609,7 +638,15 @@ pub fn run_installer(mode: Option<&str>, xip: Option<&Path>, repair: bool, say: 
         anyhow::ensure!(x.is_file(), "{} is not a file", x.display());
         c.env("XCODE_XIP", x);
     }
-    stream(c, say)
+    let rc = stream(c, say)?;
+    // the same Xcode's 3D device models (the iPhone Duo's, for the 3D phone): a failure here fails nothing else
+    if let Some(x) = xip.filter(|_| rc == 0) {
+        say("== xcode: 3D device models (extract-devicemodels.py)");
+        if let Err(e) = crate::devicemodel::extract(x, say) {
+            say(&format!("device models: {e:#} (the 3D phone keeps its own model)"));
+        }
+    }
+    Ok(rc)
 }
 
 /// Builds a fresh `xtool new` project for the simulator in the work dir: the whole toolchain end to end
@@ -673,46 +710,65 @@ pub fn remember(dir: &Path, phone: Option<&str>) {
     let _ = save_settings(&s);
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub dir: PathBuf,
     pub name: String,
-    /// xtool (Package.swift + xtool.yml: builds here), flutter, swiftpm (no xtool.yml), xcodeproj (convert it first)
+    /// The fork's tools/build-project detects it (its buildproject/detect.py has the rules): xtool (Package.swift +
+    /// xtool.yml), dotnet (a net*-ios .csproj), flutter, expo / reactnative, rust (a cargo package), carthage /
+    /// xcodegen / tuist / bazel, swiftpm (no xtool.yml), xcodeproj (an .xcodeproj / .xcworkspace), capacitor,
+    /// cordova, nativescript, godot, unity (shell apps and engine exports)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
     pub app: Option<PathBuf>,
 }
 
-fn yml_value(text: &str, key: &str) -> Option<String> {
-    text.lines().find_map(|l| l.strip_prefix(&format!("{key}:"))).map(|v| v.trim().trim_matches('"').trim_matches('\'').to_string()).filter(|v| !v.is_empty())
+/// The fork's build entry point: detects a project's kind and runs every step its build needs
+pub fn build_project() -> PathBuf {
+    fork_dir().join("tools/build-project")
+}
+
+/// `build-project ARGS` (python3 -I: the script finds its own modules)
+fn build_project_command() -> Command {
+    let mut c = command("python3");
+    c.arg("-I").arg(build_project()).env("OAD_SETUP_HINT", "x86sim dev setup {}");
+    c
+}
+
+/// build-project --describe for every dir (one run: a project list costs one Python start)
+fn describe(dirs: &[PathBuf]) -> Vec<Result<Project>> {
+    if dirs.is_empty() {
+        return vec![];
+    }
+    let out = build_project_command().arg("--describe").args(dirs).stdin(Stdio::null()).stderr(Stdio::piped()).output();
+    let out = match out {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => return dirs.iter().map(|_| Err(anyhow::anyhow!("build-project --describe: {}", String::from_utf8_lossy(&o.stderr).trim()))).collect(),
+        Err(e) => return dirs.iter().map(|_| Err(anyhow::anyhow!("running {}: {e}", build_project().display()))).collect(),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).with_context(|| format!("build-project --describe said {l:?}"))?;
+            if let Some(e) = v["error"].as_str() {
+                bail!("{e}");
+            }
+            Ok(serde_json::from_value::<Project>(v)?)
+        })
+        .collect()
 }
 
 pub fn project(dir: &Path) -> Result<Project> {
     let dir = dir.canonicalize().with_context(|| format!("{} not found", dir.display()))?;
     anyhow::ensure!(dir.is_dir(), "{} is not a directory", dir.display());
-    let base = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let yml = std::fs::read_to_string(dir.join("xtool.yml")).ok();
-    let kind = if yml.is_some() && dir.join("Package.swift").exists() {
-        "xtool"
-    } else if dir.join("pubspec.yaml").exists() {
-        "flutter"
-    } else if dir.join("Package.swift").exists() {
-        "swiftpm"
-    } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj")) {
-        "xcodeproj"
-    } else {
-        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml or .xcodeproj)", dir.display());
-    };
-    let y = yml.unwrap_or_default();
-    let name = yml_value(&y, "product").unwrap_or(base);
-    let app = std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"));
-    Ok(Project { name, kind: kind.into(), bundle_id: yml_value(&y, "bundleID").unwrap_or_default(), app, dir })
+    describe(&[dir]).pop().unwrap_or_else(|| Err(anyhow::anyhow!("build-project --describe gave no answer")))
 }
 
 /// The recent projects that still exist
 pub fn recent() -> Vec<Project> {
-    load_settings().recent.iter().filter_map(|d| project(d).ok()).collect()
+    let dirs: Vec<PathBuf> = load_settings().recent.iter().filter_map(|d| d.canonicalize().ok()).filter(|d| d.is_dir()).collect();
+    describe(&dirs).into_iter().filter_map(Result::ok).collect()
 }
 
 /// `xtool new NAME` in PARENT (a SwiftUI app); its platforms are widened to every simulator x86Sim runs (the template
@@ -747,13 +803,6 @@ pub struct BuildOpts {
     pub release: bool,
 }
 
-pub fn triple(platform: &str) -> String {
-    match platform {
-        "tvos" | "watchos" | "xros" => format!("arm64-apple-{platform}-simulator"),
-        _ => "arm64-apple-ios-simulator".into(),
-    }
-}
-
 /// One Swift build at a time on this computer (they are heavy): an flock on the work dir's build.lock
 struct BuildLock(std::fs::File);
 impl BuildLock {
@@ -775,45 +824,72 @@ impl Drop for BuildLock {
     }
 }
 
-/// Builds an xtool project for the simulator with ship.sh --simulator. Output goes to `say` and to
-/// work_dir()/build-<name>.log. Returns the .app.
+/// Builds a project for the simulator with the fork's tools/build-project (every kind: it detects the project and
+/// runs its steps). Output goes to `say` and to work_dir()/build-<name>.log. Returns the .app.
 pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
     let p = project(dir)?;
+    // what x86sim dev setup installs, checked here so the error names the setup step
     match p.kind.as_str() {
-        "xtool" => {}
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
-        "xcodeproj" => bail!("{}: an Xcode project: convert it first (x86sim dev convert {}/<App>.xcodeproj)", p.dir.display(), p.dir.display()),
-        _ => bail!("{}: a SwiftPM package without xtool.yml (add one: `version: 1` and `bundleID: com.you.App`)", p.dir.display()),
-    }
-    let st = status();
-    if !st.ready_sim {
-        let why: Vec<String> = st.pieces.iter().filter(|x| matches!(x.id, "swift" | "xtool" | "sdk" | "fork") && x.state != "ok" && x.state != "warn").map(|x| format!("{}: {}", x.title, x.detail)).collect();
-        if !why.is_empty() {
-            bail!("the toolchain is not ready ({}); see x86sim dev status", why.join("; "));
+        "rust" if o.platform == "ios" => {
+            let mut why = crate::devrust::missing();
+            why.extend(status().pieces.iter().filter(|x| x.id == "sdk" && x.state != "ok").map(|x| format!("{}: {}", x.title, x.detail)));
+            anyhow::ensure!(why.is_empty(), "the Rust iOS build is not ready ({}); see x86sim dev status", why.join("; "));
         }
+        "xtool" | "dotnet" => {
+            let st = status();
+            if !st.ready_sim {
+                let why: Vec<String> = st.pieces.iter().filter(|x| matches!(x.id, "swift" | "xtool" | "sdk" | "fork") && x.state != "ok" && x.state != "warn").map(|x| format!("{}: {}", x.title, x.detail)).collect();
+                if !why.is_empty() {
+                    bail!("the toolchain is not ready ({}); see x86sim dev status", why.join("; "));
+                }
+            }
+        }
+        _ => {}
     }
+    let mut c = build_project_command();
+    c.arg(&p.dir).args(["--platform", &o.platform, "--simulator"]).current_dir(&p.dir);
+    if o.release {
+        c.arg("--release");
+    }
+    let app = run_build_project(c, &p.name, say)?;
+    remember(&p.dir, None);
+    Ok(app)
+}
+
+/// An unsigned device build (React Native / Expo: what `x86sim dev device` signs and installs with xtool)
+pub fn device_build(dir: &Path, release: bool, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
+    let p = project(dir)?;
+    let mut c = build_project_command();
+    c.arg(&p.dir).args(["--platform", "ios", "--device"]).current_dir(&p.dir);
+    if release {
+        c.arg("--release");
+    }
+    run_build_project(c, &p.name, say)
+}
+
+/// Runs build-project under the build lock, its output to `say` and to work_dir()/build-<name>.log: the .app of its
+/// last `app: ` line, or its `error: ` line
+fn run_build_project(c: Command, name: &str, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
     let _lock = BuildLock::take(say)?;
-    let log_path = work_dir().join(format!("build-{}.log", p.name));
+    let log_path = work_dir().join(format!("build-{name}.log"));
     let mut log = std::fs::File::create(&log_path).ok();
-    let t = triple(&o.platform);
-    say(&format!("== build {} for {t} ({})", p.name, if o.release { "release" } else { "debug" }));
-    let mut c = command("bash");
-    c.arg(fork_dir().join("ship.sh")).arg("--simulator").current_dir(&p.dir).env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
-    let mut app_line = None;
+    let (mut app, mut err) = (None, None);
     let rc = stream(c, &mut |l: &str| {
         if let Some(f) = log.as_mut() {
             let _ = writeln!(f, "{l}");
         }
-        if let Some(a) = l.strip_prefix("simulator app ready: ") {
-            app_line = Some(a.trim().to_string());
+        if let Some(a) = l.strip_prefix("app: ") {
+            app = Some(PathBuf::from(a.trim()));
+        } else if let Some(e) = l.strip_prefix("error: ") {
+            err = Some(e.trim().to_string());
         }
         say(l);
     })?;
-    anyhow::ensure!(rc == 0, "build failed (exit {rc}); log: {}", log_path.display());
-    let app = app_line.map(|a| p.dir.join(a)).or(project(&p.dir)?.app).context("the build wrote no .app")?;
-    remember(&p.dir, None);
-    say(&format!("app: {}", app.display()));
-    Ok(app)
+    if rc != 0 {
+        bail!("{} (log: {})", err.unwrap_or_else(|| format!("build failed (exit {rc})")), log_path.display());
+    }
+    app.with_context(|| format!("the build named no .app (log: {})", log_path.display()))
 }
 
 #[derive(Debug, Clone)]
@@ -878,11 +954,15 @@ pub fn run(dir: &Path, inst: &Instance, o: &RunOpts, say: &mut dyn FnMut(&str)) 
     let t0 = Instant::now();
     let p = project(dir)?;
     let app = if o.no_build {
-        p.app.clone().context("no earlier build (xtool/<App>.app): build first")?
+        p.app.clone().context("no earlier build (xtool/<App>.app, target/ios-sim/<App>.app for Rust): build first")?
     } else {
         build(&p.dir, &BuildOpts { platform: inst.platform.clone(), release: o.release }, say)?
     };
     let bundle_id = crate::apps::bundle_id(&app).unwrap_or(p.bundle_id.clone());
+    // a Debug React Native / Expo build loads its JavaScript from Metro
+    if matches!(p.kind.as_str(), "expo" | "reactnative") && !o.release {
+        crate::devpods::start_metro(&p.dir, &p.kind, say)?;
+    }
     let (state, _) = phone_state(inst);
     if state == "off" {
         anyhow::ensure!(o.start, "{} is off: start it (launcher, MCP sim_start) or pass --start", inst.name);
@@ -964,6 +1044,14 @@ pub fn passthrough(verb: &str, dir: &Path, args: &[String]) -> Result<Command> {
     let f = fork_dir();
     let kind = project(dir).map(|p| p.kind).unwrap_or_default();
     let mut c = match verb {
+        "device" if matches!(kind.as_str(), "expo" | "reactnative") => {
+            // a Release device build (its JavaScript bundled by the build), then xtool signs it with the Apple ID
+            // and installs it, as flutter/build.sh --install does
+            let me = std::env::current_exe().unwrap_or_else(|_| dev_exe());
+            let mut c = command(me);
+            c.arg("rn-device");
+            c
+        }
         "device" => {
             let mut c = command("bash");
             c.arg(f.join("device-run.sh"));
@@ -1029,18 +1117,18 @@ pub fn pick_phone(key: Option<&str>) -> Result<Instance> {
 pub fn mcp_tools() -> Vec<serde_json::Value> {
     use serde_json::json;
     let phone = json!({"type": "string", "description": "the device: its name, folder (device-a64-qa) or path. Default: the only running device, else the one the last run used"});
-    let project = json!({"type": "string", "description": "the project directory (an xtool project: Package.swift + xtool.yml)"});
+    let project = json!({"type": "string", "description": "the project directory: an xtool project (Package.swift + xtool.yml), or a React Native / Expo app (package.json; pods, build and Metro are handled)"});
     let args = json!({"type": "array", "items": {"type": "string"}});
     vec![
         json!({"name": "dev_status", "description": "Develop (omarchy-apple-dev): the app toolchain's state: Swift, xtool, the iOS SDK (and its simulator platforms), device tools; ready_sim says whether simulator builds work. Includes the running / last setup job with its step and log tail, and the recent projects.",
                "inputSchema": {"type": "object", "properties": {}}}),
-        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use).",
-               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
+        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use), cocoapods (a pinned user-local Ruby and CocoaPods, ~70 MB: pod install for React Native / Expo apps and Flutter plugins with a Podfile), swiftbuild (Apple's open-source Swift Build with sweetpad's Linux front end, ~220 MB: builds Xcode projects and workspaces, and the xcodebuild stand-in), carthage (Carthage built from source: apps with a Cartfile; dev_build / dev_run then bootstrap their dependencies first), xcodegen (XcodeGen built from source: apps with a project.yml; dev_build / dev_run generate the project first), tuist (Tuist's ProjectDescription for Linux: apps with a Tuist Project.swift, generated with XcodeGen; needs xcodegen too).",
+               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb", "cocoapods", "swiftbuild", "carthage", "xcodegen", "tuist"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
         json!({"name": "dev_setup_cancel", "description": "Stop the running setup job.", "inputSchema": {"type": "object", "properties": {}}}),
         json!({"name": "dev_new", "description": "Make a new SwiftUI app project (xtool new) in parent (default: ~/x86sim-apps), set up for every simulator platform. Returns its directory.",
                "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "a Swift identifier, e.g. HelloApp"}, "parent": {"type": "string"}}, "required": ["name"]}}),
         json!({"name": "dev_projects", "description": "Recently built app projects: name, kind, bundle id, directory, last build.", "inputSchema": {"type": "object", "properties": {}}}),
-        json!({"name": "dev_build", "description": "Build an xtool project for the simulator (omarchy-apple-dev ship.sh --simulator), for a device's platform (or platform: ios, tvos, watchos, xros). Returns the .app path and the build log's tail.",
+        json!({"name": "dev_build", "description": "Build an app project for the simulator (xtool: omarchy-apple-dev ship.sh --simulator; an .xcodeproj / .xcworkspace: Swift Build; React Native / Expo: CocoaPods + xcbuild; a Rust cargo package: rust/build.py; .NET for iOS: dotnet/build.sh; Kotlin Multiplatform: kmp/build-app.sh), for a device's platform (or platform: ios, tvos, watchos, xros). Returns the .app path and the build log's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "phone": phone, "platform": {"type": "string", "enum": ["ios", "tvos", "watchos", "xros"]}, "release": {"type": "boolean"}}, "required": ["project"]}}),
         json!({"name": "dev_run", "description": "Build an app project for a device, install it and launch it (the edit-build-run loop). start=true boots the device first when it is off (minutes). args go to the app. Returns the bundle id, the install / launch answers and the log's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "phone": phone, "start": {"type": "boolean"}, "release": {"type": "boolean"}, "no_build": {"type": "boolean"}, "args": args}, "required": ["project"]}}),
@@ -1050,6 +1138,8 @@ pub fn mcp_tools() -> Vec<serde_json::Value> {
                "inputSchema": {"type": "object", "properties": {"project": project, "args": args}, "required": ["project"]}}),
         json!({"name": "dev_ship", "description": "omarchy-apple-dev ship.sh in the project (flutter/ship.sh for a Flutter app): an App Store .ipa, signed and validated offline; args [\"--upload\"] uploads to TestFlight (needs ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH in the environment), [\"--device\", TEAMID], [\"--xcarchive\"]. ship_mac=true runs ship-mac.sh. Returns the output's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "args": args, "ship_mac": {"type": "boolean"}}, "required": ["project"]}}),
+        json!({"name": "dev_reload", "description": "Reload the JavaScript of the React Native / Expo apps connected to Metro (what pressing r in Metro does; edits already arrive by Fast Refresh). dev_run starts Metro for a Debug build.",
+               "inputSchema": {"type": "object", "properties": {}}}),
         json!({"name": "dev_convert", "description": "Convert an Xcode project to an xtool project (omarchy-apple-dev tools/xcodeproj2xtool.py). args: its options (--out DIR, --target NAME, ...).",
                "inputSchema": {"type": "object", "properties": {"xcodeproj": {"type": "string"}, "args": args}, "required": ["xcodeproj"]}}),
     ]
@@ -1156,6 +1246,10 @@ pub fn mcp_call(name: &str, a: &serde_json::Value) -> Result<serde_json::Value> 
             let verb = if name == "dev_device" { "device" } else if a["ship_mac"].as_bool().unwrap_or(false) { "ship-mac" } else { "ship" };
             let (rc, out) = captured(passthrough(verb, Path::new(&s("project")), &strs("args"))?, 1800)?;
             json!({"exit": rc, "ok": rc == 0, "output_tail": last_lines(&out, 60)})
+        }
+        "dev_reload" => {
+            crate::devpods::reload()?;
+            json!({"reloaded": true})
         }
         "dev_convert" => {
             let mut args = vec![s("xcodeproj")];

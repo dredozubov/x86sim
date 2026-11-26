@@ -12,6 +12,20 @@ fn ui_enter(ctx: &egui::Context) -> bool {
     !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
 }
 
+/// The inspector's folds and their keys (the device page; main.rs shortcuts acts on them, the `?` list shows them).
+/// Letters the page leaves free: not s r o n q (start/stop, restart, own window, add, quit) nor the digits.
+pub const FOLD_KEYS: [(&str, egui::Key, &str, &str); 9] = [
+    ("features", egui::Key::F, "f", "Features"),
+    ("logs", egui::Key::L, "l", "Logs"),
+    ("share", egui::Key::H, "h", "Share"),
+    ("ax", egui::Key::X, "x", "Accessibility"),
+    ("web", egui::Key::W, "w", "Web Inspector"),
+    ("net", egui::Key::T, "t", "Network"),
+    ("perf", egui::Key::P, "p", "Performance"),
+    ("sim", egui::Key::M, "m", "Simulate"),
+    ("adv", egui::Key::A, "a", "Advanced"),
+];
+
 /// Room right of a watch's case for its crown, which stands off the case's edge
 const WATCH_EDGE: f32 = 22.0;
 /// Width of the tool bar right of the screen (Platforms 1: an Apple TV's holds the remote)
@@ -166,7 +180,7 @@ impl App {
                 let h = ui.available_height();
                 ui.add_space((h / 2.0 - 110.0).max(0.0));
                 let mut dl = false;
-                empty_state(ui, icon::CLOUD_ARROW_DOWN, &format!("{} isn't installed", inst.ios), "Download it to start this device. Its apps and data are kept.", |ui| {
+                empty_state(ui, icon::CLOUD_ARROW_DOWN, &format!("{} isn't installed", inst.ios), "", |ui| {
                     if busy {
                         let line = self.fetching.get(&inst.build).map(crate::home::fetch_line).unwrap_or_default();
                         crate::theme::busy(ui, &line);
@@ -193,8 +207,9 @@ impl App {
             let r = ui.horizontal_top(|ui| {
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                 let start = ui.cursor().min.x;
-                // Models 2: a two-screen phone is shown as its 3D model while it runs, its screens live on it and
-                // touchable through it (duo3d::DuoMap); the right (or middle) button, or Alt, turns and zooms it
+                // Models 2: a two-screen phone is shown as its 3D model while it runs (when this machine has Apple's
+                // model, else flat), its screens live on it and touchable through it (duo3d::DuoMap); the right (or
+                // middle) button, or Alt, turns and zooms it
                 let ctx = ui.ctx().clone();
                 let three_d = live && self.duo(id, &ctx).is_some();
                 let case = if three_d {
@@ -217,7 +232,17 @@ impl App {
                 } else {
                     // the Accessibility Inspector (axinspect_ui.rs): touches pause while it inspects, its outlines on top
                     let ax_on = live && crate::axinspect_ui::is_on(&ctx, id);
-                    let r = self.viewer(id).map(|v| v.show(ui, avail, live, placeholder, !ax_on, viewer::FULL));
+                    // Models 2: a two-screen phone's tools stay at the pane's right edge (as over its 3D model, which
+                    // turns and zooms in the whole pane): the flat screen centres in the room left of them
+                    let r = if inst.inner.is_some() {
+                        ui.allocate_ui_with_layout(avail, egui::Layout::top_down(egui::Align::Center), |ui| {
+                            ui.set_min_width(avail.x);
+                            self.viewer(id).map(|v| v.show(ui, avail, live, placeholder, !ax_on, viewer::FULL))
+                        })
+                        .inner
+                    } else {
+                        self.viewer(id).map(|v| v.show(ui, avail, live, placeholder, !ax_on, viewer::FULL))
+                    };
                     if let (true, Some(r)) = (live, r) {
                         crate::axinspect_ui::overlay(ui, &inst, r.shrink(10.0));
                     }
@@ -341,12 +366,11 @@ impl App {
                     ui.set_width(420.0);
                     ui.spacing_mut().item_spacing.y = 4.0;
                     ui.add(egui::Label::new(dialog_title(format!("Remove {}?", inst.name))).wrap());
-                    ui.label(sub("Its apps, data and settings are deleted. This can't be undone."));
                     ui.add_space(S2);
                     let frees = match *size.lock().unwrap() {
-                        None => "Measuring what it frees…".to_string(),
-                        Some(b) if b < 1 << 20 => "Frees less than 1 MB.".to_string(),
-                        Some(b) => format!("Frees {}.", fmt_mb(b as f64 / 1048576.0)),
+                        None => "Measuring…".to_string(),
+                        Some(b) if b < 1 << 20 => "Apps, data and settings · under 1 MB".to_string(),
+                        Some(b) => format!("Apps, data and settings · {}", fmt_mb(b as f64 / 1048576.0)),
                     };
                     ui.label(muted(frees)).on_hover_text(paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"));
                     ui.add_space(S5);
@@ -411,7 +435,14 @@ impl App {
                         ui.add_enabled(live, Btn::ghost("").icon(ic)).on_hover_text(tip).on_disabled_hover_text("Not running").clicked()
                     }
                     let tool = |ui: &mut egui::Ui, ic: &'static str, tip: &str| tool_btn(ui, live, ic, tip);
-                    if platform != "tvos" && platform != "watchos" {
+                    // One order on every device (the web page's tool column, app.js makeTools, follows it too):
+                    //   1. hardware buttons: Home, Lock (side), Volume up, Volume down, Siri, Action, App Switcher
+                    //      (an Apple TV's are its remote, above; a watch's crown and side button stand on its case)
+                    //   2. device actions: Rotate left, Rotate right, Hinge, Shake, Pointer, Double tap, Wrist flick
+                    //   3. the launcher's tools: Share, Accessibility, Record, Screenshot, Info
+                    // each device shows only what it has, never in another order; a gap (not a rule) between groups
+                    let phone_like = platform != "tvos" && platform != "watchos";
+                    if phone_like {
                         let mut press = None;
                         if tool(ui, icon::HOUSE, "Home (F1)") {
                             press = Some("home");
@@ -430,55 +461,27 @@ impl App {
                                 v.hold("lock", 2500);
                             }
                         }
+                        if platform == "ios" && tool(ui, icon::RADIO_BUTTON, "Action button") {
+                            press = Some("action");
+                        }
+                        let switcher = tool(ui, icon::CARDS, "App Switcher");
                         if let (Some(b), Some(v)) = (press, self.viewer(id)) {
                             v.press(b);
                         }
-                        // Inputs 2: Device > Rotate Left / Right (iPhone, iPad) and Shake, as in Apple's simulator
-                        ui.add_space(S2);
-                        let (mut rot, mut shake) = (None, false);
-                        if platform == "ios" {
-                            if tool(ui, icon::ARROW_COUNTER_CLOCKWISE, "Rotate left (the screen image stays upright: landscape apps are drawn sideways)") {
-                                rot = Some(true);
-                            }
-                            if tool(ui, icon::ARROW_CLOCKWISE, "Rotate right") {
-                                rot = Some(false);
-                            }
+                        if let (true, Some(v)) = (switcher, self.viewer(id)) {
+                            v.send("appswitcher");
                         }
-                        if tool(ui, icon::VIBRATE, "Shake (e.g. Undo Typing)") {
-                            shake = true;
-                        }
-                        // Inputs 2: an iPad's pointer capture, as Apple's simulator (the iPad gets a mouse)
-                        if self.inst(id).is_some_and(|i| i.model_id.starts_with("iPad")) {
-                            let on = self.viewer(id).is_some_and(|v| v.pointer_mode);
-                            let tip = if on { "Pointer capture on: the mouse drives the iPad's pointer. Click to go back to touches" } else { "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll)" };
-                            if ui.add_enabled(live, if on { Btn::tinted("", pal().active) } else { Btn::ghost("") }.icon(icon::CURSOR)).on_hover_text(tip).clicked() {
-                                if let Some(v) = self.viewer(id) {
-                                    v.set_pointer_mode(!on);
-                                }
-                            }
-                        }
-                        if let Some(v) = self.viewer(id) {
-                            if let Some(left) = rot {
-                                v.rotate(left);
-                            }
-                            if shake {
-                                v.shake();
-                            }
-                        }
-                        // a gap, not a rule, between the device's buttons and the launcher's own tools
                         ui.add_space(S3);
                     }
-                    // Share: this phone in a browser tab (share.rs)
-                    if let Some(inst) = self.inst(id).cloned() {
-                        self.share_tool(ui, &inst);
-                        crate::axinspect_ui::tool(ui, &inst, live);
-                    }
-                    if tool(ui, icon::CAMERA, "Save a screenshot to Pictures") {
-                        let r = self.viewer(id).map(|v| v.screenshot(&name));
-                        match r {
-                            Some(Ok(f)) => self.say(format!("Screenshot saved: {}", f.display())),
-                            Some(Err(e)) => self.say(format!("Couldn't save a screenshot: {e}")),
-                            None => {}
+                    // ---- 2. device actions
+                    let (mut rot, mut shake, mut gesture) = (None, false, None);
+                    // Inputs 2: Device > Rotate Left / Right (iPhone, iPad) and Shake, as in Apple's simulator
+                    if platform == "ios" {
+                        if tool(ui, icon::ARROW_COUNTER_CLOCKWISE, "Rotate left (the screen image stays upright: landscape apps are drawn sideways)") {
+                            rot = Some(true);
+                        }
+                        if tool(ui, icon::ARROW_CLOCKWISE, "Rotate right") {
+                            rot = Some(false);
                         }
                     }
                     // Models 2: a two-screen phone (iPhone Duo): its hinge, as Xcode's DeviceHub gives it: a slider from
@@ -496,6 +499,57 @@ impl App {
                             .align(egui::RectAlign::RIGHT_START)
                             .align_alternatives(&[egui::RectAlign::LEFT_START, egui::RectAlign::BOTTOM_START])
                             .show(|ui| self.hinge_panel(ui, id));
+                    }
+                    if phone_like && tool(ui, icon::VIBRATE, "Shake (e.g. Undo Typing)") {
+                        shake = true;
+                    }
+                    // Inputs 2: an iPad's pointer capture, as Apple's simulator (the iPad gets a mouse)
+                    if self.inst(id).is_some_and(|i| i.model_id.starts_with("iPad")) {
+                        let on = self.viewer(id).is_some_and(|v| v.pointer_mode);
+                        let tip = if on { "Pointer capture on: the mouse drives the iPad's pointer. Click to go back to touches" } else { "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll)" };
+                        if ui.add_enabled(live, if on { Btn::tinted("", pal().active) } else { Btn::ghost("") }.icon(icon::CURSOR)).on_hover_text(tip).clicked() {
+                            if let Some(v) = self.viewer(id) {
+                                v.set_pointer_mode(!on);
+                            }
+                        }
+                    }
+                    // Apple Watch: the hand gestures (watchOS's double tap and wrist flick)
+                    if platform == "watchos" {
+                        if tool(ui, icon::HAND_TAP, "Double tap (pinch twice)") {
+                            gesture = Some("gesture doubletap");
+                        }
+                        if tool(ui, icon::HAND_WAVING, "Wrist flick") {
+                            gesture = Some("gesture wristflick");
+                        }
+                    }
+                    if let Some(v) = self.viewer(id) {
+                        if let Some(left) = rot {
+                            v.rotate(left);
+                        }
+                        if shake {
+                            v.shake();
+                        }
+                        if let Some(l) = gesture {
+                            v.send(l);
+                        }
+                    }
+                    if phone_like || platform == "watchos" {
+                        ui.add_space(S3);
+                    }
+                    // ---- 3. the launcher's tools: Share (this phone in a browser tab, share.rs), Accessibility,
+                    // Record, Screenshot, Info
+                    if let Some(inst) = self.inst(id).cloned() {
+                        self.share_tool(ui, &inst);
+                        crate::axinspect_ui::tool(ui, &inst, live);
+                        self.record_tool(ui, &inst, live);
+                    }
+                    if tool(ui, icon::CAMERA, "Save a screenshot to Pictures") {
+                        let r = self.viewer(id).map(|v| v.screenshot(&name));
+                        match r {
+                            Some(Ok(f)) => self.say(format!("Screenshot saved: {}", f.display())),
+                            Some(Err(e)) => self.say(format!("Couldn't save a screenshot: {e}")),
+                            None => {}
+                        }
                     }
                     ui.add(Btn::tool(icon::INFO)).on_hover_text(match platform.as_str() {
                         "tvos" => GESTURES_TV,
@@ -518,8 +572,13 @@ impl App {
         // (value shown, when it was last sent, the value last sent)
         let (mut v, sent_at, sent) = ui.data(|d| d.get_temp::<(f64, f64, f64)>(key)).unwrap_or((f64::NAN, f64::NEG_INFINITY, f64::NAN));
         let file = self.inst(id).and_then(|i| i.hinge()).unwrap_or(0.0);
-        // a move takes up to 600 ms (a preset); after that the file is the truth (MCP / CLI moves too)
-        if v.is_nan() || now - sent_at > 1.0 {
+        // held: the slider is being dragged (last frame's answer); it never follows simhid then
+        let held_key = egui::Id::new(("hinge-slider-held", id));
+        let held = ui.data(|d| d.get_temp::<bool>(held_key)).unwrap_or(false);
+        // after a move from here the file is the truth once it has caught up with the angle sent (whole degrees,
+        // written as a move ends), or 3 s on; else at once (a preset's move takes up to 600 ms; MCP / CLI moves too)
+        let caught_up = sent.is_nan() || (file - sent).abs() <= 1.5 || now - sent_at > 3.0;
+        if v.is_nan() || (!held && now - sent_at > 1.0 && caught_up) {
             v = file;
         }
         ui.set_width(250.0);
@@ -530,7 +589,9 @@ impl App {
             });
         });
         ui.spacing_mut().slider_width = 250.0;
-        let r = ui.add(egui::Slider::new(&mut v, 0.0..=180.0).step_by(1.0).show_value(false));
+        // smart_aim off: egui pulls a dragged value onto round numbers (0, 45, 90, 180: the presets' angles)
+        let r = ui.add(egui::Slider::new(&mut v, 0.0..=180.0).smart_aim(false).show_value(false));
+        ui.data_mut(|d| d.insert_temp(held_key, r.dragged() && !r.drag_stopped()));
         let (mut sent_at, mut sent) = (sent_at, sent);
         if r.changed() || r.drag_stopped() {
             let dragging = r.dragged() && !r.drag_stopped();
@@ -538,7 +599,7 @@ impl App {
             // what the hinge is at: the last angle sent from here while it is recent, else simhid's (nothing sent
             // yet, or moved since by a preset, the MCP or the CLI). A NaN here never compared as changed: the slider
             // sent nothing until a preset had set it.
-            let at = if sent.is_nan() || now - sent_at > 1.0 { file } else { sent };
+            let at = if sent.is_nan() || (now - sent_at > 1.0 && caught_up) { file } else { sent };
             if (v - at).abs() >= 0.5 && (!dragging || now - sent_at >= 0.04) {
                 // arrow keys step a degree at a time: a short move each
                 let ms = if r.dragged() || r.drag_stopped() { 40 } else if (v - at).abs() <= 2.0 { 60 } else { 300 };
@@ -587,13 +648,20 @@ impl App {
                         vw.hinge_pose(pose);
                     }
                     if let Some(d) = self.duo3d.get_mut(id) {
-                        d.commanded = Some((pose.angle, now));
+                        d.pose(pose.angle, pose.orientation, now);
                     }
                     v = pose.angle;
                     sent = v;
                     sent_at = now;
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(Btn::ghost("").icon(icon::ARROW_U_UP_LEFT)).on_hover_text("Reset the view").clicked() {
+                    if let Some(d) = self.duo3d.get_mut(id) {
+                        d.reset_view();
+                    }
+                }
+            });
         });
         ui.data_mut(|d| d.insert_temp(key, (v, sent_at, sent)));
         if now - sent_at <= 1.0 {
@@ -689,9 +757,9 @@ impl App {
             // the GPU helper apart from the phone's own memory: one helper may serve several devices
             if let Some(g) = st.and_then(|s| s.gpu.as_ref()) {
                 ui.add_space(S1);
-                let shared = if g.users > 1 { format!(", shared by {} devices", g.users) } else { String::new() };
-                ui.label(muted(format!("+ {} for the GPU helper{shared}", fmt_mb(g.pss_mb))))
-                    .on_hover_text("mtlvk runs every Metal call on Vulkan. It is not in this device's memory; the total in the sidebar counts it once.");
+                let shared = if g.users > 1 { format!(" · {} devices", g.users) } else { String::new() };
+                ui.label(muted(format!("+ {} GPU helper{shared}", fmt_mb(g.pss_mb))))
+                    .on_hover_text("mtlvk, outside this device's memory; the sidebar total counts it once");
             }
             ui.add_space(S3);
         }
@@ -701,6 +769,21 @@ impl App {
         kv_text(ui, lw, "Screen", format!("{} × {} pixels", inst.screen.0, inst.screen.1));
         if let Some(s) = st.filter(|_| on) {
             kv_text(ui, lw, "Processes", s.procs.len().to_string());
+            // the GPU it renders on now (its helper's record); the setting is in Advanced
+            if let Some(d) = s.gpu.as_ref().and_then(|g| g.device.as_ref()) {
+                kv(ui, lw, "GPU", |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(d.label()).size(T_SMALL).color(pal().ink_2)).truncate()).on_hover_text(format!("{} · {} · {}", d.name, d.driver, d.pci));
+                });
+            }
+            // how guest buffers reach that GPU: shared, or copied each time they change (the slow path) and why
+            if let Some(b) = s.gpu.as_ref().and_then(|g| g.buffers.as_ref()).filter(|b| b.direct + b.udmabuf_buffers + b.mirrored > 0) {
+                kv(ui, lw, "Buffers", |ui| {
+                    let col = if b.copying() { pal().warn } else { pal().ink_2 };
+                    let short = if b.copying() { if b.direct + b.udmabuf_buffers > 0 { "Partly copied" } else { "Copied" } } else if b.udmabuf_buffers > 0 { "Shared · udmabuf" } else { "Shared" };
+                    ui.add(egui::Label::new(egui::RichText::new(short).size(T_SMALL).color(col)).truncate())
+                        .on_hover_text(format!("{} · shared {} · udmabuf {} · copied {}", b.summary(), b.direct, b.udmabuf_buffers, b.mirrored));
+                });
+            }
         }
         let prof = features::load(&inst.dir);
         let off: Vec<String> = features::defs().features.iter().filter(|f| !prof.enabled(&f.id)).map(|f| f.title.clone()).collect();
@@ -758,6 +841,22 @@ impl App {
         }
         hline(ui);
 
+        // ---- Web Inspector: the device's web pages in WebKit's inspector (no web views on a watch)
+        if inst.platform != "watchos" {
+            if self.fold_section(ui, "web", "Web Inspector", "", "") {
+                self.web_section(ui, inst, phase == Phase::Running);
+            }
+            hline(ui);
+        }
+
+        // ---- Network: an app's requests (net_ui.rs; iPhone and iPad)
+        if inst.platform == "ios" {
+            if self.fold_section(ui, "net", "Network", "", "") {
+                crate::net_ui::section(ui, inst, phase == Phase::Running);
+            }
+            hline(ui);
+        }
+
         // ---- Performance
         // no summary: memory and CPU are the tiles at the top
         if self.fold_section(ui, "perf", "Performance", "", "") {
@@ -779,7 +878,7 @@ impl App {
 
     fn fold_section(&mut self, ui: &mut egui::Ui, key: &'static str, title_text: &str, summary: &str, tip: &str) -> bool {
         let open = self.open.contains(key);
-        let hint = match key { "features" => "f", "logs" => "l", "perf" => "p", "share" | "ax" => "", _ => "a" };
+        let hint = FOLD_KEYS.iter().find(|f| f.0 == key).map(|f| f.2).unwrap_or("");
         if fold(ui, title_text, summary, tip, hint, open) != open {
             if open {
                 self.open.remove(key);
@@ -800,8 +899,6 @@ impl App {
         let cur = features::preset_of(&prof);
         let presets = [("full", "Full"), ("lean", "Lean"), ("minimal", "Minimal")];
         let mut changed = false;
-        ui.label(muted("Turn off what you don't use to save memory."));
-        ui.add_space(S1);
         let sel = presets.iter().position(|p| cur.as_deref() == Some(p.0));
         if let Some(i) = segmented(ui, &presets.map(|p| p.1), sel, true) {
             let _ = features::apply_preset(&dev, presets[i].0);
@@ -816,19 +913,19 @@ impl App {
                 Some(i) => (f.desc[..i].trim().to_string(), f.desc[i + 4..].trim().to_string()),
                 None => (f.desc.clone(), String::new()),
             };
-            let what = if !on && !lose.is_empty() {
-                format!("Off: {lose}")
-            } else if what.is_empty() {
-                format!("When off: {lose}")
-            } else {
-                what
-            };
+            // what it is and what turning it off loses: the row's tooltip
+            let mut tip = what;
+            if !lose.is_empty() {
+                tip = if tip.is_empty() { format!("Off: {lose}") } else { format!("{tip}\nOff: {lose}") };
+            }
+            if !f.tech.is_empty() {
+                tip = format!("{tip}\n\n{}", f.tech);
+            }
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - 104.0);
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.label(strong(&f.title));
-                    ui.add(egui::Label::new(muted(what)).wrap());
+                let w = ui.available_width() - 104.0;
+                ui.allocate_ui_with_layout(egui::vec2(w, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_width(w);
+                    ui.add(egui::Label::new(strong(&f.title)).truncate());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if toggle(ui, &mut on).changed() {
@@ -841,7 +938,7 @@ impl App {
                 });
             })
             .response
-            .on_hover_text(&f.tech);
+            .on_hover_text(tip.trim());
             if !on && f.default {
                 saving += f.cost_mb;
             }
@@ -849,7 +946,7 @@ impl App {
         }
 
         if saving > 0 {
-            dot_label(ui, &format!("Saving about {saving} MB"), pal().good);
+            dot_label(ui, &format!("Saving {saving} MB"), pal().good);
         }
         let st = self.status.get(&inst.id).cloned();
         if (changed || instance::needs_restart(inst, st.as_ref())) && phase != Phase::Off {
@@ -888,7 +985,7 @@ impl App {
         }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let rest = ui.available_width() - 116.0 - 2.0 * H_MD - 3.0 * 6.0 - 4.0;
+            let rest = ui.available_width() - 116.0 - 4.0 * H_MD - 5.0 * 6.0 - 4.0;
             let rest = rest.max(80.0);
             search(ui, &mut self.log_filter, if rest < 190.0 { "Filter" } else { "Filter text or process" }, rest).on_hover_text("Show only lines with this text, or from this process");
             let groups = self.logs.as_ref().map(|l| l.1.groups()).unwrap_or_default();
@@ -917,10 +1014,24 @@ impl App {
             if ui.add(Btn::tool(ic)).on_hover_text(tip).clicked() {
                 self.log_paused = !self.log_paused;
             }
+            // the lines shown (this filter and source): to the clipboard, or to a file in Downloads
+            let shown = || -> String {
+                let f = self.log_filter.to_lowercase();
+                self.logs.as_ref().map(|(_, t)| t.lines.iter().filter(|l| log_shown(l, &self.log_source, &f)).map(log_text).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+            };
+            if ui.add(Btn::tool(icon::COPY)).on_hover_text("Copy the lines shown (click a line to pick it, Shift+click for a range, Ctrl+C copies those)").clicked() {
+                let t = shown();
+                ui.ctx().copy_text(t);
+            }
+            if ui.add(Btn::tool(icon::DOWNLOAD_SIMPLE)).on_hover_text("Save the lines shown to a text file in Downloads").clicked() {
+                let t = shown();
+                self.save_to_downloads(&format!("x86Sim logs {}", inst.name), &t);
+            }
             if ui.add(Btn::tool(icon::TRASH)).on_hover_text("Clear the lines shown here (the log files stay)").clicked() {
                 if let Some((_, t)) = &mut self.logs {
                     t.lines.clear();
                 }
+                self.log_sel = None;
             }
         });
         ui.add_space(S1);
@@ -928,7 +1039,14 @@ impl App {
         let src = self.log_source.clone();
         let paused = self.log_paused;
         if let Some((_, t)) = &self.logs {
-            let rows: Vec<&logs::Line> = t.lines.iter().filter(|l| (src.is_empty() || l.group == src) && (f.is_empty() || l.text.to_lowercase().contains(&f) || l.source.to_lowercase().contains(&f))).collect();
+            let rows: Vec<&logs::Line> = t.lines.iter().filter(|l| log_shown(l, &src, &f)).collect();
+            let sel = self.log_sel.map(|(a, b)| (a.min(b), a.max(b)));
+            let picked = |l: &logs::Line| sel.is_some_and(|(a, b)| l.seq >= a && l.seq <= b);
+            // Ctrl+C with lines picked (and no text field holding the keyboard): those lines
+            if sel.is_some() && ui.memory(|m| m.focused().is_none()) && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
+                ui.ctx().copy_text(rows.iter().filter(|l| picked(l)).map(|l| log_text(l)).collect::<Vec<_>>().join("\n"));
+            }
+            let mut new_sel = self.log_sel;
             egui::Frame::new().fill(pal().well).stroke(egui::Stroke::new(1.0_f32, pal().border)).corner_radius(radius()).inner_margin(egui::Margin::symmetric(0, 4)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -946,9 +1064,19 @@ impl App {
                     let srcw = 96.0;
                     let tw = 60.0;
                     for l in &rows[range.start.min(rows.len())..range.end.min(rows.len())] {
-                        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::hover());
-                        if resp.hovered() {
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+                        if picked(l) {
+                            ui.painter().rect_filled(r, 0.0, pal().selected);
+                        } else if resp.hovered() {
                             ui.painter().rect_filled(r, 0.0, pal().hover);
+                        }
+                        if resp.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            new_sel = match new_sel {
+                                Some((a, _)) if shift => Some((a, l.seq)),
+                                Some((a, b)) if a == l.seq && b == l.seq => None,
+                                _ => Some((l.seq, l.seq)),
+                            };
                         }
                         let (time, msg) = logs::split_time(&l.text);
                         let mut x = r.left() + 10.0;
@@ -963,24 +1091,43 @@ impl App {
                         let col = if low.contains("error") || low.contains("fail") || low.contains("crash") { pal().crit_ink } else if low.contains("warn") { pal().warn } else { pal().ink };
                         let g = galley_trunc(ui, msg, mono.clone(), col, r.right() - x - 8.0);
                         ui.painter().galley(egui::pos2(x, r.center().y - g.size().y / 2.0), g, col);
-                        resp.on_hover_ui(|ui| {
+                        let resp = resp.on_hover_ui(|ui| {
                             ui.set_max_width(520.0);
                             ui.label(muted(&l.source));
                             ui.label(egui::RichText::new(&l.text).monospace().size(T_SMALL).color(pal().ink));
                         });
+                        resp.context_menu(|ui| {
+                            if ui.button("Copy this line").clicked() {
+                                ui.ctx().copy_text(log_text(l));
+                                ui.close();
+                            }
+                            if sel.is_some() && ui.button("Copy the picked lines").clicked() {
+                                ui.ctx().copy_text(rows.iter().filter(|l| picked(l)).map(|l| log_text(l)).collect::<Vec<_>>().join("\n"));
+                                ui.close();
+                            }
+                            if ui.button(format!("Copy all {} lines shown", rows.len())).clicked() {
+                                ui.ctx().copy_text(rows.iter().map(|l| log_text(l)).collect::<Vec<_>>().join("\n"));
+                                ui.close();
+                            }
+                        });
                     }
                 });
             });
+            self.log_sel = new_sel;
         }
         ui.add_space(S3);
     }
 
     fn perf_section(&mut self, ui: &mut egui::Ui, id: &str, st: Option<&instance::Status>) {
         let Some(s) = st.filter(|s| s.phase != Phase::Off) else {
-            ui.label(muted("Start the device to see what it uses."));
+            ui.label(muted("Off"));
             ui.add_space(S3);
             return;
         };
+        if let Some(inst) = self.inst(id).cloned() {
+            self.profile_button(ui, &inst);
+            ui.add_space(S2);
+        }
         let fps = self.viewers.get(id).map(|v| v.fps()).unwrap_or(0);
         // the process count is in the overview above; here only the screen's rate, then who uses what
         kv_text(ui, 104.0, "Screen updates", if fps > 0 { format!("{fps} fps") } else { "Idle".to_string() });
@@ -1039,13 +1186,9 @@ impl App {
         let mut save = false;
         let field = |ui: &mut egui::Ui, label: &str, tip: &str| {
             ui.add_space(S1);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.label(egui::RichText::new(label).size(T_SMALL).family(medium()).color(pal().ink_2));
-                ui.label(egui::RichText::new(icon::INFO).family(icons()).size(12.0).color(pal().ink_3)).on_hover_text(tip);
-            });
+            ui.label(egui::RichText::new(label).size(T_SMALL).family(medium()).color(pal().ink_2)).on_hover_text(tip);
         };
-        field(ui, "Screen scaling", "How the screen is shrunk when it is drawn smaller than the device (a small window, the side panel). Smooth averages the pixels; Sharp keeps every nth one (least CPU, but text and edges shimmer); Full sends the whole frame and lets the GPU scale it. Applies at once.");
+        field(ui, "Screen scaling", "Smooth averages pixels; Sharp keeps every nth (least CPU, edges shimmer); Full lets the GPU scale. Applies at once");
         let opts = [("smooth", "Smooth"), ("sharp", "Sharp"), ("full", "Full resolution")];
         let sel = opts.iter().position(|o| o.0 == s.scaling);
         let mut scaled = false;
@@ -1054,37 +1197,60 @@ impl App {
             scaled = true;
         }
         ui.add_space(S2);
-        ui.label(muted("The rest apply at the next start."));
-        field(ui, "Graphics", "X86SIM_METAL: GPU for everything (all), only the system (backboardd), or software rendering (0).");
+        field(ui, "Graphics", "X86SIM_METAL · Applies at next start");
         let opts = [("all", "GPU"), ("backboardd", "System only"), ("0", "Software")];
         let sel = opts.iter().position(|o| o.0 == s.metal);
         if let Some(i) = segmented(ui, &opts.map(|o| o.1), sel, true) {
             s.metal = opts[i].0.into();
             save = true;
         }
-        field(ui, "Background services", "A64_JOBS: which background services boot. Standard is right for daily use; Full adds widgets; Slim and Minimal are for tests.");
+        field(ui, "GPU", "MTLVK_DEVICE_ID: the GPU Metal runs on; devices on the same GPU share one helper · Applies at next start");
+        match gpu_choices(ui.ctx()) {
+            Some(choices) => {
+                let cur = choices.iter().find(|c| c.0 == s.gpu).map(|c| c.1.clone()).unwrap_or_else(|| if s.gpu == "auto" || s.gpu.is_empty() { "Auto".into() } else { format!("{} (not found)", s.gpu.split(',').next().unwrap_or("")) });
+                let mut pick = None;
+                ui.add_enabled_ui(s.metal != "0", |ui| {
+                    egui::ComboBox::from_id_salt(("gpu", &inst.id)).icon(caret).width(ui.available_width().min(320.0)).selected_text(body(cur)).show_ui(ui, |ui| {
+                        for (v, l) in &choices {
+                            if ui.selectable_label(*v == s.gpu, l).clicked() {
+                                pick = Some(v.clone());
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Auto: a discrete GPU first · CPU: no GPU, slow");
+                });
+                if let Some(v) = pick.filter(|v| *v != s.gpu) {
+                    s.gpu = v;
+                    save = true;
+                }
+            }
+            None => {
+                ui.label(muted("Reading…"));
+            }
+        }
+        field(ui, "Background services", "A64_JOBS · Full adds widgets; Slim and Minimal are for tests · Applies at next start");
         let opts = [("std", "Standard"), ("full", "Full"), ("slim", "Slim"), ("min", "Minimal")];
         let sel = opts.iter().position(|o| o.0 == s.jobs);
         if let Some(i) = segmented(ui, &opts.map(|o| o.1), sel, true) {
             s.jobs = opts[i].0.into();
             save = true;
         }
-        field(ui, "Memory cap", "X86SIM_MEM_MAX for this device's processes (systemd MemoryMax), e.g. 6G. Empty: no cap.");
+        field(ui, "Memory cap", "X86SIM_MEM_MAX (systemd MemoryMax), e.g. 6G · Applies at next start");
         if ui.add(egui::TextEdit::singleline(&mut s.mem_max).hint_text(egui::RichText::new("No cap").color(pal().ink_3)).desired_width(120.0).margin(egui::Margin::symmetric(8, 6))).lost_focus() {
             save = true;
         }
         ui.add_space(S1);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(egui::RichText::new("Share the GPU helper").size(T_SMALL).family(medium()).color(pal().ink_2));
-            ui.label(egui::RichText::new(icon::INFO).family(icons()).size(12.0).color(pal().ink_3)).on_hover_text("A64_MTLVK_SOCKET: use one mtlvk for all running devices instead of starting another");
+            ui.label(egui::RichText::new("Share the GPU helper").size(T_SMALL).family(medium()).color(pal().ink_2)).on_hover_text("A64_MTLVK_SOCKET: one mtlvk for all running devices · Applies at next start");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if toggle(ui, &mut s.share_mtlvk).changed() {
                     save = true;
                 }
             });
         });
-        field(ui, "Extra environment", "A64_ENV: KEY=value pairs for launchd_sim, e.g. X86SIM_A64_TRACE=1");
+        field(ui, "Extra environment", "A64_ENV for launchd_sim · Applies at next start");
         if ui.add(egui::TextEdit::singleline(&mut s.extra_env).font(egui::TextStyle::Monospace).hint_text(egui::RichText::new("KEY=value …").color(pal().ink_3)).desired_width(ui.available_width()).margin(egui::Margin::symmetric(8, 6))).lost_focus() {
             save = true;
         }
@@ -1096,7 +1262,7 @@ impl App {
                     v.shared.scaling.store(sc, std::sync::atomic::Ordering::Relaxed);
                 }
             }
-            self.say(if save { "Saved. Applies at the next start." } else { "Saved." });
+            self.say(if save { "Saved · applies at next start" } else { "Saved" });
         }
         ui.add_space(S3);
         ui.label(overline("paths"));
@@ -1126,4 +1292,35 @@ impl App {
         });
         ui.add_space(S3);
     }
+}
+
+/// The GPU picker's choices (setting, label), read once in the background (`mtlvk --list-gpus` takes a moment): None
+/// until then. Auto, each GPU by name and type, then the CPU device when lavapipe is there.
+fn gpu_choices(ctx: &egui::Context) -> Option<Vec<(String, String)>> {
+    use std::sync::{Mutex, OnceLock};
+    static C: OnceLock<Mutex<Option<Vec<(String, String)>>>> = OnceLock::new();
+    let mut started = false;
+    let c = C.get_or_init(|| {
+        started = true;
+        Mutex::new(None)
+    });
+    if started {
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let v = x86sim_core::gpu::list().map(|l| x86sim_core::gpu::choices(&l)).unwrap_or_else(|_| vec![("auto".into(), "Auto".into())]);
+            *C.get().unwrap().lock().unwrap() = Some(v);
+            ctx.request_repaint();
+        });
+    }
+    c.lock().unwrap().clone()
+}
+
+/// A log line passes the source picker and the filter
+fn log_shown(l: &logs::Line, src: &str, f: &str) -> bool {
+    (src.is_empty() || l.group == src) && (f.is_empty() || l.text.to_lowercase().contains(f) || l.source.to_lowercase().contains(f))
+}
+
+/// A log line as copied or saved: its process, then the line
+fn log_text(l: &logs::Line) -> String {
+    format!("{}: {}", l.source, l.text)
 }

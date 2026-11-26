@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- x86Sim's .NET for iOS check (tests/dev/dotnet_e2e.py): built on Linux by omarchy-apple-dev's dotnet/build.sh -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-ios</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>true</ImplicitUsings>
+    <SupportedOSPlatformVersion>17.0</SupportedOSPlatformVersion>
+    <ApplicationId>sim.x86.HelloCounter</ApplicationId>
+  </PropertyGroup>
+</Project>

@@ -128,12 +128,8 @@ impl App {
         section(ui, "Updates", |_| {});
         list_card(ui, |ui| {
             let supported = Updater::supported();
-            let detail = if supported {
-                format!("x86Sim {}. Looks for a new release when it starts and every 6 hours.", x86sim_core::setup::version())
-            } else {
-                "Only for the AppImage; a checkout updates with git.".to_string()
-            };
-            form_row(ui, "Check for updates", &detail, false, |ui| {
+            let tip = if supported { "At start and every 6 hours" } else { "AppImage only" };
+            form_row(ui, "Check for updates", tip, !supported, |ui| {
                 ui.add_enabled_ui(supported, |ui| {
                     save |= toggle(ui, &mut self.hub.check_updates).changed();
                 });
@@ -142,7 +138,7 @@ impl App {
                 let chans = [("stable", "Stable"), ("pre", "Pre-release")];
                 let cur = update::effective_channel(&self.hub.channel);
                 let sel = chans.iter().position(|c| c.0 == cur);
-                form_row(ui, "Channel", "Stable gets full releases only; Pre-release also gets test builds, which come out more often and may break things.", false, |ui| {
+                form_row(ui, "Channel", "Pre-release adds test builds, which may break things", false, |ui| {
                     if let Some(i) = segmented(ui, &chans.map(|c| c.1), sel, true) {
                         if chans[i].0 != cur {
                             self.hub.channel = chans[i].0.into();
@@ -155,24 +151,27 @@ impl App {
                     }
                 });
                 let line = match self.updater.phase() {
-                    Phase::Idle => String::new(),
+                    Phase::Idle => x86sim_core::setup::version().to_string(),
                     Phase::Checking => "Checking…".into(),
-                    Phase::UpToDate => "You have the newest version.".into(),
-                    Phase::Available(r) => format!("{} is available.", r.tag),
+                    Phase::UpToDate => format!("{} · Up to date", x86sim_core::setup::version()),
+                    Phase::Available(r) => format!("{} available", r.tag),
                     Phase::Downloading(r) => format!("Downloading {}…", r.tag),
-                    Phase::Ready(r, _) => format!("{} is installed; restart to use it.", r.tag),
+                    Phase::Ready(r, _) => format!("{} ready · Restart to use", r.tag),
                     Phase::Failed(e) => e,
                 };
-                form_row(ui, "Version", &line, true, |ui| {
+                let failed = matches!(self.updater.phase(), Phase::Failed(_));
+                form_row(ui, "Version", "", true, |ui| {
                     let busy = matches!(self.updater.phase(), Phase::Checking | Phase::Downloading(_));
                     if ui.add_enabled(!busy, Btn::secondary("Check now")).on_hover_text("Look for a newer release now").on_disabled_hover_text("Already checking or updating").clicked() {
                         self.updater.check(ui.ctx(), true, &self.hub.channel);
                     }
                     if let Phase::Available(rel) = self.updater.phase() {
-                        if ui.add(Btn::primary("Update")).on_hover_text("Downloads the new AppImage and replaces this one; your devices and data stay").clicked() {
+                        if ui.add(Btn::primary("Update")).on_hover_text("Replaces this AppImage; devices and data stay").clicked() {
                             self.updater.download(ui.ctx(), rel);
                         }
                     }
+                    ui.add_space(S2);
+                    ui.add(egui::Label::new(if failed { egui::RichText::new(&line).size(T_SMALL).color(pal().crit_ink) } else { muted(&line) }).truncate());
                 });
             }
         });

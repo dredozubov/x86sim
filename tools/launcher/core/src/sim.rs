@@ -45,9 +45,19 @@ pub fn devices() -> Vec<(String, PathBuf)> {
 /// unsupported. The profile is a binary plist whose strings are plain ASCII: the model ids in a profile with that
 /// key are its restriction (a restricted profile has no unsupportedDeviceTypes).
 pub fn runtime_restricted_to(runtime_root: &Path) -> Vec<String> {
+    profile_models(runtime_root, b"restrictedToDeviceTypes")
+}
+
+/// The device types a runtime's profile lists as unsupported (unsupportedDeviceTypes): iOS 27.2 24B8117 leaves out
+/// the iPhone Duo, which has a build of its own. Same reading as runtime_restricted_to (a profile has one or the other).
+pub fn runtime_unsupported(runtime_root: &Path) -> Vec<String> {
+    profile_models(runtime_root, b"unsupportedDeviceTypes")
+}
+
+fn profile_models(runtime_root: &Path, key: &[u8]) -> Vec<String> {
     let Some(profile) = std::fs::canonicalize(runtime_root).ok().and_then(|r| r.parent().map(|p| p.join("profile.plist"))) else { return vec![] };
     let Ok(b) = std::fs::read(profile) else { return vec![] };
-    if !b.windows(23).any(|w| w == b"restrictedToDeviceTypes") {
+    if !b.windows(key.len()).any(|w| w == key) {
         return vec![];
     }
     let mut out = vec![];
@@ -70,10 +80,33 @@ pub fn runtime_restricted_to(runtime_root: &Path) -> Vec<String> {
     out
 }
 
-/// Whether a phone of `model_id` can run on this runtime (restriction only; families are not checked)
+/// A model id's name ("iPhone19,4" -> "iPhone Duo"), else the id itself
+pub fn model_name(model_id: &str) -> String {
+    models().into_iter().find(|m| m.1 == model_id).map(|m| m.0).unwrap_or_else(|| model_id.to_string())
+}
+
+/// Whether a device of `model_id` can run on this runtime, as CoreSimulator decides it from the runtime's profile
+/// (families are not checked: a model only meets runtimes of its own platform): in its restrictedToDeviceTypes when it
+/// has one, and not in its unsupportedDeviceTypes. `simctl create` refuses the rest ("Incompatible device"). iOS 27.2
+/// 24B8117 refuses the iPhone Duo: a Duo on it boots, but its SpringBoard predates the Duo and treats the inner screen
+/// as a second display to activate by hand ("Activate Display" / "Power Off Display" on every unfold).
 pub fn runtime_allows(runtime_root: &Path, model_id: &str) -> bool {
     let r = runtime_restricted_to(runtime_root);
-    r.is_empty() || r.iter().any(|m| m == model_id)
+    (r.is_empty() || r.iter().any(|m| m == model_id)) && !runtime_unsupported(runtime_root).iter().any(|m| m == model_id)
+}
+
+/// Why a device can't run on its runtime (CoreSimulator lists such a device as unavailable and won't boot it), None
+/// when it can: the runtime's profile refuses the device's model (runtime_allows)
+pub fn device_unavailable(dev: &Path) -> Option<String> {
+    let model = std::fs::read_to_string(dev.join("model")).map(|s| s.trim().to_string()).ok()?;
+    let model_id = models().into_iter().find(|m| m.0 == model || m.1 == model).map(|m| m.1)?;
+    let rt = device_runtime(dev);
+    if !rt.exists() || runtime_allows(&rt, &model_id) {
+        return None;
+    }
+    let d = rt_dir(&rt);
+    let os = parse_runtime_dir(&d).map(|(p, v, b)| format!("{} {v} ({b})", platform_name(p))).unwrap_or(d);
+    Some(format!("{os} does not support {model} (Apple's simulator refuses it): make a new {model}, it gets the build that supports it"))
 }
 
 /// The RuntimeRoot a device boots on: its `runtime` file (a runtimes/ dir name, device-a64.py create --ios), else 27.0
