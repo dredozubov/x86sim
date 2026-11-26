@@ -155,6 +155,9 @@ NEVER = ("SpringBoard.app/", "PosterBoard.app/", "InputUI.app/", "Campo.app/", "
          # tvOS's system overlay service (an angel, as InputUI / Campo): up from boot, it read as "the app in the
          # foreground" and every idle daemon waited 600 s, not 30 (TV home at 120 s: nothing reclaimed yet)
          "TVSystemUIService.app/",
+         # RAM 14: chronod's widget renderer, an .app on iPad (UIKitApplication:com.apple.chrono.WidgetRenderer-Default,
+         # as in Apple's simulator): it read as the app in the foreground, so every idle daemon waited 600 s, not 30
+         "WidgetRenderer_Default.app/",
          # Platforms 2: visionOS's SpringBoard (it has no visible scene until the compositor runs: killed at 90 s)
          "SurfBoard.app/", "RealityEnvironment.app/",
          # visionOS's system shell runs as separate apps (keyboard, notifications, HUD, Home View, ...), off screen

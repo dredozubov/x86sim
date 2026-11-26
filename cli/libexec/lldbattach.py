@@ -100,14 +100,20 @@ def ensure_stub(u, gpid, wait=15):
     # at a time: a second waits until the first detaches.)
     if not os.path.exists(p):
         open("%s/x86sim-dbg-req-%s-%d" % (RUN, u, gpid), "w").close()
-        os.kill(hp, signal.SIGUSR1)
+        # sigqueue with the translator's tool value (host.cpp on_usr1): taken even when the guest handles SIGUSR1
+        try:
+            import ctypes
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.sigqueue(hp, signal.SIGUSR1, ctypes.c_void_p(0x78367331)) != 0:
+                raise OSError(ctypes.get_errno(), "sigqueue")
+        except (OSError, AttributeError):
+            os.kill(hp, signal.SIGUSR1)
     end = time.monotonic() + wait
     while time.monotonic() < end:
         if os.path.exists(p):
             return p
         time.sleep(0.1)
-    die("process %d did not start its debug stub (an app that handles SIGUSR1 itself cannot be attached at run "
-        "time: use --launch)" % gpid)
+    die("process %d did not start its debug stub (an older translator: use --launch)" % gpid)
 
 
 def macho_platform(path):

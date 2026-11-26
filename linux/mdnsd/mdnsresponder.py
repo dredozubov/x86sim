@@ -36,10 +36,25 @@ import time
 # comes from X86SIM_PYLIB (set by the AppImage's entry), appended after the system's own packages
 if os.environ.get("X86SIM_PYLIB"):
     sys.path.append(os.environ["X86SIM_PYLIB"])
-import dns.exception  # noqa: E402
-import dns.flags
-import dns.rdatatype
-import dns.resolver
+
+# RAM 14: dnspython (~11 MB per phone) is imported by the first QueryRecord for a name the device does not answer
+# itself; GetAddrInfo and Bonjour never need it.
+_dns = None
+_dns_lock = threading.Lock()
+
+
+def dnspy():
+    global _dns
+    with _dns_lock:
+        if _dns is None:
+            import dns.exception
+            import dns.flags  # noqa: F401
+            import dns.rdatatype
+            import dns.resolver
+            r = dns.resolver.Resolver()
+            r.lifetime = 10
+            _dns = (dns, r)
+    return _dns
 
 VERSION = 1
 IPC_FLAGS_NOREPLY, IPC_FLAGS_TRAILING_TLVS, IPC_FLAGS_NOERRSD = 1, 2, 4
@@ -320,8 +335,9 @@ class Connection(threading.Thread):
     def lookup(self, name, rrtype):
         """[(owner name, type, rdata wire bytes, ttl)] for name/rrtype from the host's resolver, the CNAME chain
         first; [] if the name has no such record; None if the name doesn't exist."""
+        dns, resolver = dnspy()
         try:
-            ans = self.server.resolver.resolve(name, rrtype, raise_on_no_answer=False, search=False)
+            ans = resolver.resolve(name, rrtype, raise_on_no_answer=False, search=False)
         except dns.resolver.NXDOMAIN:
             return None
         except (dns.resolver.NoNameservers, dns.exception.Timeout, dns.resolver.NoAnswer):
@@ -384,7 +400,7 @@ class Connection(threading.Thread):
             if local or not flags & (F_RETURN_INTERMEDIATES | F_TIMEOUT):
                 return
         try:
-            rdtype = dns.rdatatype.RdataType.make(rrtype)
+            rdtype = dnspy()[0].rdatatype.RdataType.make(rrtype)
         except ValueError:
             rdtype = rrtype
         recs = self.lookup(name, rdtype)
@@ -404,8 +420,6 @@ class Connection(threading.Thread):
 
 class Server:
     def __init__(self, path):
-        self.resolver = dns.resolver.Resolver()
-        self.resolver.lifetime = 10
         self.ifindex = default_ifindex()
         try:
             os.unlink(path)

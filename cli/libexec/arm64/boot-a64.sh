@@ -78,16 +78,21 @@ rm -rf "$D"/data/var/log/*.log
 # sharing off, and every non-KEEP boot's exit did it.
 # A phone still booting has no darlingserver yet: its boot-a64.sh (A64_MTLVK_SOCKET from the launcher) counts too, or
 # stopping the mtlvk's owner in that window took the booting phone's Metal away.
+# RAM 14: socket paths compare resolved (realpath): a phone booted through another root naming the same state dir (a
+# worktree's mirror of symlinks) had a textually different path, was not counted, and its mtlvk was stopped under it.
 a64_mtlvk_users() {
-	local want="X86SIM_MTLVK_SOCKET=$1" n=0 p
+	local want n=0 p v
+	want=$(realpath -m "$1" 2>/dev/null || echo "$1")
 	for p in /proc/[0-9]*; do
 		case "$(cat "$p/comm" 2>/dev/null)" in
 		darlingserver)
 			tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q "darlingserver $DPREFIX " && continue
-			tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "$want" && n=$((n+1)) ;;
+			v=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^X86SIM_MTLVK_SOCKET=//p' | head -1)
+			[ -n "$v" ] && [ "$(realpath -m "$v" 2>/dev/null || echo "$v")" = "$want" ] && n=$((n+1)) ;;
 		boot-a64.sh)
 			tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF -e "A64_STOP_ONLY=1" -e "A64_DPREFIX=$DPREFIX" && continue
-			tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "A64_MTLVK_SOCKET=$1" && n=$((n+1)) ;;
+			v=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^A64_MTLVK_SOCKET=//p' | head -1)
+			[ -n "$v" ] && [ "$(realpath -m "$v" 2>/dev/null || echo "$v")" = "$want" ] && n=$((n+1)) ;;
 		esac
 	done
 	echo $n
@@ -473,7 +478,11 @@ WATCH_UI_SLIM="com.apple.backboardd com.apple.Carousel com.apple.TextInput.kbd c
 # (func:SafariServices.reading-list-add-xros; Apple's visionOS simulator runs the daemon).
 # medialibraryd (on demand, as on iOS above): without it an app's MPMediaQuery opened the never-created music library
 # database and died (ML3DatabaseException "no such table: _MLDatabaseProperties"; func:MediaPlayer.library-authorized-queries).
-XR_UI="com.apple.installcoordinationd com.apple.backboardd com.apple.SurfBoard com.apple.vhmdd com.apple.wakeboardd
+# RAM 14: togetherd (visionOS only, on demand, as in Apple's simulator): SharePlay's daemon. Without it callservicesd's
+# CopresenceUtilities XPCSession to com.apple.togetherd was cancelled at once and re-activated, forever: ~100% CPU and
+# ~300 MB of file pages (a busy process never gets the idle file trim) on an idle Vision Pro. (FaceTimeSupportService,
+# which callservicesd also asks for, ran the same loop on togetherd and leaked ~40 MB/s.)
+XR_UI="com.apple.togetherd com.apple.installcoordinationd com.apple.backboardd com.apple.SurfBoard com.apple.vhmdd com.apple.wakeboardd
 	com.apple.homed com.apple.healthd com.apple.geod com.apple.navd
 	com.apple.RealityEnvironment
 	com.apple.PointerUI.pointeruid com.apple.sleepd com.apple.TextInput.kbd com.apple.FileCoordination
@@ -823,6 +832,38 @@ if [ -d "$DPREFIX/private/var/tmp/x86sim-a64" ]; then
 fi
 # the Darling pieces our build fixed (libsystem_kernel ...), also into a recreated prefix: cli/libexec/arm64/prefix-heal.sh
 [ "${A64_PREFIX_HEAL:-1}" != 0 ] && sh "$X/cli/libexec/arm64/prefix-heal.sh" "$DPREFIX"
+# RAM 14: the container's own macOS daemons (Darling's launchd jobs, x86_64) that the simulator never needs at load.
+# Mach-service daemons start on demand instead (a lookup from the guest still starts them); eventmonitor (launchd's
+# WatchPaths for the container's own jobs) and settingsd (the Linux desktop's appearance for macOS apps) not at all.
+# ~35 MB per phone. The copies in the prefix's upper layer are made from the installed ones at every boot.
+# A64_HOST_DAEMONS=all: every job as installed.
+if [ "${A64_HOST_DAEMONS:-}" != all ]; then
+	python3 -I - "${X86SIM_DARLING_ROOT:-$X/darling-prefix/libexec/darling}/System/Library/LaunchDaemons" "$DPREFIX/System/Library/LaunchDaemons" <<'PY' || true
+import os, plistlib, sys
+src, dst = sys.argv[1:3]
+ondemand = ["com.apple.usernoted", "com.apple.locationd", "com.apple.coreservices.launchservicesd", "com.apple.securityd",
+            "com.apple.aslmanager", "com.apple.diskarbitrationd"]
+off = ["org.darlinghq.eventmonitor", "com.darlinghq.settingsd"]
+os.makedirs(dst, exist_ok=True)
+for name in ondemand + off:
+    try:
+        with open(os.path.join(src, name + ".plist"), "rb") as f:
+            p = plistlib.load(f)
+    except OSError:
+        continue
+    if name in off:
+        p["Disabled"] = True
+    elif p.get("MachServices"):
+        p.pop("RunAtLoad", None)
+        p.pop("KeepAlive", None)
+    else:
+        continue
+    with open(os.path.join(dst, name + ".plist"), "wb") as f:
+        plistlib.dump(p, f)
+PY
+else
+	rm -f "$DPREFIX"/System/Library/LaunchDaemons/*.plist
+fi
 # Speed 27: frameworks a Mac host has in /System/Library/Frameworks that the simulator opens there by absolute path (not
 # under its runtime root): CoreSpotlight reads its localized strings
 # from [NSBundle bundleWithPath:@"/System/Library/Frameworks/CoreSpotlight.framework"]. Without it every CoreSpotlight string was nil (PHOTO_TOKEN) and
@@ -1056,6 +1097,16 @@ if [ -x "$AOTBIN" ]; then
 	 # AOT cache 1: upkeep first (x86sim-aot maintain, skipped while a build / install holds the cache): an image for
 	 # the current placement if it has none (assembled from the chunks that are up to date), then the cleanup of
 	 # images, chunks and per-process caches nothing uses any more (appcache.rs). No user command needed.
+	 # RAM 14: the programs running now (home reached, CPU quiet) are this runtime's residents: x86sim-aot ranks their
+	 # code higher for the image (hot.rs RESIDENT_WEIGHT). The union over boots, by executable name as the
+	 # translator names its training files.
+	 if [ -d "$JC/aot" ]; then
+		{ cat "$JC/aot/resident.txt" 2>/dev/null
+		  for p in /proc/[0-9]*; do
+			grep -qsazF "__mldr_sockpath=$DPREFIX/.darlingserver.sock" "$p/environ" || continue
+			a0=$(tr '\0' '\n' < "$p/cmdline" 2>/dev/null | head -1); [ -n "$a0" ] && echo "${a0##*/}"
+		  done; } | sort -u > "$JC/aot/resident.txt.$$" && mv -f "$JC/aot/resident.txt.$$" "$JC/aot/resident.txt"
+	 fi
 	 nice -n 19 ionice -c 3 "$AOTBIN" --jc "$JC" --device "$D" maintain > "$ST/aot-maintain.log" 2>&1
 	 nice -n 19 ionice -c 3 "$AOTBIN" --jc "$JC" --device "$D" status > "$ST/aot-status.txt" 2>&1
 	 if [ "${X86SIM_AOT_AUTOUPDATE:-0}" = 1 ] && grep -q "need rebuilding" "$ST/aot-status.txt"; then
