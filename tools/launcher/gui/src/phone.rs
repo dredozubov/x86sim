@@ -647,6 +647,13 @@ impl App {
                     sent_at = now;
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(Btn::ghost("").icon(icon::ARROW_U_UP_LEFT)).on_hover_text("Reset the view").clicked() {
+                    if let Some(d) = self.duo3d.get_mut(id) {
+                        d.reset_view();
+                    }
+                }
+            });
         });
         ui.data_mut(|d| d.insert_temp(key, (v, sent_at, sent)));
         if now - sent_at <= 1.0 {
