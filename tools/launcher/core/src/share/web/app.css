@@ -229,6 +229,10 @@ canvas.screen:focus-visible { box-shadow: 0 0 0 6px var(--bezel), 0 0 0 7px var(
 canvas.screen.watch { border-radius: 36px; }
 canvas.screen.tv { border-radius: 4px; }
 canvas.screen.readonly { cursor: default; }
+/* a two-screen phone drawn in 3D (duo3d.js) */
+.duo3dwrap { position: relative; }
+canvas.duo3d { display: block; touch-action: none; outline: none; cursor: pointer; }
+.duoshadow { position: absolute; pointer-events: none; border-radius: 50%; background: radial-gradient(closest-side, rgba(0,0,0,.42), rgba(0,0,0,.18) 55%, transparent); }
 .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; color: #fff;
   background: rgba(0, 0, 0, .55); border-radius: 18px; padding: 20px; pointer-events: none; }
 .dots { position: absolute; inset: 0; pointer-events: none; }

@@ -35,6 +35,7 @@ const APP_CSS: &str = include_str!("web/app.css");
 const AX_JS: &str = include_str!("web/axinspect.js");
 const AX_CSS: &str = include_str!("web/axinspect.css");
 const MIC_JS: &str = include_str!("web/mic.js");
+const DUO_JS: &str = include_str!("web/duo3d.js");
 // the device page's panels the launcher has (device.rs)
 const PANELS_JS: &str = include_str!("web/panels.js");
 // the device page's tool icons: the launcher's Phosphor font (MIT), cut to the glyphs the page uses
@@ -612,6 +613,7 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         "/netpanel.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], NET_JS.as_bytes()),
         "/axinspect.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], AX_CSS.as_bytes()),
         "/mic.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], MIC_JS.as_bytes()),
+        "/duo3d.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], DUO_JS.as_bytes()),
         "/favicon.ico" => return respond(&mut s, 204, "image/x-icon", &[], b""),
         _ => {}
     }
