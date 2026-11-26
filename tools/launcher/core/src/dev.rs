@@ -703,7 +703,8 @@ pub struct Project {
     pub name: String,
     /// xtool (Package.swift + xtool.yml: builds here), dotnet (a net*-ios .csproj: builds here), flutter, expo /
     /// reactnative (package.json: CocoaPods workspace built by the fork's xcbuild.py), rust (a cargo package: builds
-    /// here with rust/build.py), swiftpm (no xtool.yml), xcodeproj (an .xcodeproj / .xcworkspace: Swift Build)
+    /// here with rust/build.py), swiftpm (no xtool.yml), xcodeproj (an .xcodeproj / .xcworkspace: Swift Build),
+    /// capacitor (a shell app: its CLI writes the Xcode project, devweb.rs)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
@@ -723,6 +724,8 @@ pub fn project(dir: &Path) -> Result<Project> {
         "xtool"
     } else if dir.join("pubspec.yaml").exists() {
         "flutter"
+    } else if let Some(k) = crate::devweb::detect(&dir) {
+        k
     } else if let Some(k) = crate::devpods::js_kind(&dir) {
         k
     } else if let Some(r) = crate::devrust::detect(&dir) {
@@ -746,6 +749,8 @@ pub fn project(dir: &Path) -> Result<Project> {
         crate::devpods::last_app(&dir)
     } else if kind == "xcodeproj" {
         crate::devxcode::last_app(&dir)
+    } else if crate::devweb::is_shell(kind) {
+        crate::devweb::last_app(&dir, kind)
     } else {
         std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"))
     };
@@ -843,16 +848,17 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
         "rust" if o.platform != "ios" => bail!("{}: Rust apps build for iOS phones here (aarch64-apple-ios-sim); this phone runs {}", p.dir.display(), o.platform),
         "rust" => {}
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
-        "xcodeproj" => {
+        k if k == "xcodeproj" || crate::devweb::is_shell(k) => {
             let _lock = BuildLock::take(say)?;
             let log_path = work_dir().join(format!("build-{}.log", p.name));
             let mut log = std::fs::File::create(&log_path).ok();
-            let r = crate::devxcode::build(&p.dir, &o.platform, o.release, &mut |l: &str| {
+            let mut each = |l: &str| {
                 if let Some(f) = log.as_mut() {
                     let _ = writeln!(f, "{l}");
                 }
                 say(l);
-            });
+            };
+            let r = if k == "xcodeproj" { crate::devxcode::build(&p.dir, &o.platform, o.release, &mut each) } else { crate::devweb::build(&p.dir, k, &o.platform, o.release, &mut each) };
             let app = r.with_context(|| format!("log: {}", log_path.display()))?;
             remember(&p.dir, None);
             say(&format!("app: {}", app.display()));

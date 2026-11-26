@@ -19,6 +19,7 @@ pub mod devpods;
 pub mod devdotnet;
 pub mod devkmp;
 pub mod devrust;
+pub mod devweb;
 pub mod devxcode;
 pub mod discover;
 pub mod dyldcache;
