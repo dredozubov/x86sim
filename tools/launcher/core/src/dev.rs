@@ -721,10 +721,11 @@ pub fn project(dir: &Path) -> Result<Project> {
         "flutter"
     } else if let Some(k) = crate::devpods::js_kind(&dir) {
         k
+    } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj") || e.file_name().to_string_lossy().ends_with(".xcworkspace")) {
+        // before a bare Package.swift: libraries ship one next to the Xcode project of their demo app
+        "xcodeproj"
     } else if dir.join("Package.swift").exists() {
         "swiftpm"
-    } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj") || e.file_name().to_string_lossy().ends_with(".xcworkspace")) {
-        "xcodeproj"
     } else {
         bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml or .xcodeproj)", dir.display());
     };
