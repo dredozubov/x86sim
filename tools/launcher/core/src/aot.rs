@@ -404,7 +404,7 @@ pub fn plan(p: &Paths, cfg: &Config) -> Result<Plan> {
         training.push(p.jc.clone());
     }
     let shipped = shipped_training(p);
-    let hot = hot::load(&training, &uuid, &p.aot.join("hot.bin"), cfg.train_until, shipped.as_deref().filter(|s| s.exists()))?;
+    let mut hot = hot::load(&training, &uuid, &p.aot.join("hot.bin"), cfg.train_until, shipped.as_deref().filter(|s| s.exists()))?;
     // "hot" and "loaded" pick what phones have run; with no training yet (a fresh install) they would pick nothing, so
     // the first build translates everything
     let mut cfg = cfg.clone();
@@ -503,6 +503,9 @@ pub fn plan(p: &Paths, cfg: &Config) -> Result<Plan> {
             }
         })
         .collect();
+    // RAM 14: every hot block now sits in its chunk; the global copies (~13M blocks, ~250 MB) are not read again
+    hot.blocks = Vec::new();
+    hot.live = Vec::new();
     // scope
     let loaded: HashSet<String> = if cfg.scope == "loaded" { dependency_closure(&cache, &placed_deps) } else { HashSet::new() };
     if std::env::var_os("X86SIM_AOT_DEBUG").is_some() && cfg.scope == "hot" {
@@ -598,21 +601,26 @@ fn trim_to_slab(chunks: &mut Vec<PlanChunk>) -> bool {
     }
     // fixed part: app chunks (translated whole) and each library slot's alignment / margin over its blocks' bytes
     let mut fixed = 0u64;
-    let mut cand: Vec<(u32, usize, f64)> = vec![];
+    // RAM 14: (rank, chunk) in 8 bytes, the bytes per block looked up per chunk, sorted in place: the (rank, chunk,
+    // bytes) triples and the stable sort's buffer took ~470 MB at every boot's upkeep (13M hot blocks). Ties keep
+    // chunk order, as the stable sort did.
+    let mut cand: Vec<(u32, u32)> = vec![];
+    let mut per = vec![0f64; chunks.len()];
     for (i, c) in chunks.iter().enumerate() {
         if whole_static(c) || c.hot.is_empty() {
             fixed += c.want;
             continue;
         }
-        let per = c.est_hot as f64 / c.hot.len() as f64;
+        per[i] = c.est_hot as f64 / c.hot.len() as f64 * 9.0 / 8.0;
         fixed += c.want - c.est_hot - c.est_hot / 8;
-        cand.extend(c.hot.iter().map(|h| (h.1, i, per * 9.0 / 8.0)));
+        cand.extend(c.hot.iter().map(|h| (h.1, i as u32)));
     }
-    cand.sort_by_key(|c| std::cmp::Reverse(c.0));
+    cand.sort_unstable_by_key(|&(r, i)| (std::cmp::Reverse(r), i));
     let mut left = room.saturating_sub(fixed) as f64;
     let mut keep = vec![0usize; chunks.len()];
     let mut cut_rank = 0;
-    for &(r, i, b) in &cand {
+    for &(r, i) in &cand {
+        let (i, b) = (i as usize, per[i as usize]);
         if left < b {
             cut_rank = r;
             break;
@@ -628,6 +636,7 @@ fn trim_to_slab(chunks: &mut Vec<PlanChunk>) -> bool {
         let n = c.hot.len() as u64;
         // c.hot is hottest first (Hot::in_ranges)
         c.hot.truncate(keep[i]);
+        c.hot.shrink_to_fit();
         c.est_hot = c.est_hot * keep[i] as u64 / n;
         c.est_full = c.est_full.max(c.est_hot);
     }
@@ -745,7 +754,7 @@ impl Plan {
             missing: 0,
             dropped: 0,
             training_files: self.hot.files,
-            hot_blocks: self.hot.blocks.len(),
+            hot_blocks: self.hot.total,
             codegen: key::codegen_info().0,
             codegen_source: key::codegen_info().1,
             chunks: vec![],

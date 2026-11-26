@@ -11,6 +11,8 @@ pub struct Hot {
     /// (descriptor, rank) sorted by descriptor; rank: see `rank` (higher = more worth a place in the shared image)
     pub blocks: Vec<(u64, u32)>,
     pub files: usize,
+    /// blocks.len() at load (plan() frees `blocks` / `live` once the chunks hold their parts)
+    pub total: usize,
     /// Speed 31: descriptors from `.live` files (sorted): blocks processes on the image had to translate themselves.
     pub live: Vec<u64>,
     /// Speed 33: distinct sampled PCs (.cnt files) that weighed into the counts
@@ -91,17 +93,26 @@ fn signature(files: &[PathBuf]) -> u64 {
 
 fn live_descs(dirs: &[PathBuf], uuid: &str) -> Vec<u64> {
     let mut v = Vec::new();
+    let mut kept = 0usize;
     for d in dirs {
         let Ok(rd) = std::fs::read_dir(d) else { continue };
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             if n.starts_with(uuid) && n.ends_with(".live") {
                 v.extend(read_descs(&e.path()).unwrap_or_default());
+                // RAM 14: every placement key leaves its own .live per program (716 files, 1.1 GB on an iPhone
+                // runtime): fold duplicates as they come instead of holding every file's descriptors at once
+                if v.len() > (1 << 22) && v.len() > 2 * kept {
+                    v.sort_unstable();
+                    v.dedup();
+                    kept = v.len();
+                }
             }
         }
     }
     v.sort_unstable();
     v.dedup();
+    v.shrink_to_fit();
     v
 }
 
@@ -286,20 +297,26 @@ pub fn load(dirs: &[PathBuf], uuid: &str, cache_file: &Path, until: Option<u64>,
     let mut sig_files = all.clone();
     sig_files.extend(shipped.map(Path::to_path_buf));
     let sig = signature(&sig_files) ^ 0x5232_4a31_0000_0001;
-    let cached = std::fs::read(cache_file).ok().and_then(|b| {
-        if b.len() < 16 || u64::from_le_bytes(b[..8].try_into().unwrap()) != sig {
+    // RAM 14: streamed (the whole 160 MB file and the vector built from it were both resident at once)
+    let cached = (|| -> Option<Vec<(u64, u32)>> {
+        let mut f = std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(cache_file).ok()?);
+        let mut h = [0u8; 16];
+        f.read_exact(&mut h).ok()?;
+        if u64::from_le_bytes(h[..8].try_into().unwrap()) != sig {
             return None;
         }
-        let n = u64::from_le_bytes(b[8..16].try_into().unwrap()) as usize;
-        (b.len() == 16 + n * 12).then(|| {
-            (0..n)
-                .map(|i| {
-                    let o = 16 + i * 12;
-                    (u64::from_le_bytes(b[o..o + 8].try_into().unwrap()), u32::from_le_bytes(b[o + 8..o + 12].try_into().unwrap()))
-                })
-                .collect::<Vec<(u64, u32)>>()
-        })
-    });
+        let n = u64::from_le_bytes(h[8..16].try_into().unwrap()) as usize;
+        if std::fs::metadata(cache_file).ok()?.len() != 16 + n as u64 * 12 {
+            return None;
+        }
+        let mut v = Vec::with_capacity(n);
+        let mut r = [0u8; 12];
+        for _ in 0..n {
+            f.read_exact(&mut r).ok()?;
+            v.push((u64::from_le_bytes(r[..8].try_into().unwrap()), u32::from_le_bytes(r[8..].try_into().unwrap())));
+        }
+        Some(v)
+    })();
     let live = live_descs(dirs, uuid);
     let cnt = sample_counts(dirs, uuid);
     let blocks = match cached {
@@ -328,14 +345,14 @@ pub fn load(dirs: &[PathBuf], uuid: &str, cache_file: &Path, until: Option<u64>,
             blocks
         }
     };
-    let blocks = blocks
+    let blocks: Vec<(u64, u32)> = blocks
         .into_iter()
         .map(|(d, n)| {
             let s = cnt.get(&(d & PC_MASK)).map(|&h| h.min((SAMPLE_MAX / SAMPLE_W) as u64) as u32 * SAMPLE_W).unwrap_or(0);
             (d, rank(n, live.binary_search(&d).is_ok(), s))
         })
         .collect();
-    Ok(Hot { blocks, files: bins.len(), sampled: cnt.len(), live })
+    Ok(Hot { total: blocks.len(), blocks, files: bins.len(), sampled: cnt.len(), live })
 }
 
 impl Hot {
