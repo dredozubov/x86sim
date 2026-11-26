@@ -6,6 +6,7 @@
 // updatable / preprocessing compositions), temporal sequences, random augmentations, metrics and error values.
 import Foundation
 import CoreGraphics
+import ImageIO
 #if canImport(CreateMLComponents)
 import CreateMLComponents
 import CoreML
@@ -29,6 +30,51 @@ import MultipeerConnectivity
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
 #endif
+#if canImport(Vision)
+import Vision
+#endif
+#if canImport(USDKit) && !os(watchOS)
+import USDKit
+#endif
+#if canImport(ModelIO)
+import ModelIO
+#endif
+#if canImport(MetalKit)
+import MetalKit
+#endif
+#if canImport(GameplayKit)
+import GameplayKit
+#endif
+#if canImport(GLKit)
+import GLKit
+import OpenGLES
+#endif
+#if canImport(GameController)
+import GameController
+#endif
+#if canImport(_RealityKit_SwiftUI) && !os(watchOS)
+import SwiftUI
+import _RealityKit_SwiftUI
+#endif
+#if canImport(Combine)
+import Combine
+#endif
+#if canImport(TabletopKit) && os(visionOS)
+import TabletopKit
+import Spatial
+#endif
+#if canImport(ComputeGraph) && !os(watchOS)
+import ComputeGraph
+#endif
+#if canImport(TouchController) && os(iOS)
+import TouchController
+#endif
+#if canImport(ARKit) && os(iOS)
+import ARKit
+import SceneKit
+import SpriteKit
+import CoreLocation
+#endif
 
 #if canImport(RealityKit) && !os(watchOS)
 struct P28NoopSystem: System { init(scene: RealityKit.Scene) {}; func update(context: SceneUpdateContext) {} }
@@ -44,8 +90,8 @@ struct P28RaiseHandler: ActionHandlerProtocol {
     mutating func actionStarted(event: ActionEvent<P28Raise>) { Self.seen.add("started") }
     mutating func actionUpdated(event: ActionEvent<P28Raise>) {
         Self.seen.add("updated")
-        guard let st = event.animationState as? AnimationState<Transform>, var t = st.defaultSource else { return }
-        t.translation.y += event.action.dy * Float(st.normalizedTime)
+        guard let st = event.animationState as? RealityFoundation.AnimationState<Transform>, var t = st.defaultSource else { return }
+        t.translation.y += event.action.dy * Float(p28Progress(st))
         _ = st.storeAnimatedValue(t)
     }
     mutating func actionEnded(event: ActionEvent<P28Raise>) { Self.seen.add("ended") }
@@ -62,7 +108,7 @@ struct P28Lift: ForceEffectProtocol {
     var parameterTypes: PhysicsBodyParameterTypes { [.position, .mass] }
     var forceMode: ForceMode { .force }
     func update(parameters: inout ForceEffectParameters) {
-        Self.calls.add("n\\(parameters.physicsBodyCount) m\\(parameters.masses.map { Array($0).count } ?? -1)")
+        Self.calls.add("n\(parameters.physicsBodyCount) m\(parameters.masses.map { Array($0).count } ?? -1)")
         for i in 0..<parameters.physicsBodyCount { parameters.setForce([0, 40, 0], index: i) }
     }
 }
@@ -212,6 +258,7 @@ extension Registry {
         var c: [Check] = []
         c += p28mlCreateML
         c += p28mlReality
+        c += p28mlMore
         return c
     }
 
@@ -1335,6 +1382,945 @@ extension Registry {
                 let mcp: MaterialColorParameter = .color(.red)
                 try expect(mcp == .color(.red), "material colour parameter")
                 return got.joined(separator: ", ")
+            }
+        })
+        #endif
+        return c
+    }
+}
+
+// MARK: - CoreML / Vision (wave 2 resume)
+#if canImport(CoreML)
+/// the stateful ML program of P14_Models (y = acc + x, acc := y), compiled by coremlcompiler: a program with functions,
+/// blocks and operations for the model-structure and compute-plan classes
+private let p28AccumulatorModel: [(String, String)] = [
+    ("metadata.json", "WwogIHsKICAgICJtZXRhZGF0YU91dHB1dFZlcnNpb24iIDogIjMuMCIsCiAgICAib3V0cHV0U2NoZW1hIiA6IFsKICAgICAgewogICAgICAgICJoYXNTaGFwZUZsZXhpYmlsaXR5IiA6ICIwIiwKICAgICAgICAiaXNPcHRpb25hbCIgOiAiMCIsCiAgICAgICAgImRhdGFUeXBlIiA6ICJGbG9hdDE2IiwKICAgICAgICAiZm9ybWF0dGVkVHlwZSIgOiAiTXVsdGlBcnJheSAoRmxvYXQxNiAxKSIsCiAgICAgICAgInNob3J0RGVzY3JpcHRpb24iIDogIiIsCiAgICAgICAgInNoYXBlIiA6ICJbMV0iLAogICAgICAgICJuYW1lIiA6ICJ5IiwKICAgICAgICAidHlwZSIgOiAiTXVsdGlBcnJheSIKICAgICAgfQogICAgXSwKICAgICJtb2RlbFBhcmFtZXRlcnMiIDogWwoKICAgIF0sCiAgICAic3BlY2lmaWNhdGlvblZlcnNpb24iIDogOSwKICAgICJtbFByb2dyYW1PcGVyYXRpb25UeXBlSGlzdG9ncmFtIiA6IHsKICAgICAgIklvczE4LnJlYWRTdGF0ZSIgOiAyLAogICAgICAiSW9zMTguYWRkIiA6IDEsCiAgICAgICJJZGVudGl0eSIgOiAxLAogICAgICAiSW9zMTgud3JpdGVTdGF0ZSIgOiAxCiAgICB9LAogICAgImNvbXB1dGVQcmVjaXNpb24iIDogIkZsb2F0MTYiLAogICAgImlzVXBkYXRhYmxlIiA6ICIwIiwKICAgICJzdGF0ZVNjaGVtYSIgOiBbCiAgICAgIHsKICAgICAgICAiZGF0YVR5cGUiIDogIkZsb2F0MTYiLAogICAgICAgICJpc09wdGlvbmFsIiA6ICIwIiwKICAgICAgICAiZm9ybWF0dGVkVHlwZSIgOiAiU3RhdGUgKEZsb2F0MTYgMSkiLAogICAgICAgICJzaG9ydERlc2NyaXB0aW9uIiA6ICIiLAogICAgICAgICJzaGFwZSIgOiAiWzFdIiwKICAgICAgICAibmFtZSIgOiAiYWNjIiwKICAgICAgICAidHlwZSIgOiAiU3RhdGUiCiAgICAgIH0KICAgIF0sCiAgICAiYXZhaWxhYmlsaXR5IiA6IHsKICAgICAgIm1hY09TIiA6ICIxNS4wIiwKICAgICAgInR2T1MiIDogIjE4LjAiLAogICAgICAidmlzaW9uT1MiIDogIjIuMCIsCiAgICAgICJ3YXRjaE9TIiA6ICIxMS4wIiwKICAgICAgImlPUyIgOiAiMTguMCIsCiAgICAgICJtYWNDYXRhbHlzdCIgOiAiMTguMCIKICAgIH0sCiAgICAibW9kZWxUeXBlIiA6IHsKICAgICAgIm5hbWUiIDogIk1MTW9kZWxUeXBlX21sUHJvZ3JhbSIKICAgIH0sCiAgICAidXNlckRlZmluZWRNZXRhZGF0YSIgOiB7CiAgICAgICJjb20uZ2l0aHViLmFwcGxlLmNvcmVtbHRvb2xzLnZlcnNpb24iIDogIjkuMCIsCiAgICAgICJjb20uZ2l0aHViLmFwcGxlLmNvcmVtbHRvb2xzLmNvbnZlcnNpb25fZGF0ZSIgOiAiMjAyNi0xMS0xNyIsCiAgICAgICJjb20uZ2l0aHViLmFwcGxlLmNvcmVtbHRvb2xzLnNvdXJjZSIgOiAibWlsaW50ZXJuYWwiCiAgICB9LAogICAgImlucHV0U2NoZW1hIiA6IFsKICAgICAgewogICAgICAgICJoYXNTaGFwZUZsZXhpYmlsaXR5IiA6ICIwIiwKICAgICAgICAiaXNPcHRpb25hbCIgOiAiMCIsCiAgICAgICAgImRhdGFUeXBlIiA6ICJGbG9hdDE2IiwKICAgICAgICAiZm9ybWF0dGVkVHlwZSIgOiAiTXVsdGlBcnJheSAoRmxvYXQxNiAxKSIsCiAgICAgICAgInNob3J0RGVzY3JpcHRpb24iIDogIiIsCiAgICAgICAgInNoYXBlIiA6ICJbMV0iLAogICAgICAgICJuYW1lIiA6ICJ4IiwKICAgICAgICAidHlwZSIgOiAiTXVsdGlBcnJheSIKICAgICAgfQogICAgXSwKICAgICJnZW5lcmF0ZWRDbGFzc05hbWUiIDogImFjYyIsCiAgICAibWV0aG9kIiA6ICJwcmVkaWN0IgogIH0KXQ=="),
+    ("model.mil", "cHJvZ3JhbSgxLjMpCltidWlsZEluZm8gPSBkaWN0PHN0cmluZywgc3RyaW5nPih7eyJjb3JlbWxjLWNvbXBvbmVudC1NSUwiLCAiMzYwNS4xLjEifSwgeyJjb3JlbWxjLXZlcnNpb24iLCAiMzYwMC4yNS4xIn0sIHsiY29yZW1sdG9vbHMtY29tcG9uZW50LW1pbGludGVybmFsIiwgIiJ9LCB7ImNvcmVtbHRvb2xzLXZlcnNpb24iLCAiOS4wIn19KV0KewogICAgZnVuYyBtYWluPGlvczE4PihzdGF0ZTx0ZW5zb3I8ZnAxNiwgWzFdPj4gYWNjLCB0ZW5zb3I8ZnAxNiwgWzFdPiB4KSB7CiAgICAgICAgICAgIHRlbnNvcjxmcDE2LCBbMV0+IHJlYWRfc3RhdGVfMCA9IHJlYWRfc3RhdGUoaW5wdXQgPSBhY2MpW25hbWUgPSBzdHJpbmcoInJlYWRfc3RhdGVfMCIpXTsKICAgICAgICAgICAgdGVuc29yPGZwMTYsIFsxXT4gYWRkXzAgPSBhZGQoeCA9IHJlYWRfc3RhdGVfMCwgeSA9IHgpW25hbWUgPSBzdHJpbmcoImFkZF8wIildOwogICAgICAgICAgICB3cml0ZV9zdGF0ZShkYXRhID0gYWRkXzAsIGlucHV0ID0gYWNjKVtuYW1lID0gc3RyaW5nKCJjb3JlbWxfdXBkYXRlX3N0YXRlXzFfd3JpdGVfc3RhdGUiKV07CiAgICAgICAgICAgIHRlbnNvcjxmcDE2LCBbMV0+IGNvcmVtbF91cGRhdGVfc3RhdGVfMSA9IHJlYWRfc3RhdGUoaW5wdXQgPSBhY2MpW25hbWUgPSBzdHJpbmcoImNvcmVtbF91cGRhdGVfc3RhdGVfMSIpXTsKICAgICAgICAgICAgdGVuc29yPGZwMTYsIFsxXT4geSA9IGlkZW50aXR5KHggPSBjb3JlbWxfdXBkYXRlX3N0YXRlXzEpW25hbWUgPSBzdHJpbmcoInkiKV07CiAgICAgICAgfSAtPiAoeSk7Cn0="),
+    ("coremldata.bin", "9gEAAAkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcAAAAAAAAAZ2VuZXJpYwkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2AAAAAAAAAAKDgoBeBoJKgcKAQEQkIAEUg4KAXkaCSoHCgEBEJCABGoSCgNhY2MaC0IJCgcKAQEQkIAEogagAaIGKwokY29tLmdpdGh1Yi5hcHBsZS5jb3JlbWx0b29scy52ZXJzaW9uEgM5LjCiBjoKLGNvbS5naXRodWIuYXBwbGUuY29yZW1sdG9vbHMuY29udmVyc2lvbl9kYXRlEgoyMDI2LTExLTE3ogYyCiNjb20uZ2l0aHViLmFwcGxlLmNvcmVtbHRvb2xzLnNvdXJjZRILbWlsaW50ZXJuYWz2AQAAAAAAAAAAAAAAAAAA"),
+    ("analytics/coremldata.bin", "GQAAAAAAAABOZXVyYWxOZXR3b3JrTW9kZWxEZXRhaWxzAgAAAAAAAAATAAAAAAAAAGNvbnRhaW5zQ3VzdG9tTGF5ZXIBAAAAAAAAADAOAAAAAAAAAG1vZGVsRGltZW5zaW9uAQAAAAAAAAAwFAAAAAAAAABTcGVjaWZpY2F0aW9uRGV0YWlscwIAAAAAAAAACQAAAAAAAABtb2RlbEhhc2gsAAAAAAAAAFZjNVJ4MFp5RVFLZkFJTWprR1ZQSU9qeXRWMUJIdHc2Y0h4VFVDazcxVUk9CQAAAAAAAABtb2RlbE5hbWUFAAAAAAAAAG1vZGVs")
+]
+
+/// an ObjC class method `+<sel>:(args...) completionHandler:^(id, NSError *)` called through the runtime (the classes
+/// Swift's CoreML overlay shadows with its own enum / structs, and APIs Swift marks unavailable)
+func p28ObjCLoad(_ clsName: String, _ selName: String, _ args: [AnyObject]) async throws -> NSObject {
+    guard let cls = NSClassFromString(clsName), let m = class_getClassMethod(cls, NSSelectorFromString(selName)) else { throw Fail("no +\(selName) on \(clsName)") }
+    let sel = NSSelectorFromString(selName), imp = method_getImplementation(m)
+    return try await withCheckedThrowingContinuation { (k: CheckedContinuation<NSObject, Error>) in
+        let once = P28Flag()
+        let block: @convention(block) (NSObject?, NSError?) -> Void = { o, e in
+            guard once.claim() else { return }
+            if let o { k.resume(returning: o) } else { k.resume(throwing: e ?? Fail("nil and no error")) }
+        }
+        let b = unsafeBitCast(block, to: AnyObject.self)
+        if args.count == 1 {
+            typealias F = @convention(c) (AnyClass, Selector, AnyObject, AnyObject) -> Unmanaged<AnyObject>?
+            _ = unsafeBitCast(imp, to: F.self)(cls, sel, args[0], b)
+        } else {
+            typealias F = @convention(c) (AnyClass, Selector, AnyObject, AnyObject, AnyObject) -> Unmanaged<AnyObject>?
+            _ = unsafeBitCast(imp, to: F.self)(cls, sel, args[0], args[1], b)
+        }
+    }
+}
+final class P28Flag: @unchecked Sendable {
+    private let lock = NSLock(); private var done = false
+    func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+}
+func p28Doubles(_ xs: [Double]) throws -> MLMultiArray {
+    let a = try MLMultiArray(shape: [NSNumber(value: xs.count)], dataType: .double); for (i, x) in xs.enumerated() { a[i] = NSNumber(value: x) }; return a
+}
+func p28ClassName(_ o: Any?) -> String { guard let o = o as AnyObject? else { return "nil" }; return NSStringFromClass(type(of: o)) }
+/// Model { pipeline { models [the linear GLM of ML.swift], names ["glm"] } }, same description (x double[2] -> y double)
+func p28PipelineSpec() -> Data {
+    var arr = PB(); arr.int64s(1, [2]); arr.int(2, 65600)
+    var tIn = PB(); tIn.msg(5, arr)
+    var tOut = PB(); tOut.msg(2, PB())
+    var fIn = PB(); fIn.str(1, "x"); fIn.msg(3, tIn)
+    var fOut = PB(); fOut.str(1, "y"); fOut.msg(3, tOut)
+    var desc = PB(); desc.msg(1, fIn); desc.msg(10, fOut); desc.str(11, "y")
+    var sub = PB(); sub.d = linearModelSpec()
+    var pipe = PB(); pipe.msg(1, sub); pipe.str(2, "glm")
+    var m = PB(); m.int(1, 4); m.msg(2, desc); m.msg(202, pipe)
+    return m.d
+}
+/// Model { neuralNetwork { relu "act": img (2x2 grayscale image, enumerated sizes 2x2 / 4x4) -> out float32[1, 2, 2] } }
+func p28ImageNNSpec() -> Data {
+    var s1 = PB(); s1.int(1, 2); s1.int(2, 2)
+    var s2 = PB(); s2.int(1, 4); s2.int(2, 4)
+    var sizes = PB(); sizes.msg(1, s1); sizes.msg(1, s2)
+    var img = PB(); img.int(1, 2); img.int(2, 2); img.int(3, 10); img.msg(21, sizes)
+    var tIn = PB(); tIn.msg(4, img)
+    var aout = PB(); aout.int64s(1, [1, 2, 2]); aout.int(2, 65568)
+    var tOut = PB(); tOut.msg(5, aout)
+    var fIn = PB(); fIn.str(1, "img"); fIn.msg(3, tIn)
+    var fOut = PB(); fOut.str(1, "out"); fOut.msg(3, tOut)
+    var desc = PB(); desc.msg(1, fIn); desc.msg(10, fOut)
+    var act = PB(); act.msg(10, PB())
+    var layer = PB(); layer.str(1, "act"); layer.str(2, "img"); layer.str(3, "out"); layer.msg(130, act)
+    var net = PB(); net.msg(1, layer)
+    var m = PB(); m.int(1, 4); m.msg(2, desc); m.msg(500, net)
+    return m.d
+}
+/// Model { glmClassifier { weights [[1, -1]], offset [0], logit, labels [a, b] } }: x double[2] -> label string, probs {string: double}
+func p28ClassifierSpec() -> Data {
+    var arr = PB(); arr.int64s(1, [2]); arr.int(2, 65600)
+    var tIn = PB(); tIn.msg(5, arr)
+    var tLabel = PB(); tLabel.msg(3, PB())
+    var dict = PB(); dict.msg(2, PB())
+    var tProbs = PB(); tProbs.msg(6, dict)
+    var fIn = PB(); fIn.str(1, "x"); fIn.msg(3, tIn)
+    var fL = PB(); fL.str(1, "label"); fL.msg(3, tLabel)
+    var fP = PB(); fP.str(1, "probs"); fP.msg(3, tProbs)
+    var desc = PB(); desc.msg(1, fIn); desc.msg(10, fL); desc.msg(10, fP); desc.str(11, "label"); desc.str(12, "probs")
+    var w = PB(); w.doubles(1, [1, -1])
+    var labels = PB(); labels.str(1, "a"); labels.str(1, "b")
+    var glm = PB(); glm.msg(1, w); glm.doubles(2, [0]); glm.msg(100, labels)
+    var m = PB(); m.int(1, 1); m.msg(2, desc); m.msg(400, glm)
+    return m.d
+}
+#endif
+
+#if canImport(Vision) && canImport(CoreML) && canImport(CoreImage) && !os(watchOS)
+// generic helpers an app writes against Vision's observation protocols
+func p28Boxes<O: BoundingBoxProviding>(_ os: [O]) -> [NormalizedRect] { os.map(\.boundingBox) }
+func p28Corners<Q: QuadrilateralProviding>(_ q: Q) -> [NormalizedPoint] { [q.topLeft, q.topRight, q.bottomRight, q.bottomLeft] }
+func p28Region<R: BoundingRegionProviding>(_ r: R) -> NormalizedRegion { r.boundingRegion }
+func p28JointCount<P: PoseProviding>(_ p: P) -> Int { p.allJoints(in: nil).count + p.availableJointNames.count * 0 }
+func p28RoundTrips<O: VisionObservation>(_ o: O) throws -> Bool { try JSONDecoder().decode(O.self, from: JSONEncoder().encode(o)) == o }
+func p28Latency<R: StatefulRequest>(_ r: R) -> String { "\(r.minimumLatencyFrameCount)/\(r.frameAnalysisSpacing.seconds)" }
+func p28IsTargeted<R: VisionRequest>(_ r: R) -> Bool { r is any TargetedRequest }
+func p28Status<R: DownloadableAssetsRequest>(_ r: R) async -> DownloadableAssetsRequestStatus { await r.assetStatus }
+/// the image NN of p28ImageNNSpec, compiled and loaded
+func p28ImageModel() async throws -> MLModel {
+    let d = try p7Dir("sdkcov-p28-vision"); let src = d.appendingPathComponent("img.mlmodel"); try p28ImageNNSpec().write(to: src)
+    return try MLModel(contentsOf: try await MLModel.compileModel(at: src))
+}
+#endif
+
+#if canImport(USDKit) && !os(watchOS)
+/// an app's generic wrapper over USDKit's value protocol
+func p28USDValue<T: USDValueProtocol>(_ x: T) -> USDValue { USDValue(x) }
+#endif
+#if canImport(GameController)
+func p28NameRaw<N: GCPhysicalInputElementTypedName>(_ n: N) -> String { n.rawValue }
+func p28Count<T>(_ c: GCPhysicalInputElementCollection<T>) -> Int { c.count }
+#endif
+
+#if canImport(RealityKit) && !os(watchOS)
+/// an app's own CPU mesh deformer (lowers every vertex by 1 cm), conforming to MeshDeformer
+struct P28Lower: MeshDeformer {
+    static var type: String { "p28lower" }
+    static var mode: MeshDeformerExecutionMode { .cpu }
+    var options: MeshDeformerOptions { MeshDeformerOptions(cadence: .everyFrame, inputSpec: [.positions], outputSpec: .positions) }
+    func deform(parameter: MeshDeformParameterGPU, encoder: any MTLComputeCommandEncoder) {}
+    func deform(parameter: MeshDeformParameterCPU) { P28Lower.calls.add("\(p28VertexCount(parameter))") }
+    func isDeformerEqual(other: any MeshDeformer) -> Bool { other is P28Lower }
+    static let calls = P28Tally()
+}
+func p28VertexCount<I, O>(_ p: MeshDeformParameter<I, O>) -> Int { p.inputBuffers.count }
+/// generic over the animation state protocol, as an app's action handler is
+func p28Progress<S: AnimationStateProtocol>(_ s: S) -> Double { s.normalizedTime }
+/// a force effect whose per-step work is a registered handler of ForceEffectEvent
+struct P28Drag: ForceEffectProtocol {
+    var parameterTypes: PhysicsBodyParameterTypes { [.position, .velocity] }
+    var forceMode: ForceMode { .force }
+    func update(parameters: inout ForceEffectParameters) {}
+    static let seen = P28Tally()
+}
+#endif
+
+#if canImport(TabletopKit) && os(visionOS)
+struct P28Board: Tabletop { let id = EquipmentIdentifier(0); var shape: TabletopShape { .rectangular(width: 1, height: 1, thickness: 0.02) } }
+/// a pile that stacks its children (a layout of its own)
+struct P28Pile: Equipment {
+    let id = EquipmentIdentifier(10)
+    var initialState: BaseEquipmentState { BaseEquipmentState(parentID: EquipmentIdentifier(0), boundingBox: Rect3D(center: .zero, size: Size3D(width: 0.1, height: 0.01, depth: 0.1))) }
+    func layoutChildren(for snapshot: TableSnapshot, visualState: TableVisualState) -> any EquipmentLayout {
+        let ids = snapshot.equipmentIDs(childrenOf: id)
+        let poses = ids.enumerated().map { EquipmentPose2D(id: $0.element, pose: .init(position: .init(x: 0, z: Double($0.offset) * 0.01), rotation: .zero)) }
+        let layout: DefaultEquipmentLayout = .planarStacked(layout: poses)
+        return layout
+    }
+}
+struct P28Card: Equipment { let id: EquipmentIdentifier; var initialState: CardState { .faceDown(parentID: EquipmentIdentifier(10), boundingBox: Rect3D(center: .zero, size: Size3D(width: 0.06, height: 0.001, depth: 0.09))) } }
+struct P28Marker: Equipment { let id = EquipmentIdentifier(30); var initialState: RawValueState { RawValueState(rawValue: 7, parentID: EquipmentIdentifier(0), seatControl: .restricted([TableSeatIdentifier(0)]), boundingBox: Rect3D(center: .zero, size: Size3D(width: 0.02, height: 0.02, depth: 0.02))) } }
+/// a token with a state of the app's own
+struct P28TokenState: CustomEquipmentState, BitwiseCopyable { var base: BaseEquipmentState; var power: Int }
+struct P28Token: Equipment { let id = EquipmentIdentifier(20); var initialState: P28TokenState { P28TokenState(base: BaseEquipmentState(parentID: EquipmentIdentifier(0)), power: 1) } }
+struct P28SeatA: TableSeat { let id: TableSeatIdentifier; var initialState: TableSeatState { TableSeatState(pose: .identity) } }
+/// a custom action: power up the token and score a point
+struct P28PowerUp: CustomAction, BitwiseCopyable {
+    var by: Int
+    static let seen = P28Tally()
+    func validate(snapshot: TableSnapshot) -> Bool { by > 0 }
+    func apply(table: inout TableState) {
+        table.equipment.state[of: P28Token.self, id: EquipmentIdentifier(20)]?.power += by
+        let any: (any MutableEquipmentState)? = table.equipment.state[id: EquipmentIdentifier(20)]
+        if any != nil { table.counters[ScoreCounter.Identifier(1)] = (table.counters[ScoreCounter.Identifier(1)] ?? 0) + Int64(by) }
+        p28ReadCounters(table.counters)
+        p28ReadEquipment(table.equipment)
+    }
+}
+func p28ReadCounters(_ c: borrowing CounterCollection) { P28PowerUp.seen.add("counters \(c.count)") }
+func p28ReadEquipment(_ e: borrowing EquipmentCollection) { p28ReadStates(e.state); P28PowerUp.seen.add("equipment \(e.count)") }
+func p28ReadStates(_ s: borrowing EquipmentStateCollection) { P28PowerUp.seen.add("token parent \(s[id: EquipmentIdentifier(20)].map { p28Parent($0) } ?? -1)") }
+/// generic over the state protocols, as an app's rules are
+func p28Parent<S: EquipmentState>(_ s: S) -> Int { s.parentID.rawValue }
+func p28SeatPlayer<S: SeatState>(_ s: S) -> Bool { s.playerID != nil }
+struct P28Peer: Hashable, Identifiable { let id: UUID }
+final class P28Coordinator: TabletopNetworkSessionCoordinator {
+    typealias Peer = P28Peer
+    let log = P28Tally()
+    var session: TabletopNetworkSession<P28Coordinator>?
+    func coordinateWithSession(_ session: TabletopNetworkSession<P28Coordinator>) { self.session = session; log.add("coordinate") }
+    func sendMessage(_ message: Data, to: Set<P28Peer>, completion: @escaping (TabletopSendMessageResult) -> Void) { log.add("send"); completion(TabletopSendMessageResult.success) }
+    func sendMessageUnreliably(_ message: Data, to: Set<P28Peer>, completion: @escaping (TabletopSendMessageResult) -> Void) { log.add("unreliable"); completion(.failure) }
+    func peerJoinedGame(_ peerID: UUID) { log.add("joined") }
+    func peerLeftGame(_ peerID: UUID) { log.add("left") }
+}
+#endif
+
+extension Registry {
+    static var p28mlMore: [Check] {
+        var c: [Check] = []
+        #if canImport(CoreML)
+        c.append(check("CoreML", "p28-model-structure-compute-plan", timeout: 90) {
+            var got: [String] = []
+            let cfg = MLModelConfiguration(); cfg.computeUnits = .cpuOnly
+            // the ML program: structure walked through the ObjC classes (Swift's overlay wraps them in MLModelStructure.Program)
+            let acc = try p14WriteModel("p28acc", p28AccumulatorModel)
+            let st = try await p28ObjCLoad("MLModelStructure", "loadContentsOfURL:completionHandler:", [acc as NSURL])
+            guard let program = st.value(forKey: "program") as? NSObject, let fns = program.value(forKey: "functions") as? [String: NSObject],
+                  let main = fns["main"], let block = main.value(forKey: "block") as? NSObject, let ops = block.value(forKey: "operations") as? [NSObject] else {
+                throw Fail("structure \(p28ClassName(st)) program \(p28ClassName(st.value(forKey: "program")))")
+            }
+            var seen = Set([p28ClassName(st), p28ClassName(program), p28ClassName(main), p28ClassName(block)])
+            let fnInputs = (main.value(forKey: "inputs") as? [NSObject]) ?? []
+            for i in fnInputs { seen.insert(p28ClassName(i)); seen.insert(p28ClassName(i.value(forKey: "type"))) }
+            var opNames: [String] = [], consts = 0
+            for op in ops {
+                seen.insert(p28ClassName(op)); opNames.append(op.value(forKey: "operatorName") as? String ?? "?")
+                for (_, arg) in (op.value(forKey: "inputs") as? [String: NSObject]) ?? [:] {
+                    seen.insert(p28ClassName(arg))
+                    for b in (arg.value(forKey: "bindings") as? [NSObject]) ?? [] {
+                        seen.insert(p28ClassName(b)); if let v = b.value(forKey: "value") as? NSObject { seen.insert(p28ClassName(v)); consts += 1 }
+                    }
+                }
+                for o in (op.value(forKey: "outputs") as? [NSObject]) ?? [] { seen.insert(p28ClassName(o)); seen.insert(p28ClassName(o.value(forKey: "type"))) }
+            }
+            let want: Set = ["MLModelStructure", "MLModelStructureProgram", "MLModelStructureProgramFunction", "MLModelStructureProgramBlock",
+                             "MLModelStructureProgramOperation", "MLModelStructureProgramArgument", "MLModelStructureProgramBinding",
+                             "MLModelStructureProgramNamedValueType", "MLModelStructureProgramValueType"]
+            try expect(want.isSubset(of: seen) && fnInputs.count == 2 && !ops.isEmpty, "program classes \(seen.sorted()) inputs \(fnInputs.count) ops \(opNames)")
+            got.append("program main(\(fnInputs.compactMap { $0.value(forKey: "name") as? String })) ops \(opNames), constants \(consts) \(seen.contains("MLModelStructureProgramValue") ? "as values" : "")")
+            // its compute plan: per-operation cost and device usage
+            // (the stateful program's plan: "Failed to build the model execution plan" -14 on Apple's simulator too)
+            var plan: NSObject?
+            do { plan = try await p28ObjCLoad("MLComputePlan", "loadContentsOfURL:configuration:completionHandler:", [acc as NSURL, cfg]) }
+            catch { got.append("program plan err \((error as NSError).code) \(String(describing: error).contains("-14") ? "-14" : "")") }
+            var costs: [String] = [], usages = 0
+            for op in ops where plan != nil {
+                let plan = plan!
+                if let cost = plan.perform(NSSelectorFromString("estimatedCostOfMLProgramOperation:"), with: op)?.takeUnretainedValue() as? NSObject {
+                    try expect(p28ClassName(cost) == "MLComputePlanCost", "cost class \(p28ClassName(cost))")
+                    costs.append(String(format: "%.2f", (cost.value(forKey: "weight") as? Double) ?? -1))
+                }
+                if let u = plan.perform(NSSelectorFromString("computeDeviceUsageForMLProgramOperation:"), with: op)?.takeUnretainedValue() as? NSObject {
+                    try expect(p28ClassName(u) == "MLComputePlanDeviceUsage" && u.value(forKey: "preferredComputeDevice") != nil, "usage \(p28ClassName(u))")
+                    usages += 1
+                }
+            }
+            got.append("plan costs \(costs) usages \(usages)")
+            #if !os(watchOS)
+            // a neural network's layers and a pipeline's sub-models, compiled here
+            let dir = try p7Dir("sdkcov-p28-structure")
+            let nnSrc = dir.appendingPathComponent("nn.mlmodel"); try p7NNSpec().write(to: nnSrc)
+            let nn = try await MLModel.compileModel(at: nnSrc)
+            let nst = try await p28ObjCLoad("MLModelStructure", "loadContentsOfURL:completionHandler:", [nn as NSURL])
+            guard let net = nst.value(forKey: "neuralNetwork") as? NSObject, let layers = net.value(forKey: "layers") as? [NSObject], let l0 = layers.first else { throw Fail("no network in \(p28ClassName(nst))") }
+            try expect(p28ClassName(net) == "MLModelStructureNeuralNetwork" && p28ClassName(l0) == "MLModelStructureNeuralNetworkLayer"
+                       && (l0.value(forKey: "name") as? String) == "dense" && (l0.value(forKey: "outputNames") as? [String]) == ["y"], "network \(p28ClassName(net)) \(p28ClassName(l0))")
+            let nplan = try await p28ObjCLoad("MLComputePlan", "loadContentsOfURL:configuration:completionHandler:", [nn as NSURL, cfg])
+            let lu = nplan.perform(NSSelectorFromString("computeDeviceUsageForNeuralNetworkLayer:"), with: l0)?.takeUnretainedValue() as? NSObject
+            got.append("layer \(l0.value(forKey: "type") ?? "?") usage \(p28ClassName(lu))")
+            let pSrc = dir.appendingPathComponent("pipe.mlmodel"); try p28PipelineSpec().write(to: pSrc)
+            let pipeURL = try await MLModel.compileModel(at: pSrc)
+            let pst = try await p28ObjCLoad("MLModelStructure", "loadContentsOfURL:completionHandler:", [pipeURL as NSURL])
+            guard let pipe = pst.value(forKey: "pipeline") as? NSObject else { throw Fail("no pipeline in \(p28ClassName(pst))") }
+            let subNames = pipe.value(forKey: "subModelNames") as? [String] ?? [], subs = pipe.value(forKey: "subModels") as? [NSObject] ?? []
+            try expect(p28ClassName(pipe) == "MLModelStructurePipeline" && subNames == ["glm"] && subs.count == 1, "pipeline \(subNames) \(subs.count)")
+            // the same through Swift's overlay
+            if case .pipeline(let sp) = try await MLModelStructure.load(contentsOf: pipeURL) { got.append("pipeline \(sp.subModelNames)") }
+            let pm = try MLModel(contentsOf: pipeURL)
+            let y = try await pm.prediction(from: MLDictionaryFeatureProvider(dictionary: ["x": try p28Doubles([1, 2])])).featureValue(for: "y")?.doubleValue
+            try expect(y == 8.5, "pipeline predicts \(String(describing: y))")
+            #endif
+            return got.joined(separator: ", ")
+        })
+        c.append(check("CoreML", "p28-feature-constraints-collection", timeout: 90) {
+            var got: [String] = []
+            // a state's constraint (the ML program's fp16 accumulator)
+            let cpu = MLModelConfiguration(); cpu.computeUnits = .cpuOnly
+            // (default compute units: "Failed to build the model execution plan", -14, on Apple's simulator too)
+            let acc = try MLModel(contentsOf: try p14WriteModel("p28acc", p28AccumulatorModel), configuration: cpu)
+            guard let sc: MLStateConstraint = acc.modelDescription.stateDescriptionsByName["acc"]?.stateConstraint else { throw Fail("no state constraint") }
+            try expect(sc.bufferShape == [1] && sc.dataType == .float16, "state constraint \(sc.bufferShape) \(sc.dataType.rawValue)")
+            let back = try NSKeyedUnarchiver.unarchivedObject(ofClass: MLStateConstraint.self, from: try NSKeyedArchiver.archivedData(withRootObject: sc, requiringSecureCoding: true))
+            got.append("state \(sc.bufferShape) fp16, coded \(back?.bufferShape ?? [])")
+            // MLSequenceConstraint: only a sequence feature's description has one (word taggers / recommenders, no model of
+            // those can be written here): the class as the runtime has it
+            let seqCls: AnyClass = MLSequenceConstraint.self
+            try expect(MLSequenceConstraint.supportsSecureCoding && class_getInstanceMethod(seqCls, #selector(getter: MLSequenceConstraint.countRange)) != nil, "sequence constraint class")
+            #if !os(watchOS)
+            let dir = try p7Dir("sdkcov-p28-constraints")
+            // an image input with enumerated sizes
+            let iSrc = dir.appendingPathComponent("img.mlmodel"); try p28ImageNNSpec().write(to: iSrc)
+            let im = try MLModel(contentsOf: try await MLModel.compileModel(at: iSrc))
+            guard let ic: MLImageConstraint = im.modelDescription.inputDescriptionsByName["img"]?.imageConstraint else { throw Fail("no image constraint") }
+            let szc: MLImageSizeConstraint = ic.sizeConstraint
+            let sizes: [MLImageSize] = szc.enumeratedImageSizes
+            try expect(ic.pixelsWide == 2 && ic.pixelsHigh == 2 && ic.pixelFormatType == kCVPixelFormatType_OneComponent8 && szc.type == .enumerated
+                       && sizes.map { "\($0.pixelsWide)x\($0.pixelsHigh)" } == ["2x2", "4x4"], "image constraint \(ic.pixelsWide)x\(ic.pixelsHigh) \(szc.type.rawValue) \(sizes.count)")
+            // a feature value from a CGImage that fits the constraint, a prediction through it
+            let ctx = CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0)!
+            ctx.setFillColor(gray: 0.5, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+            let fv = try MLFeatureValue(cgImage: ctx.makeImage()!, constraint: ic)
+            let out = try await im.prediction(from: MLDictionaryFeatureProvider(dictionary: ["img": fv])).featureValue(for: "out")?.multiArrayValue
+            got.append("image \(sizes.count) sizes, relu out \(out.map { "\($0.shape) \($0[0])" } ?? "nil")")
+            // a classifier's probability dictionary
+            let cSrc = dir.appendingPathComponent("cls.mlmodel"); try p28ClassifierSpec().write(to: cSrc)
+            let cm = try MLModel(contentsOf: try await MLModel.compileModel(at: cSrc))
+            guard let dc: MLDictionaryConstraint = cm.modelDescription.outputDescriptionsByName["probs"]?.dictionaryConstraint else { throw Fail("no dictionary constraint") }
+            let p = try await cm.prediction(from: MLDictionaryFeatureProvider(dictionary: ["x": try p28Doubles([3, 1])]))
+            let probs = p.featureValue(for: "probs")?.dictionaryValue ?? [:]
+            try expect(dc.keyType == .string && probs.count == 2, "dictionary constraint \(dc.keyType.rawValue) probs \(probs)")
+            got.append("classifier \(p.featureValue(for: "label")?.stringValue ?? "?") \(probs.keys.map { "\($0)" }.sorted())")
+            #endif
+            // MLModelCollection (sunset since iOS 17.4, Swift marks it unavailable): the runtime still answers
+            #if os(iOS) || os(visionOS)
+            let ans = await p27sAnswer(15) {
+                let col = try await p28ObjCLoad("MLModelCollection", "beginAccessingModelCollectionWithIdentifier:completionHandler:", ["p28-none" as NSString])
+                let entries = col.value(forKey: "entries") as? [String: NSObject] ?? [:]
+                return "\(p28ClassName(col)) \(entries.count) entries \(entries.values.map { p28ClassName($0) })"
+            }
+            let entryCls: AnyClass? = NSClassFromString("MLModelCollectionEntry")
+            got.append("collection: \(ans.prefix(90)), entry class \(entryCls.map { class_getInstanceMethod($0, NSSelectorFromString("modelURL")) != nil } ?? false)")
+            #endif
+            return got.joined(separator: ", ")
+        })
+        #endif
+        #if canImport(Vision) && canImport(CoreML) && canImport(CoreImage) && !os(watchOS)
+        c.append(check("Vision", "p28-swift-detectors", timeout: 60) {
+            func part(_ name: String, _ secs: Double, _ body: @escaping @Sendable () async throws -> [String: String]) async -> [String: String] {
+                do { return try await p27sWithin(secs, body) ?? [name: "no answer in \(Int(secs)) s"] } catch { return [name: "threw \((error as NSError).code)"] }
+            }
+            var got: [String: String] = [:]
+            got.merge(await part("performAll", 40) {
+                let img = try p27VisionImage(shift: 0)
+                var g: [String: String] = [:]
+                let reqs: [any VisionRequest] = [DetectFaceRectanglesRequest(), DetectHumanRectanglesRequest(), DetectHumanBodyPoseRequest(), DetectHumanHandPoseRequest(),
+                                                ClassifyImageRequest(), CalculateImageAestheticsScoresRequest(), GenerateAttentionBasedSaliencyImageRequest(),
+                                                GenerateObjectnessBasedSaliencyImageRequest(), RecognizeAnimalsRequest(), DetectFaceLandmarksRequest()]
+                for await r in ImageRequestHandler(img).performAll(reqs) {
+                    let res: VisionResult = r
+                    switch res {
+                    case .detectFaceRectangles(_, let o): let f: [FaceObservation] = o; g["faces"] = "\(p28Boxes(f).count)"
+                    case .detectFaceLandmarks(_, let o): g["landmarks"] = "\(o.count)"
+                    case .detectHumanRectangles(_, let o): let h: [HumanObservation] = o; g["humans"] = "\(p28Boxes(h).count)"
+                    case .detectHumanBodyPose(_, let o): let b: [HumanBodyPoseObservation] = o; g["body"] = "\(b.map(p28JointCount))"
+                    case .detectHumanHandPose(_, let o): let h: [HumanHandPoseObservation] = o; g["hands"] = "\(h.map(p28JointCount))"
+                    case .classifyImage(_, let o): let cl: [ClassificationObservation] = o; g["classes"] = cl.isEmpty ? "0" : "some"
+                    case .calculateImageAestheticsScores(_, let o): let a: ImageAestheticsScoresObservation = o; g["aesthetics"] = "utility \(a.isUtility) codable \(try p28RoundTrips(a))"
+                    case .generateAttentionBasedSaliencyImage(_, let o):
+                        let si: SaliencyImageObservation = o; let pb: PixelBufferObservation = si.heatMap
+                        g["attention"] = "\(si.salientObjects.count) heat \(Int(pb.size.width))x\(Int(pb.size.height))"
+                        if let q = si.salientObjects.first { g["quad"] = "\(p28Corners(q).count) codable \(try p28RoundTrips(q))" }
+                    case .generateObjectnessBasedSaliencyImage(_, let o): g["objectness"] = "\(o.salientObjects.count)"
+                    case .recognizeAnimals(_, let o): let ro: [RecognizedObjectObservation] = o; g["animals"] = "\(p28Boxes(ro).count)"
+                    case .error(let req, let err): g["\(type(of: req))"] = "err:\((err as? VisionError).map { "\($0)".prefix(while: { $0 != "(" }) } ?? "\((err as NSError).code)")"
+                    default: g["other"] = "\(res)".prefix(30).description
+                    }
+                }
+                return g
+            }) { a, _ in a }
+            return got.keys.sorted().map { "\($0)=\(got[$0]!)" }.joined(separator: " ")
+        })
+        c.append(check("Vision", "p28-swift-trackers", timeout: 60) {
+            func part(_ name: String, _ secs: Double, _ body: @escaping @Sendable () async throws -> [String: String]) async -> [String: String] {
+                do { return try await p27sWithin(secs, body) ?? [name: "no answer in \(Int(secs)) s"] } catch { return [name: "threw \((error as NSError).code)"] }
+            }
+            var got: [String: String] = [:]
+            let tt = TrackTranslationalImageRegistrationRequest(), tf = TrackOpticalFlowRequest(), tj = DetectTrajectoriesRequest(trajectoryLength: 5)
+            try expect(p28IsTargeted(tt) && p28IsTargeted(tf) && !p28IsTargeted(tj), "targeted requests")
+            got.merge(await part("trackers", 40) {
+                let img = try p27VisionImage(shift: 0), moved = try p27VisionImage(shift: 8)
+                var g: [String: String] = [:]
+                let trans = TrackTranslationalImageRegistrationRequest(), homo = TrackHomographicImageRegistrationRequest(), flow = TrackOpticalFlowRequest()
+                let traj = DetectTrajectoriesRequest(trajectoryLength: 5)
+                let track = TrackObjectRequest(detectedObject: DetectedObjectObservation(boundingBox: NormalizedRect(x: 0.6, y: 0.4, width: 0.3, height: 0.4)))
+                g["latency"] = [p28Latency(trans), p28Latency(traj), p28Latency(track)].joined(separator: " ")
+                var ta: ImageTranslationAlignmentObservation?, ha: ImageHomographicAlignmentObservation?, of: OpticalFlowObservation?, tjs: [TrajectoryObservation] = [], to: DetectedObjectObservation?
+                for frame in [img, moved, moved] {
+                    do { ta = try await trans.perform(on: frame) } catch { g["trans"] = "err \((error as NSError).code)" }
+                    do { ha = try await homo.perform(on: frame) } catch { g["homo"] = "err \((error as NSError).code)" }
+                    do { of = try await flow.perform(on: frame) } catch { g["flow"] = "err \((error as NSError).code)" }
+                    do { tjs = try await traj.perform(on: frame) } catch { g["traj"] = "err \((error as NSError).code)" }
+                }
+                if let ta { g["trans"] = "tx \(Int(ta.alignmentTransform.tx.rounded()))" }
+                if let ha { g["homo"] = "h \(ha.warpTransform.columns.2.z == 0 ? "0" : "set")" }
+                if let of { g["flow"] = "\(Int(of.size.width))x\(Int(of.size.height))" }
+                // (TrackObjectRequest.perform ends the app on Apple's iOS 27.2 simulator, on the first frame: not called)
+                g["track"] = "box x \(String(format: "%.2f", track.inputObservation.boundingBox.origin.x))"; _ = to
+                g["traj"] = g["traj"] ?? "\(tjs.count)"
+                return g
+            }) { a, _ in a }
+            return got.keys.sorted().map { "\($0)=\(got[$0]!)" }.joined(separator: " ")
+        })
+        c.append(check("Vision", "p28-swift-coreml-request-joint", timeout: 60) {
+            func part(_ name: String, _ secs: Double, _ body: @escaping @Sendable () async throws -> [String: String]) async -> [String: String] {
+                do { return try await p27sWithin(secs, body) ?? [name: "no answer in \(Int(secs)) s"] } catch { return [name: "threw \((error as NSError).code)"] }
+            }
+            var got: [String: String] = [:]
+            got.merge(await part("coreml", 30) {
+                let model = try await p28ImageModel()
+                let container = try CoreMLModelContainer(model: model)
+                var ml = CoreMLRequest(model: container); ml.cropAndScaleAction = .scaleToFill
+                let mo = try await ml.perform(on: try p27VisionImage(shift: 0))
+                let fvo = mo.first as? CoreMLFeatureValueObservation
+                let ok = container.inputImageFeatureName == "img" && ImageCropAndScaleAction.allCases.count == 5 && fvo?.featureName == "out"
+                return ["coreml": "\(ok) \(fvo?.featureValue.shapedArrayValue(of: Float.self)?.shape ?? [])"]
+            }) { a, _ in a }
+            let j = Joint3D(position: matrix_identity_float4x4, localPosition: matrix_identity_float4x4, identifer: "root", parentJoint: "")
+            try expect(try JSONDecoder().decode(Joint3D.self, from: JSONEncoder().encode(j)) == j && j.identifier == "root", "joint 3D")
+            let rgn: (any BoundingRegionProviding)? = nil; _ = rgn.map { p28Region($0) }
+            try expect(got["coreml"]?.hasPrefix("true") ?? false, "core ML request \(got["coreml"] ?? "nil")")
+            return got.keys.sorted().map { "\($0)=\(got[$0]!)" }.joined(separator: " ")
+        })
+        c.append(check("Vision", "p28-swift-downloadable-assets", timeout: 30) {
+            func part(_ name: String, _ secs: Double, _ body: @escaping @Sendable () async throws -> [String: String]) async -> [String: String] {
+                do { return try await p27sWithin(secs, body) ?? [name: "no answer in \(Int(secs)) s"] } catch { return [name: "threw \((error as NSError).code)"] }
+            }
+            var got: [String: String] = [:]
+            got.merge(await part("assets", 15) {
+                let seg = GenerateIterativeSegmentationRequest(seedPoint: NormalizedPoint(x: 0.5, y: 0.5))
+                return ["assets": "\(await p28Status(seg))".prefix(40).description]
+            }) { a, _ in a }
+            return got.keys.sorted().map { "\($0)=\(got[$0]!)" }.joined(separator: " ")
+        })
+        c.append(check("Vision", "p28-vn-coreml-text-video", timeout: 120) {
+            var got: [String] = []
+            let img = try p27VisionImage(shift: 0)
+            // VNCoreMLModel / VNCoreMLRequest on the app's own image model
+            let vm = try VNCoreMLModel(for: try await p28ImageModel())
+            let creq = VNCoreMLRequest(model: vm); creq.imageCropAndScaleOption = .scaleFill
+            let treq = VNRecognizeTextRequest(); treq.recognitionLevel = .fast
+            let reg: VNImageRegistrationRequest = VNTranslationalImageRegistrationRequest(targetedCGImage: img)
+            try VNImageRequestHandler(cgImage: img).perform([creq, treq, reg])
+            let fv = creq.results?.first as? VNCoreMLFeatureValueObservation
+            try expect(fv?.featureName == "out" && vm.inputImageFeatureName == "img", "VNCoreMLRequest \(String(describing: creq.results))")
+            let texts: [VNRecognizedText] = (treq.results ?? []).compactMap { $0.topCandidates(1).first }
+            let words = texts.map(\.string).joined(separator: " ")
+            let range = texts.first.flatMap { t in try? t.boundingBox(for: t.string.startIndex..<t.string.endIndex) }
+            try expect(words.contains("VISION"), "recognized text '\(words)'")
+            got.append("coreml \(fv?.featureValue.multiArrayValue?.shape ?? []), text '\(words)' box \(range != nil), registration \((reg.results?.first as? VNImageTranslationAlignmentObservation).map { Int($0.alignmentTransform.tx) } ?? -1)")
+            // a 30-frame movie through VNVideoProcessor at two cadences
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("p28-video.mov")
+            try await writeMovie(url, frames: 30, size: 128)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let frames = P28Tally()
+            let rect = VNDetectRectanglesRequest { r, _ in frames.add("\(r.results?.count ?? -1)") }
+            let vp = VNVideoProcessor(url: url)
+            let opts = VNVideoProcessor.RequestProcessingOptions()
+            let cad: VNVideoProcessor.Cadence = VNVideoProcessor.FrameRateCadence(10)
+            opts.cadence = cad
+            try vp.addRequest(rect, processingOptions: opts)
+            try vp.analyze(CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 1)))
+            let n1 = frames.all.count; frames.reset()
+            let vp2 = VNVideoProcessor(url: url)
+            let opts2 = VNVideoProcessor.RequestProcessingOptions(); let tic = VNVideoProcessor.TimeIntervalCadence(0.5); opts2.cadence = tic
+            try vp2.addRequest(rect, processingOptions: opts2)
+            try vp2.analyze(CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 1)))
+            let n2 = frames.all.count
+            let classes = [p28ClassName(cad), p28ClassName(tic), p28ClassName(opts)]
+            try expect(classes == ["VNVideoProcessorFrameRateCadence", "VNVideoProcessorTimeIntervalCadence", "VNVideoProcessorRequestProcessingOptions"]
+                       && p27sIsSub(type(of: cad), NSClassFromString("VNVideoProcessorCadence")!), "cadence classes \(classes)")
+            got.append("video frames at 10 fps \(n1), every 0.5 s \(n2)")
+            return got.joined(separator: ", ")
+        })
+        #endif
+        #if canImport(ARKit) && os(iOS)
+        c.append(check("ARKit", "p28-values-views-classes", timeout: 60) {
+            try await p2Main {
+                var got: [String] = []
+                // anchors an app makes itself: copy and secure-coding round trip
+                let t = simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0.5, 1, -2, 1))
+                let a = ARAnchor(name: "p28", transform: t)
+                let probe = AREnvironmentProbeAnchor(name: "probe", transform: t, extent: [1, 2, 3])
+                let geo = ARGeoAnchor(name: "geo", coordinate: CLLocationCoordinate2D(latitude: 37.33, longitude: -122.01), altitude: 10)
+                let anchors: [ARAnchor] = [a, probe, geo]
+                var coded = 0
+                for x in anchors {
+                    let d = try NSKeyedArchiver.archivedData(withRootObject: x, requiringSecureCoding: true)
+                    if let b = try NSKeyedUnarchiver.unarchivedObject(ofClass: ARAnchor.self, from: d), b.identifier == x.identifier, b.name == x.name, b.transform == x.transform { coded += 1 }
+                }
+                let copy = probe.copy() as? AREnvironmentProbeAnchor
+                // a geo anchor made outside a geo-tracking session keeps no coordinate (Apple's simulator: latitude 0)
+                try expect(coded == 3 && copy?.extent == [1, 2, 3] && geo.coordinate.latitude == 0, "anchors coded \(coded) extent \(String(describing: copy?.extent)) lat \(geo.coordinate.latitude)")
+                got.append("geo altitude \(geo.altitude.map { "\($0)" } ?? "nil") session \(a.sessionIdentifier == nil ? "nil" : "set")")
+                got.append("anchors coded \(coded), geo altitude source \(geo.altitudeSource.rawValue)")
+                // a reference image from a picture, a raycast query, the default skeletons
+                let ctx = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 256, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                ctx.setFillColor(red: 1, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: 32, height: 64))
+                let ref = ARReferenceImage(ctx.makeImage()!, orientation: .up, physicalWidth: 0.2); ref.name = "card"
+                try expect(ref.name == "card" && abs(ref.physicalSize.width - 0.2) < 1e-6 && abs(ref.physicalSize.height - 0.2) < 1e-6, "reference image \(ref.physicalSize)")
+                let none = ARReferenceImage.referenceImages(inGroupNamed: "p28-none", bundle: nil)
+                let q = ARRaycastQuery(origin: [0, 0, 0], direction: [0, 0, -1], allowing: .estimatedPlane, alignment: .horizontal)
+                got.append("raycast query dir \(q.direction) target \(q.target.rawValue) alignment \(q.targetAlignment.rawValue)")
+                let s3 = ARSkeletonDefinition.defaultBody3D, s2 = ARSkeletonDefinition.defaultBody2D
+                let head = s3.index(for: .head)
+                got.append("reference group \(none == nil ? "nil" : "\(none!.count)"), skeleton 3D \(s3.jointCount) joints head \(head != NSNotFound) 2D \(s2.jointCount)")
+                // a reference object from a file that is not one: the error
+                let bad = FileManager.default.temporaryDirectory.appendingPathComponent("p28.arobject"); try Data("x".utf8).write(to: bad)
+                do { _ = try ARReferenceObject(archiveURL: bad); got.append("reference object made") } catch { got.append("reference object err \((error as NSError).domain) \((error as NSError).code)") }
+                // the views: an SCNView / SKView with their sessions, the coaching overlay, the SceneKit geometries
+                let scn = ARSCNView(frame: CGRect(x: 0, y: 0, width: 100, height: 100)), sk = ARSKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+                let coach = ARCoachingOverlayView(frame: .zero); coach.goal = .horizontalPlane; coach.session = scn.session
+                got.append("coaching goal \(coach.goal.rawValue)")
+                got.append("coaching session same \(coach.session === scn.session) active \(coach.isActive)")
+                let dev = MTLCreateSystemDefaultDevice()
+                let face = dev.flatMap { ARSCNFaceGeometry(device: $0) }, plane = dev.flatMap { ARSCNPlaneGeometry(device: $0) }
+                let hits = scn.hitTest(CGPoint(x: 50, y: 50), types: .featurePoint)
+                let rq = scn.raycastQuery(from: CGPoint(x: 50, y: 50), allowing: .estimatedPlane, alignment: .any)
+                got.append("views: sk session \(sk.session !== scn.session), face geometry \(face == nil ? "nil" : "made"), plane geometry \(plane == nil ? "nil" : "made"), hits \(hits.count), raycast query \(rq == nil ? "nil" : "made")")
+                if let dev { let mg = ARMatteGenerator(device: dev, matteResolution: .half); got.append("matte generator \(type(of: mg))") }
+                // what a running session would hand over: the class tree as ARKit has it (nothing tracks in a simulator)
+                let tree: [(AnyClass, AnyClass)] = [
+                    (ARAppClipCodeAnchor.self, ARAnchor.self), (ARBodyAnchor.self, ARAnchor.self), (ARFaceAnchor.self, ARAnchor.self), (ARImageAnchor.self, ARAnchor.self),
+                    (ARMeshAnchor.self, ARAnchor.self), (ARObjectAnchor.self, ARAnchor.self), (ARParticipantAnchor.self, ARAnchor.self), (ARPlaneAnchor.self, ARAnchor.self),
+                    (ARDirectionalLightEstimate.self, ARLightEstimate.self), (ARSkeleton2D.self, ARSkeleton.self), (ARSkeleton3D.self, ARSkeleton.self),
+                    (ARWorldTrackingConfiguration.self, ARConfiguration.self), (ARSCNView.self, SCNView.self), (ARSKView.self, SKView.self),
+                    (ARSCNFaceGeometry.self, SCNGeometry.self), (ARSCNPlaneGeometry.self, SCNGeometry.self),
+                ]
+                let wrong = tree.filter { !p27sIsSub($0.0, $0.1) }.map { "\($0.0)" }
+                let coding: [(String, Bool)] = [("ARWorldMap", ARWorldMap.supportsSecureCoding), ("ARPlaneExtent", ARPlaneExtent.supportsSecureCoding),
+                    ("ARFaceGeometry", ARFaceGeometry.supportsSecureCoding), ("ARGeoTrackingStatus", ARGeoTrackingStatus.supportsSecureCoding),
+                    ("ARPointCloud", ARPointCloud.supportsSecureCoding), ("ARCollaborationData", ARSession.CollaborationData.supportsSecureCoding)]
+                let plain: [AnyClass] = [ARBody2D.self, ARCamera.self, ARDepthData.self, ARFrame.self, ARGeometryElement.self, ARGeometrySource.self, ARHitTestResult.self,
+                                         ARMeshGeometry.self, ARPlaneGeometry.self, ARRaycastResult.self, ARTrackedRaycast.self, ARConfiguration.VideoFormat.self]
+                // (Apple's iOS 27.2 simulator: ARWorldMap, ARFaceGeometry, ARPointCloud and ARCollaborationData answer supportsSecureCoding false)
+                let codingWant = ["ARPlaneExtent", "ARGeoTrackingStatus"]
+                try expect(wrong.isEmpty && coding.filter(\.1).map(\.0) == codingWant && plain.allSatisfy { p27sIsSub($0, NSObject.self) }
+                           && NSClassFromString("ARCollaborationData") === ARSession.CollaborationData.self && NSClassFromString("ARVideoFormat") === ARConfiguration.VideoFormat.self, "class tree \(wrong) coding \(coding.filter(\.1).map(\.0))")
+                let formats: [ARConfiguration.VideoFormat] = ARWorldTrackingConfiguration.supportedVideoFormats
+                let faceShape = ARFaceGeometry(blendShapes: [.jawOpen: 0.5])
+                got.append("\(tree.count) subclasses, \(coding.count) secure-coding classes, \(plain.count) plain; video formats \(formats.count), face geometry from blend shapes \(faceShape == nil ? "nil" : "made")")
+                return got.joined(separator: ", ")
+            }
+        })
+        #endif
+        #if canImport(USDKit) && !os(watchOS)
+        c.append(check("USDKit", "p28-prims-transform-ops-values", timeout: 30) {
+            let stage = try USDStage(string: """
+            #usda 1.0
+            def Xform "World"
+            {
+                double3 xformOp:translate = (1, 2, 3)
+                double[] vals = [1, 2, 3]
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Cube "Box"
+                {
+                    double size = 2
+                }
+            }
+            """)
+            let world: USDPrim = stage.prim(at: USDLayer.Path("/World"))
+            let ops: [USDTransformOperation] = world.transformOperations
+            guard let op = ops.first else { throw Fail("no transform operations") }
+            let m = world.transform()
+            let tx = m.map { $0.projectiveTransform.matrix.columns.3 }
+            try expect(op.kind == .translate && op.name.string == "xformOp:translate" && !op.isInverse && op.precision == .double && tx?.x == 1 && tx?.z == 3,
+                       "op \(String(describing: op.kind)) \(op.name.string) translation \(String(describing: tx))")
+            world.addTransformOperation(type: .scale)
+            let names = world.transformOperations.map(\.baseName.string)
+            // tokens, values and arrays through USDValueProtocol
+            let tok = USDToken("p28"), empty = USDToken()
+            let v = p28USDValue(2.5), tv = p28USDValue(tok)
+            let arr: USDArray<Double> = [1, 2, 3]
+            var arr2 = USDArray<Double>(); arr2.append(4)
+            let attr = world.attribute(named: "vals")
+            let read: USDArray<Double>? = attr.value()
+            let wrote = attr.setValue(arr2)
+            let back: USDArray<Double>? = attr.value()
+            try expect(tok.string == "p28" && empty.isEmpty && v.value(as: Double.self) == 2.5 && tv.isHolding(USDToken.self) && arr.count == 3 && arr2[0] == 4
+                       && read.map { Array($0) } == [1, 2, 3] && wrote && back.map { Array($0) } == [4], "values \(v.typeName) read \(String(describing: read.map { Array($0) }))")
+            let box: USDPrim = world.children.first ?? USDPrim()
+            return "op \(op.name.string) + \(names), values \(v.typeName) / \(tv.typeName), array attribute [1, 2, 3] -> [4], child \(box.path.description) valid \(box.isValid)"
+        })
+        #endif
+        #if canImport(ModelIO) && canImport(MetalKit) && !os(watchOS)
+        c.append(check("ModelIO", "p28-animated-vectors-material-graph", timeout: 30) {
+            let v2 = MDLAnimatedVector2(); v2.setFloat2([1, 2], atTime: 0); v2.setFloat2([3, 4], atTime: 1)
+            let v4 = MDLAnimatedVector4(); v4.setFloat4([0, 0, 0, 1], atTime: 0); v4.setFloat4([2, 2, 2, 1], atTime: 2)
+            let mid2 = v2.float2Value(atTime: 0.5), mid4 = v4.float4Value(atTime: 1)
+            try expect(v2.timeSampleCount == 2 && abs(mid2.x - 2) < 1e-5 && abs(mid4.x - 1) < 1e-5, "animated vectors \(mid2) \(mid4)")
+            // a material property graph: a node whose evaluation scales its input into its output
+            let inp = MDLMaterialProperty(name: "in", semantic: .userDefined, float: 2)
+            let out = MDLMaterialProperty(name: "out", semantic: .userDefined, float: 0)
+            let node = MDLMaterialPropertyNode(inputs: [inp], outputs: [out]) { n in n.outputs[0].floatValue = n.inputs[0].floatValue * 3 }
+            node.evaluationFunction(node)
+            try expect(out.floatValue == 6, "node out \(out.floatValue)")
+            // a graph over a node whose properties it was made with: Apple's simulator raises ModelIOException "input cannot be
+            // assigned to multiple nodes"; an empty graph is made
+            var graphAnswer = "made"
+            let exc = SDKCovCatch { _ = MDLMaterialPropertyGraph(nodes: [node], connections: []) }
+            if let exc { graphAnswer = exc.joined(separator: ": ").prefix(80).description }
+            let empty = MDLMaterialPropertyGraph(nodes: [], connections: [])
+            empty.evaluate()
+            try expect(empty.nodes.isEmpty && empty.connections.isEmpty, "empty graph")
+            return "vector2 at 0.5 \(mid2), vector4 at 1 \(mid4), node out \(out.floatValue), graph over it: \(graphAnswer)"
+        })
+        c.append(check("MetalKit", "p28-mesh-buffers-submeshes", timeout: 30) {
+            guard let dev = MTLCreateSystemDefaultDevice() else { throw Fail("no Metal device") }
+            let alloc = MTKMeshBufferAllocator(device: dev)
+            let mdl = MDLMesh(boxWithExtent: [1, 1, 1], segments: [1, 1, 1], inwardNormals: false, geometryType: .triangles, allocator: alloc)
+            let mesh = try MTKMesh(mesh: mdl, device: dev)
+            let vb: [MTKMeshBuffer] = mesh.vertexBuffers
+            let sub: [MTKSubmesh] = mesh.submeshes
+            try expect(!vb.isEmpty && vb[0].length > 0 && vb[0].type == .vertex && sub.first?.indexCount == 36 && sub.first?.indexBuffer.type == .index && sub.first?.primitiveType == .triangle,
+                       "mesh \(vb.count) buffers \(sub.map(\.indexCount))")
+            return "\(mesh.vertexCount) vertices in \(vb.count) buffer(s) (\(vb[0].length) B), \(sub.count) submesh of \(sub[0].indexCount) indices"
+        })
+        c.append(check("Metal", "p28-rate-map-arrays-shared-handle", timeout: 30) {
+            guard let dev = MTLCreateSystemDefaultDevice() else { throw Fail("no Metal device") }
+            let h: [Float] = [1, 0.5], v: [Float] = [0.5, 1]
+            let layer = MTLRasterizationRateLayerDescriptor(__sampleCount: MTLSize(width: 2, height: 2, depth: 0), horizontal: h, vertical: v)
+            let samples: MTLRasterizationRateSampleArray = layer.horizontal
+            samples[1] = 0.25
+            let desc = MTLRasterizationRateMapDescriptor(screenSize: MTLSize(width: 256, height: 256, depth: 0), layer: layer)
+            let layers: MTLRasterizationRateLayerArray = desc.layers
+            try expect(samples[0] == 1 && layer.horizontal[1] == 0.25 && layer.vertical[0] == 0.5 && desc.layerCount == 1 && layers[0] != nil, "rate map arrays")
+            let supported = dev.supportsRasterizationRateMap(layerCount: 1)
+            var hd = "-"
+            #if os(visionOS)
+            // a shared handle of a private texture: the visionOS headers have the class, Swift marks it unavailable (the runtime's answer)
+            let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 8, height: 8, mipmapped: false); td.storageMode = .private
+            let tex = dev.makeTexture(descriptor: td) as? NSObject
+            let sel = NSSelectorFromString("newSharedTextureHandle")
+            let handle = (tex?.responds(to: sel) ?? false) ? tex?.perform(sel)?.takeRetainedValue() : nil
+            let hcls: AnyClass? = NSClassFromString("MTLSharedTextureHandle")
+            hd = "\(hcls == nil ? "no class" : "class") handle \(p28ClassName(handle))"
+            #endif
+            return "rate map supported \(supported), samples [1, 0.25], shared handle \(hd)"
+        })
+        #endif
+        #if canImport(GameplayKit)
+        c.append(check("GameplayKit", "p28-composite-behavior", timeout: 30) {
+            let seek = GKBehavior(goal: GKGoal(toWander: 1), weight: 1)
+            let avoid = GKBehavior(goal: GKGoal(toReachTargetSpeed: 5), weight: 2)
+            let comp = GKCompositeBehavior(behaviors: [seek, avoid], andWeights: [1, 0.5])
+            comp.setWeight(0.25, for: avoid)
+            let agent = GKAgent2D(); agent.behavior = comp; agent.maxSpeed = 10; agent.maxAcceleration = 5; agent.mass = 1
+            for _ in 0..<30 { agent.update(deltaTime: 1.0 / 30) }
+            try expect(comp.behaviorCount == 2 && comp.weight(for: avoid) == 0.25 && comp[0] === seek && agent.speed > 0, "composite \(comp.behaviorCount) speed \(agent.speed)")
+            return "composite of \(comp.behaviorCount), agent speed \(String(format: "%.2f", agent.speed)) after 1 s"
+        })
+        #endif
+        #if canImport(GLKit) && (os(iOS) || os(tvOS))
+        c.append(check("GLKit", "p28-effects-textures-meshes", timeout: 30) {
+            try await onMain {
+                guard let ctx = EAGLContext(api: .openGLES2) else { throw Fail("no EAGLContext") }
+                EAGLContext.setCurrent(ctx); defer { EAGLContext.setCurrent(nil) }
+                let eff = GLKBaseEffect()
+                let light: GLKEffectPropertyLight = eff.light0; light.enabled = GLboolean(GL_TRUE); light.diffuseColor = GLKVector4Make(1, 0, 0, 1)
+                let mat: GLKEffectPropertyMaterial = eff.material; mat.shininess = 12
+                let fog: GLKEffectPropertyFog = eff.fog; fog.enabled = GLboolean(GL_TRUE); fog.end = 5
+                let tx: GLKEffectPropertyTexture = eff.texture2d0
+                let tr: GLKEffectPropertyTransform = eff.transform; tr.modelviewMatrix = GLKMatrix4MakeTranslation(1, 2, 3)
+                let props: [GLKEffectProperty] = [light, mat, fog, tx, tr]
+                eff.prepareToDraw()
+                try expect(light.diffuseColor.x == 1 && mat.shininess == 12 && fog.end == 5 && tr.modelviewMatrix.m30 == 1 && props.count == 5, "base effect")
+                let refl = GLKReflectionMapEffect(); refl.matrix = GLKMatrix3Identity
+                let sky = GLKSkyboxEffect(); sky.xSize = 2; sky.center = GLKVector3Make(0, 1, 0)
+                // a texture from a picture, synchronously and through a loader
+                let c2 = CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 16, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                c2.setFillColor(red: 0, green: 1, blue: 0, alpha: 1); c2.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+                // a premultiplied RGBA picture: Apple's simulator answers GLKTextureLoaderErrorDomain 12 "Image decoding failed"; a PNG of it loads
+                var texAnswer = "?"
+                do { let i = try GLKTextureLoader.texture(with: c2.makeImage()!, options: nil); texAnswer = "made \(i.width)" } catch { texAnswer = "err \((error as NSError).code)" }
+                let png = NSMutableData()
+                if let dst = CGImageDestinationCreateWithData(png, "public.png" as CFString, 1, nil) { CGImageDestinationAddImage(dst, c2.makeImage()!, nil); CGImageDestinationFinalize(dst) }
+                let info: GLKTextureInfo = try GLKTextureLoader.texture(withContentsOf: png as Data, options: nil)
+                tx.name = info.name; tx.target = GLKTextureTarget(rawValue: GLenum(info.target)) ?? .target2D
+                try expect(info.width == 4 && info.height == 4 && info.target == GLenum(GL_TEXTURE_2D) && glIsTexture(info.name) == GLboolean(GL_TRUE), "texture \(info.width)x\(info.height)")
+                let loader = GLKTextureLoader(sharegroup: ctx.sharegroup)
+                // a box through a GLK buffer allocator into a GLKMesh
+                let alloc = GLKMeshBufferAllocator()
+                let mdl = MDLMesh(boxWithExtent: [1, 1, 1], segments: [1, 1, 1], inwardNormals: false, geometryType: .triangles, allocator: alloc)
+                let mesh = try GLKMesh(mesh: mdl)
+                let vb: [GLKMeshBuffer] = mesh.vertexBuffers, subs: [GLKSubmesh] = mesh.submeshes
+                try expect(!vb.isEmpty && vb[0].length > 0 && glIsBuffer(vb[0].glBufferName) == GLboolean(GL_TRUE) && subs.first?.elementCount == 36 && subs.first?.mode == GLenum(GL_TRIANGLES), "GLK mesh \(vb.count) \(subs.map(\.elementCount))")
+                let vc = GLKViewController(); vc.preferredFramesPerSecond = 30
+                return "effects \(props.count) properties + reflection / skybox (\(sky.xSize)), CGImage texture \(texAnswer), PNG texture \(info.width)x\(info.height) name \(info.name > 0), loader \(type(of: loader)), mesh \(mesh.vertexCount) vertices / \(subs[0].elementCount) elements, controller fps \(vc.preferredFramesPerSecond)"
+            }
+        })
+        #endif
+        #if canImport(GameController) && !os(watchOS)
+        c.append(check("GameController", "p28-wheels-styli-names-settings", timeout: 30) {
+            var got: [String] = []
+            // nothing connected in a simulator: no racing wheels, styli or spatial accessories
+            // racing wheels are macOS-only in Swift: the runtime's answer
+            let wheels = (NSClassFromString("GCRacingWheel") as? NSObject.Type)?.value(forKey: "connectedRacingWheels") as? NSSet
+            got.append("wheels \(wheels.map { "\($0.count)" } ?? "no class")")
+            #if os(visionOS)
+            let styli: [GCStylus] = GCStylus.styli
+            let dt: GCDeviceType? = GCDeviceType(identifier: "com.apple.p28-none")
+            got.append("styli \(styli.count), device type by id \(dt == nil ? "nil" : "made")")
+            let acc: [GCSpatialAccessory] = GCSpatialAccessory.spatialAccessories
+            got.append("spatial accessories \(acc.count) type \(GCDeviceType.spatialAccessory.localizedDescription ?? "nil")")
+            #endif
+            // element names through the typed-name protocol
+            let names: [String] = [p28NameRaw(GCButtonElementName.a), p28NameRaw(GCAxisElementName(rawValue: "Steering Wheel")), p28NameRaw(GCSwitchElementName(rawValue: "Gear Shifter")), p28NameRaw(GCPhysicalInputElementName(rawValue: "Button A"))]
+                        try expect(names.allSatisfy { !$0.isEmpty }, "element names \(names)")
+            got.append("names \(names)")
+            // the classes a wheel's input hands over
+            let tree: [(String, String)] = [("GCRacingWheelInput", "GCRacingWheelInputState"), ("GCRacingWheel", "NSObject"), ("GCSteeringWheelElement", "NSObject"),
+                                            ("GCGearShifterElement", "NSObject"), ("GCGameControllerActivationContext", "NSObject")]
+            let present = tree.filter { t in NSClassFromString(t.0).map { a in p27sIsSub(a, NSClassFromString(t.1)!) } ?? false }.map(\.0)
+            let steer = NSClassFromString("GCSteeringWheelElement").map { class_conformsToProtocol($0, GCAxisElement.self) } ?? false
+            got.append("classes \(present.count)/\(tree.count) steering is axis \(steer)")
+            // an extended gamepad's element collections (a virtual controller, none connected)
+            #if os(iOS)
+            let cfg = GCVirtualController.Configuration(); cfg.elements = [GCInputButtonA, GCInputLeftThumbstick]
+            let vc = GCVirtualController(configuration: cfg)
+            if let input = vc.controller?.input { got.append("virtual buttons \(p28Count(input.buttons)) axes \(p28Count(input.axes))") } else { got.append("virtual controller not connected") }
+            #endif
+            #if os(iOS) || os(visionOS)
+            let home: String = await onMain {
+                let mgr = GCControllerHomeButtonSettingsManager()
+                do {
+                    let sys = try mgr.controllerHomeButtonSystemAction, app = try mgr.controllerHomeButtonInAppAction
+                    return "system \(sys.action.rawValue)/\(sys.customized.rawValue) in-app \(app.action.rawValue)/\(app.customized.rawValue)"
+                } catch { return "err \((error as NSError).domain) \((error as NSError).code)" }
+            }
+            got.append("home button settings \(home)")
+            #endif
+            return got.joined(separator: ", ")
+        })
+        #endif
+        #if canImport(TouchController) && os(iOS)
+        c.append(check("TouchController", "p28-descriptors-contents", timeout: 30) {
+            try await onMain {
+                let dev = try p2Dev()
+                let ctx = CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 128, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                ctx.setFillColor(red: 1, green: 1, blue: 1, alpha: 1); ctx.fillEllipse(in: CGRect(x: 0, y: 0, width: 32, height: 32))
+                guard let img = TCControlImage(cgImage: ctx.makeImage()!, size: CGSize(width: 44, height: 44), device: dev) else { throw Fail("no control image") }
+                let contents = TCControlContents(images: [img])
+                try expect(img.size.width == 44 && img.texture.width == 32 && contents.images.count == 1, "image \(img.size) texture \(img.texture.width)")
+                let sw = TCSwitchDescriptor(); sw.label = TCControlLabel.buttonB; sw.contents = contents; sw.switchedOnContents = contents; sw.size = CGSize(width: 44, height: 44)
+                let ts = TCThumbstickDescriptor(); ts.label = TCControlLabel.leftThumbstick; ts.backgroundContents = contents; ts.stickSize = CGSize(width: 30, height: 30); ts.hidesWhenNotPressed = true
+                let dp = TCDirectionPadDescriptor(); dp.compositeLabel = TCControlLabel.directionPad; dp.upContents = contents; dp.isDigital = true; dp.isRadial = false
+                let th = TCThrottleDescriptor(); th.label = TCControlLabel.rightThumbstick; th.orientation = .vertical; th.baseValue = 0.5; th.snapsToBaseValue = true
+                let tp = TCTouchpadDescriptor(); tp.label = TCControlLabel.leftThumbstick; tp.reportsRelativeValues = true; tp.size = CGSize(width: 120, height: 80)
+                try expect(sw.label.name == TCControlLabel.buttonB.name && ts.hidesWhenNotPressed && dp.isDigital && !dp.isRadial && th.baseValue == 0.5 && th.orientation == .vertical
+                           && tp.reportsRelativeValues && tp.size.width == 120, "descriptors")
+                // the controls a controller makes from them (classes; a controller is not made where unsupported)
+                let controls: [AnyClass] = [TCButton.self, TCSwitch.self, TCThumbstick.self, TCDirectionPad.self, TCThrottle.self, TCTouchpad.self]
+                let laid = controls.filter { class_conformsToProtocol($0, TCControl.self) && class_conformsToProtocol($0, TCControlLayout.self) }.count
+                try expect(laid == 6, "controls conforming to TCControl + TCControlLayout: \(laid)")
+                return "control image 44x44 over a 32 px texture, 5 descriptors, \(laid) control classes"
+            }
+        })
+        #endif
+        #if canImport(GameKit)
+        c.append(check("GameKit", "p28-legacy-classes-runtime", timeout: 30) {
+            try await onMain {
+                // GameKit's deprecated / Swift-unavailable classes as the runtime has them: present or not, their superclass,
+                // the shared event handlers, and the view controllers made with init
+                let names = ["GKAchievementViewController", "GKChallengeEventHandler", "GKChallengesViewController", "GKDialogController", "GKGameSession",
+                             "GKGameSessionSharingViewController", "GKLeaderboardViewController", "GKPeerPickerController", "GKSession", "GKTurnBasedEventHandler", "GKVoiceChatService"]
+                var rows: [String] = []
+                for n in names {
+                    guard let cls = NSClassFromString(n) else { rows.append("\(n)=-"); continue }
+                    var row = "\(n)<\(class_getSuperclass(cls).map { NSStringFromClass($0) } ?? "nil")"
+                    let shared = ["challengeEventHandler", "sharedTurnBasedEventHandler", "defaultVoiceChatService"].first { (cls as AnyObject).responds(to: NSSelectorFromString($0)) }
+                    if let sel = shared, let o = (cls as AnyObject).perform(NSSelectorFromString(sel))?.takeUnretainedValue() { row += " shared \(NSStringFromClass(type(of: o)) == n)" }
+                    if n.hasSuffix("ViewController"), let vc = (cls as? NSObject.Type)?.init() { row += " init \(NSStringFromClass(type(of: vc)) == n)" }
+                    rows.append(row)
+                }
+                let present = rows.filter { !$0.hasSuffix("=-") }.count
+                try expect(present >= 1, "no legacy GameKit class present")
+                return "\(present)/\(names.count) present: " + rows.joined(separator: "; ")
+            }
+        })
+        #endif
+        #if canImport(ComputeGraph) && !os(watchOS)
+        c.append(check("ComputeGraph", "p28-unary-stdlib-graph-values", timeout: 60) {
+            // x -> negate -> saturate: a graph of a unary and a standard-library node, assembled
+            var g = ComputeNodeGraph()
+            let f = ComputeNodeGraph.DataType(.float)
+            let input = ComputeNodeGraph.NodeDefinition(name: "x", outputs: [.init(name: "value", kind: .value, type: .primitive(type: f))], kind: .graphInput)
+            let neg = ComputeNodeGraph.NodeDefinition(name: "neg", inputs: [.init(name: "a", kind: .value, type: .primitive(type: f))],
+                                                      outputs: [.init(name: "out", kind: .value, type: .primitive(type: f))], kind: .unaryArithmetic(type: f, operation: UnaryOperation.negate))
+            let sat = ComputeNodeGraph.NodeDefinition(name: "sat", inputs: [.init(name: "a", kind: .value, type: .primitive(type: f))],
+                                                      outputs: [.init(name: "out", kind: .value, type: .primitive(type: f))], kind: .standardLibrary(type: f, function: StandardLibraryFunction.saturate))
+            let n0 = try g.addNode(.init(definition: input, label: "x")), n1 = try g.addNode(.init(definition: neg, label: "neg")), n2 = try g.addNode(.init(definition: sat, label: "sat"))
+            try g.addEdge(.init(source: .init(node: n0, index: 0), target: .init(node: n1, index: 0)))
+            try g.addEdge(.init(source: .init(node: n1, index: 0), target: .init(node: n2, index: 0)))
+            var assembled = "?"
+            do { let a = try ComputeNodeGraph.Assembly(g); assembled = "uniforms \(a.uniforms.count)" } catch { assembled = "err \(String(describing: error).prefix(60))" }
+            // the value types: every case Codable round trip where Codable, spawn parameters, port references
+            func rt<T: Codable & Equatable>(_ xs: [T]) throws -> Bool { try JSONDecoder().decode([T].self, from: JSONEncoder().encode(xs)) == xs }
+            let spaces: [AddressSpace] = [.constant, .device, .threadgroup, .thread]
+            let ok = try rt(BinaryOperation.allCases) && rt(UnaryOperation.allCases) && rt(StandardLibraryFunction.allCases) && rt(ElementGrouping.allCases)
+                && rt(StripOrientation.allCases) && rt(spaces) && rt([PortReference(group: 1, port: 2)])
+            let spawn = ElementSpawnParameters(position: [0, 1, 0], velocity: [0, 2, 0])
+            try expect(ok && Sorting.allCases.count >= 4 && Sorting(rawValue: Sorting.age.rawValue) == .age && spawn.velocity.y == 2, "values: codable \(ok) sorting \(Sorting.allCases.count) spawn \(spawn.velocity) lifetime \(spawn.lifetime)")
+            return "graph \(assembled); \(BinaryOperation.allCases.count) binary / \(UnaryOperation.allCases.count) unary ops, \(StandardLibraryFunction.allCases.count) functions, \(ElementGrouping.allCases.count) groupings, \(StripOrientation.allCases.count) strip orientations, spawn lifetime \(spawn.lifetime)"
+        })
+        #endif
+        #if canImport(RealityKit) && !os(watchOS)
+        c.append(check("RealityFoundation", "p28-deformer-force-event-leftovers", timeout: 60) {
+            try await p2Main {
+                var got: [String] = []
+                let r = try RealityRenderer()
+                let world = Entity(); r.entities.append(world)
+                var sim = PhysicsSimulationComponent(); sim.gravity = [0, 0, 0]; world.components.set(sim)
+                // a force effect run through a registered ForceEffectEvent handler: its parameter buffers
+                P28Drag.register { (ev: inout ForceEffectEvent<P28Drag>) in
+                    let pos: UnsafeForceEffectBuffer<SIMD3<Float>>? = ev.parameters.positions
+                    P28Drag.seen.add("n\(ev.parameters.physicsBodyCount) p\(pos.map { Array($0).count } ?? -1)")
+                    for i in 0..<ev.parameters.physicsBodyCount { ev.parameters.setForce([0, 10, 0], index: i) }
+                }
+                let b = ModelEntity(mesh: .generateBox(size: 0.2))
+                b.components.set(CollisionComponent(shapes: [.generateBox(size: [0.2, 0.2, 0.2])], filter: CollisionFilter(group: CollisionGroup(rawValue: 8), mask: .all)))
+                b.components.set(PhysicsBodyComponent(massProperties: PhysicsMassProperties(mass: 1), material: nil, mode: .dynamic))
+                world.addChild(b)
+                let field = Entity()
+                field.components.set(ForceEffectComponent(effects: [ForceEffect(effect: P28Drag(), spatialFalloff: SpatialForceFalloff(bounds: .sphere(radius: 2)), mask: CollisionGroup(rawValue: 8))]))
+                world.addChild(field)
+                // a custom CPU deformer on the box, in a deformation stack
+                P28Lower.calls.reset()
+                let stack = MeshDeformationStack(deformers: [P28Lower(), RenormalizingDeformer()], targets: [.all])
+                b.components.set(try MeshDeformerComponent(from: [stack]))
+                for _ in 0..<30 { try r.update(1.0 / 60) }
+                let ev = P28Drag.seen.all
+                got.append("force events \(ev.count) [\(ev.first ?? "")] box y \(String(format: "%.2f", b.position.y)), deformer calls \(P28Lower.calls.all.count) [\(P28Lower.calls.all.first ?? "")]")
+                try expect(P28Lower().isDeformerEqual(other: P28Lower()) && !P28Lower().isDeformerEqual(other: RenormalizingDeformer()) && stack.deformers.map(\.type).contains("p28lower"), "deformer \(stack.deformers.map(\.type))")
+                // an animation state through the protocol (a transform animation's own state, from an action handler)
+                // light probes and lightmaps
+                let pos: [SIMD3<Float>] = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]
+                let coef: [InlineArray<3, SIMD4<Float>>] = Array(repeating: [[0.5, 0.5, 0.5, 0], [0, 0, 0, 0], [0, 0, 0, 0]], count: 4)
+                do {
+                    let probes = try DiffuseProbeResource(positions: pos, coefficients: coef, tetrahedronIndices: [[0, 1, 2, 3]])
+                    let pc = DiffuseLightProbeGroupComponent(resource: probes); world.components.set(pc)
+                    got.append("probe group \(world.components.has(DiffuseLightProbeGroupComponent.self))")
+                } catch { got.append("probes err \(String(describing: error).prefix(50))") }
+                do {
+                    let lm = try LightmapResource(perEntityData: [])
+                    var lc = LightmapComponent(resource: lm); lc.indirectIrradianceContributionScale = 0.5
+                    got.append("lightmap scale \(lc.indirectIrradianceContributionScale) entities \(lc.entityIndexInLightmapResource.count)")
+                } catch { got.append("lightmap err \(String(describing: error).prefix(50))") }
+                #if canImport(_RealityKit_SwiftUI)
+                let gc = GestureComponent(TapGesture())
+                b.components.set(gc)
+                got.append("gesture component \(b.components.has(GestureComponent.self))")
+                #endif
+                #if os(visionOS)
+                // a picture presented by the image presentation component (Apple may never answer offscreen: wrapped)
+                let jpg = FileManager.default.temporaryDirectory.appendingPathComponent("p28-present.jpg")
+                let ictx = CGContext(data: nil, width: 64, height: 48, bitsPerComponent: 8, bytesPerRow: 256, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                ictx.setFillColor(red: 0, green: 0.5, blue: 1, alpha: 1); ictx.fill(CGRect(x: 0, y: 0, width: 64, height: 48))
+                if let d = CGImageDestinationCreateWithURL(jpg as CFURL, "public.jpeg" as CFString, 1, nil) { CGImageDestinationAddImage(d, ictx.makeImage()!, nil); CGImageDestinationFinalize(d) }
+                let pres: Result<String, Error>? = await p28Within(15) {
+                    let ipc = try await ImagePresentationComponent(contentsOf: jpg)
+                    b.components.set(ipc)
+                    return "aspect \(String(format: "%.2f", ipc.aspectRatio(for: .mono) ?? -1)) mode \(ipc.viewingMode)"
+                }
+                got.append("image presentation \(pres.map { switch $0 { case .success(let v): return v; case .failure(let e): return "err \(String(describing: e).prefix(50))" } } ?? "timeout")")
+                #endif
+                #if os(iOS) || os(visionOS)
+                let anchor = AnchorEntity(.plane(.horizontal, classification: .any, minimumBounds: [0.1, 0.1]))
+                got.append("ARKit anchor component \(anchor.components[ARKitAnchorComponent.self] == nil ? "nil" : "set")")
+                #endif
+                #if os(iOS)
+                // the deprecated Combine loader, a photogrammetry sample, the ARView's entity gestures
+                let ctx = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                let req: LoadRequest<TextureResource> = TextureResource.generateAsync(from: ctx.makeImage()!, options: .init(semantic: .color))
+                let tex: Result<TextureResource, Error>? = await p28Within(10) {
+                    try await withCheckedThrowingContinuation { (k: CheckedContinuation<TextureResource, Error>) in
+                        var sub: AnyCancellable?
+                        sub = req.sink(receiveCompletion: { if case .failure(let e) = $0 { k.resume(throwing: e) }; _ = sub }, receiveValue: { k.resume(returning: $0) })
+                    }
+                }
+                got.append("load request \(tex.map { if case .success(let t) = $0 { return "\(t.width)x\(t.height)" } else { return "err" } } ?? "timeout")")
+                var pb: CVPixelBuffer?
+                CVPixelBufferCreate(nil, 4, 4, kCVPixelFormatType_32BGRA, nil, &pb)
+                if let pb { var sample = PhotogrammetrySample(id: 7, image: pb); sample.metadata = ["k": 1]; got.append("photogrammetry sample \(sample.id) metadata \(sample.metadata.count)") }
+                let view = ARView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), cameraMode: .nonAR, automaticallyConfigureSession: false)
+                let me = ModelEntity(mesh: .generateBox(size: 0.2)); me.generateCollisionShapes(recursive: false)
+                let ga = AnchorEntity(world: .zero); ga.addChild(me); view.scene.addAnchor(ga)
+                let grs: [any EntityGestureRecognizer] = view.installGestures(.all, for: me)
+                try expect(grs.count == 3 && grs.allSatisfy { $0.entity === me }, "entity gestures \(grs.count)")
+                got.append("entity gestures \(grs.map { "\(type(of: $0))" }.sorted())")
+                #endif
+                return got.joined(separator: ", ")
+            }
+        })
+        #endif
+        #if canImport(TabletopKit) && os(visionOS)
+        c.append(check("TabletopKit", "p28-custom-state-actions-counters-network", timeout: 60) {
+            try await onMain {
+                var setup = TableSetup(tabletop: P28Board())
+                setup.add(equipment: P28Pile())
+                setup.add(equipment: [P28Card(id: EquipmentIdentifier(11)), P28Card(id: EquipmentIdentifier(12))])
+                setup.add(equipment: P28Marker())
+                setup.add(equipment: P28Token())
+                setup.add(seats: [P28SeatA(id: TableSeatIdentifier(0)), P28SeatA(id: TableSeatIdentifier(1))])
+                setup.add(counter: ScoreCounter(id: ScoreCounter.Identifier(1), value: 0))
+                setup.register(action: P28PowerUp.self)
+                let game = TabletopGame(tableSetup: setup)
+                let coord = P28Coordinator()
+                game.attachNetworkCoordinator(coord)
+                game.claimAnySeat()
+                let upd: UpdateCounterAction = .updateCounter(matching: ScoreCounter.Identifier(1), value: 5)
+                let turnA: SetTurnAction = .setTurn(matching: TableSeatIdentifier(1))
+                let mark: CreateBookmarkAction = .createBookmark(id: StateBookmarkIdentifier(3))
+                try expect(upd.newValue == 5 && turnA.seatIDsInTurn == [TableSeatIdentifier(1)] && mark.bookmark.id == StateBookmarkIdentifier(3), "actions")
+                game.addAction(upd); game.addAction(turnA); game.addAction(mark)
+                game.addAction(P28PowerUp(by: 2))
+                for _ in 0..<10 { game.update(deltaTime: 1.0 / 30) }
+                var counter: Int64 = -1, turn: [Int] = [], kids: [Int] = [], raw: UInt64 = 0, faceUp = true, cursors = -1, power = -1, ctl = ""
+                game.withCurrentSnapshot { s in
+                    counter = s.counter(matching: ScoreCounter.Identifier(1))?.value ?? -1
+                    turn = s.turn.map(\.rawValue).sorted()
+                    kids = s.equipmentIDs(childrenOf: EquipmentIdentifier(10)).map(\.rawValue).sorted()
+                    raw = s.state(for: P28Marker()).rawValue
+                    ctl = "\(s.state(for: P28Marker()).seatControl)"
+                    faceUp = s.state(for: P28Card(id: EquipmentIdentifier(11))).faceUp
+                    power = s.state(for: P28Token()).power
+                    let cs: [TableCursor] = s.cursors; cursors = cs.count
+                    let control: ControllingSeats = s.state(for: P28Marker()).seatControl
+                    try? expect(control == .restricted([TableSeatIdentifier(0)]), "")
+                    if let seat = s.state(matching: TableSeatIdentifier(0)) { ctl += " seat0 taken \(p28SeatPlayer(seat))" }
+                    ctl += " pile parent \(p28Parent(s.state(for: P28Pile())))"
+                    let cid: TableCursorIdentifier? = cs.first?.id; _ = cid
+                }
+                let bookmarks: [StateBookmarkIdentifier] = game.bookmarks
+                let me: Player = game.localPlayer
+                let pid: PlayerIdentifier = me.id
+                try expect(counter >= 5 && turn == [1] && kids == [11, 12] && raw == 7 && !faceUp, "snapshot counter \(counter) turn \(turn) pile \(kids) raw \(raw) faceUp \(faceUp)")
+                // interactions, a toss representation, debug drawing, bookmarks
+                let inter = game.startInteraction(onEquipmentID: EquipmentIdentifier(20))
+                game.cancelAllInteractions()
+                let toss = TossableRepresentation.cube(height: 0.02)
+                let face = toss.face(for: .identity)
+                game.debugDraw(options: [DebugDrawOptions.drawTable, .drawSeats, .drawEquipment])
+                let bm = StateBookmark(id: StateBookmarkIdentifier(3))
+                if bookmarks.contains(bm.id) { game.jumpToBookmark(bm) }
+                let pose3 = EquipmentPose3D(id: EquipmentIdentifier(20), pose: Pose3D(position: Point3D(x: 0, y: 0.1, z: 0), rotation: Rotation3D()))
+                let vol: DefaultEquipmentLayout = .volumetric(layout: [pose3])
+                let interType: TabletopInteraction.Type = TabletopInteraction.self
+                game.detachNetworkCoordinator()
+                return "counter \(counter), turn [1], pile \(kids), marker \(raw) control \(ctl), custom power \(power), bookmarks \(bookmarks.map(\.rawValue)), cursors \(cursors), player \(pid.uuid.uuidString.isEmpty ? "?" : "id"), interaction \(inter == nil ? "nil" : "started"), toss face \(face.rawValue), layout \(type(of: vol)), \(interType), network \(Set(coord.log.all).sorted()), custom action saw \(Set(P28PowerUp.seen.all).sorted())"
             }
         })
         #endif
