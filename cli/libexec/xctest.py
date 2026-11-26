@@ -20,6 +20,7 @@ $X86SIM_XCTEST_PLATFORMS, sdks/<Platform>.platform, or the xtool SDK from `x86si
 Results: per-test lines while it runs, a summary as xcodebuild prints it, results.json and junit.xml in the output dir;
 exit status 0 when every test passed (or was skipped), 1 when one failed, 2 when nothing could run.
 """
+import fcntl
 import json, os, plistlib, re, shutil, subprocess, sys, time, uuid
 import xml.etree.ElementTree as ET
 from plistlib import UID
@@ -251,31 +252,44 @@ def thin_platform(src, name):
     dst_root = os.path.join(x86config.get("X86SIM_SCRATCH"), "xctest", "platforms")
     dst = os.path.join(dst_root, name + ".platform")
     stamp = "%s %s\n" % (src, os.stat(os.path.join(src, "Developer/Library/Frameworks/XCTest.framework")).st_mtime)
-    try:
-        if open(os.path.join(dst, ".x86sim-stamp")).read() == stamp:
-            return dst_root
-    except OSError:
-        pass
-    shutil.rmtree(dst, ignore_errors=True)
-    lipo = shutil.which("llvm-lipo") or shutil.which("lipo")
-    for part in PLATFORM_PARTS:
-        s, d = os.path.join(src, "Developer", part), os.path.join(dst, "Developer", part)
-        if not os.path.exists(s):
-            continue
-        os.makedirs(os.path.dirname(d), exist_ok=True)
-        if os.path.isdir(s):
-            shutil.copytree(s, d, symlinks=True)
-        else:
-            shutil.copy2(s, d)
-    for dp, _, fs in os.walk(dst):
-        for f in fs:
-            p = os.path.join(dp, f)
-            if not os.path.islink(p) and macho_archs(p):
-                if not lipo:
-                    die("llvm-lipo is needed to thin %s (install llvm)" % p)
-                subprocess.run([lipo, "-thin", "arm64", p, "-output", p + ".thin"], check=True)
-                os.replace(p + ".thin", p)
-    open(os.path.join(dst, ".x86sim-stamp"), "w").write(stamp)
+    os.makedirs(dst_root, exist_ok=True)
+    # Issue #49: runs on several phones at once share this copy. One builds it under a lock, in a sibling directory
+    # renamed into place; the others wait for the lock and use the finished copy (they used to find a half-made one:
+    # FileExistsError in copytree). A run still using the previous copy keeps its files until it ends (renamed aside).
+    with open(os.path.join(dst_root, ".%s.lock" % name), "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            if open(os.path.join(dst, ".x86sim-stamp")).read() == stamp:
+                return dst_root
+        except OSError:
+            pass
+        tmp = "%s.tmp.%d" % (dst, os.getpid())
+        shutil.rmtree(tmp, ignore_errors=True)
+        lipo = shutil.which("llvm-lipo") or shutil.which("lipo")
+        for part in PLATFORM_PARTS:
+            s, d = os.path.join(src, "Developer", part), os.path.join(tmp, "Developer", part)
+            if not os.path.exists(s):
+                continue
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, symlinks=True)
+            else:
+                shutil.copy2(s, d)
+        for dp, _, fs in os.walk(tmp):
+            for f in fs:
+                p = os.path.join(dp, f)
+                if not os.path.islink(p) and macho_archs(p):
+                    if not lipo:
+                        shutil.rmtree(tmp, ignore_errors=True)
+                        die("llvm-lipo is needed to thin %s (install llvm)" % p)
+                    subprocess.run([lipo, "-thin", "arm64", p, "-output", p + ".thin"], check=True)
+                    os.replace(p + ".thin", p)
+        open(os.path.join(tmp, ".x86sim-stamp"), "w").write(stamp)
+        old = "%s.old.%d" % (dst, os.getpid())
+        if os.path.lexists(dst):
+            os.rename(dst, old)
+        os.rename(tmp, dst)
+        shutil.rmtree(old, ignore_errors=True)
     return dst_root
 
 
