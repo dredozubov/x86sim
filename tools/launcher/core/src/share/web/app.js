@@ -922,7 +922,7 @@ function phoneView(id) {
       return b;
     });
     const lit = () => (info.poses || []).forEach((ps, k) => poseBtns[k].classList.toggle("on", Math.abs(cur - ps.angle) < 1 && (!ps.orientation || !orient || ps.orientation === orient)));
-    const slider = h("input", { type: "range", min: 0, max: 180, step: 1, value: cur, class: "vol", "aria-label": "Hinge angle",
+    const slider = h("input", { type: "range", min: 0, max: 180, step: "any", value: cur, class: "vol", "aria-label": "Hinge angle",
       oninput: (e) => {
         const v = Number(e.target.value);
         cur = v; show(v); lit();
@@ -944,7 +944,18 @@ function phoneView(id) {
     scale.append(swap);
     show(cur); lit();
     // moved from elsewhere (a pose, the MCP, the CLI): the slider follows unless it was just used here
-    hingeSyncs.add((deg, o) => { if (o) orient = o; if (performance.now() - sentAt > 1500 && document.activeElement !== slider) { slider.value = deg; cur = deg; show(deg); lit(); } });
+    // held: a finger or the mouse is on the slider (a touch doesn't focus it); it never follows the device then, and
+    // after a move from here only once the device has caught up with the angle sent (or 3 s on)
+    let held = false;
+    slider.addEventListener("pointerdown", () => { held = true; });
+    for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) slider.addEventListener(ev, () => { held = false; });
+    hingeSyncs.add((deg, o) => {
+      if (o) orient = o;
+      const since = performance.now() - sentAt;
+      if (held || document.activeElement === slider || since < 1000) return;
+      if (since < 3000 && Math.abs(deg - Number(slider.value)) > 1.5) return;
+      slider.value = deg; cur = deg; show(deg); lit();
+    });
     const reset = tool(I.resetView, "Reset the view", () => duo && duo.resetView && duo.resetView());
     return h("div", { class: "hingepanel" }, h("div", { class: "hingerow" }, slider, val), scale,
       h("div", { class: "hposes" }, ...poseBtns, h("span", { class: "grow" }), reset));

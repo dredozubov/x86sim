@@ -948,6 +948,11 @@ static void handle_line(char* line, Client* cl) {
 		slog("hinge %.1f -> %.1f in %d ms", from, to, ms);
 		avp_send_pose();   // the relay's other inputs (it may have started after the last command)
 		hinge_moving = 1;
+		// a newer hinge command supersedes this move: the lock is let go between steps, so commands that follow each
+		// other quickly (a slider dragged: one every 40 ms) ran interleaved and the move that finished last, not the
+		// one sent last, set the angle (a drag ended back where it started). The older move stops where it is.
+		static unsigned hinge_gen;
+		unsigned my_gen = ++hinge_gen;
 		for (int i = 1; i <= steps; i++) {
 			hinge_deg = from + (to - from) * i / steps;
 			hinge_vel = ms > 0 ? (to - from) * 1000.0 / ms : 0;
@@ -958,6 +963,7 @@ static void handle_line(char* line, Client* cl) {
 			pthread_mutex_unlock(&cmd_mu);
 			usleep(step_us);
 			pthread_mutex_lock(&cmd_mu);
+			if (my_gen != hinge_gen) return;
 		}
 		hinge_moving = 0;
 		hinge_deg = to; hinge_vel = 0; hinge_phase = 4;

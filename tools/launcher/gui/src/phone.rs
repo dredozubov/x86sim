@@ -571,8 +571,13 @@ impl App {
         // (value shown, when it was last sent, the value last sent)
         let (mut v, sent_at, sent) = ui.data(|d| d.get_temp::<(f64, f64, f64)>(key)).unwrap_or((f64::NAN, f64::NEG_INFINITY, f64::NAN));
         let file = self.inst(id).and_then(|i| i.hinge()).unwrap_or(0.0);
-        // a move takes up to 600 ms (a preset); after that the file is the truth (MCP / CLI moves too)
-        if v.is_nan() || now - sent_at > 1.0 {
+        // held: the slider is being dragged (last frame's answer); it never follows simhid then
+        let held_key = egui::Id::new(("hinge-slider-held", id));
+        let held = ui.data(|d| d.get_temp::<bool>(held_key)).unwrap_or(false);
+        // after a move from here the file is the truth once it has caught up with the angle sent (whole degrees,
+        // written as a move ends), or 3 s on; else at once (a preset's move takes up to 600 ms; MCP / CLI moves too)
+        let caught_up = sent.is_nan() || (file - sent).abs() <= 1.5 || now - sent_at > 3.0;
+        if v.is_nan() || (!held && now - sent_at > 1.0 && caught_up) {
             v = file;
         }
         ui.set_width(250.0);
@@ -583,7 +588,8 @@ impl App {
             });
         });
         ui.spacing_mut().slider_width = 250.0;
-        let r = ui.add(egui::Slider::new(&mut v, 0.0..=180.0).step_by(1.0).show_value(false));
+        let r = ui.add(egui::Slider::new(&mut v, 0.0..=180.0).show_value(false));
+        ui.data_mut(|d| d.insert_temp(held_key, r.dragged() && !r.drag_stopped()));
         let (mut sent_at, mut sent) = (sent_at, sent);
         if r.changed() || r.drag_stopped() {
             let dragging = r.dragged() && !r.drag_stopped();
@@ -591,7 +597,7 @@ impl App {
             // what the hinge is at: the last angle sent from here while it is recent, else simhid's (nothing sent
             // yet, or moved since by a preset, the MCP or the CLI). A NaN here never compared as changed: the slider
             // sent nothing until a preset had set it.
-            let at = if sent.is_nan() || now - sent_at > 1.0 { file } else { sent };
+            let at = if sent.is_nan() || (now - sent_at > 1.0 && caught_up) { file } else { sent };
             if (v - at).abs() >= 0.5 && (!dragging || now - sent_at >= 0.04) {
                 // arrow keys step a degree at a time: a short move each
                 let ms = if r.dragged() || r.drag_stopped() { 40 } else if (v - at).abs() <= 2.0 { 60 } else { 300 };
