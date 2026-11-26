@@ -31,6 +31,46 @@ import RoomPlan
 #if canImport(PaperKit) && (os(iOS) || os(visionOS))
 import PaperKit
 #endif
+#if canImport(IdentityLookup) && (os(iOS) || os(visionOS))
+import IdentityLookup
+#endif
+#if canImport(Messages) && os(iOS)
+import Messages
+#endif
+#if canImport(NetworkExtension)
+import NetworkExtension
+import Network
+#endif
+#if canImport(CallKit) && !os(tvOS)
+import CallKit
+#endif
+#if canImport(NearbyInteraction)
+import NearbyInteraction
+#endif
+#if canImport(VideoSubscriberAccount) && (os(iOS) || os(tvOS) || os(visionOS))
+import VideoSubscriberAccount
+#endif
+#if canImport(BrowserKit) && os(iOS)
+import BrowserKit
+#endif
+#if canImport(ExposureNotification) && os(iOS)
+import ExposureNotification
+#endif
+#if canImport(Photos)
+import Photos
+#endif
+#if canImport(AccessorySetupKit) && os(iOS)
+import AccessorySetupKit
+#endif
+#if canImport(WebKit) && (os(iOS) || os(visionOS))
+import WebKit
+#endif
+#if canImport(SafariServices) && (os(iOS) || os(visionOS))
+import SafariServices
+#endif
+#if canImport(ClassKit) && (os(iOS) || os(visionOS))
+import ClassKit
+#endif
 
 /// a Decodable type decoded from `json`: "ok", or the decoder's answer ("key <first missing key>", "type <path>", ...)
 func p28tDecode<T: Decodable>(_ t: T.Type, _ json: String) -> String {
@@ -68,6 +108,7 @@ extension Registry {
     static var p28tail: [Check] {
         var c: [Check] = []
         c += p28tWorkout + p28tEnergy + p28tTelephony + p28tWiFiAware + p28tNFC + p28tRoomPlan + p28tPaperKit
+        c += p28tIdentityLookup + p28tMessages + p28tNetworkExtension + p28tCallKit + p28tNearby + p28tVSA + p28tBrowserKit + p28tExposure + p28tPhotos + p28tAccessorySetup + p28tWebKit + p28tSafari + p28tClassKit
         return c
     }
 }
@@ -435,6 +476,392 @@ extension Registry {
                 return "markup controller zoom \(pm.zoomRange), edit controller features \(me.supportedFeatureSet.features.count)"
             }
             return r
+        })
+#endif
+        return c
+    }
+}
+
+/// secure-coding classes the system makes (no public initializer): each instantiated through init(coder:) from an
+/// empty archive (p27sFromEmptyCoder), then archived and decoded again as the same class; returns the failures
+func p28tCoderTable(_ names: [String]) throws -> (ok: Int, bad: [String]) {
+    var ok = 0, bad: [String] = []
+    for n in names {
+        guard let cls = NSClassFromString(n) else { bad.append(n + ":missing"); continue }
+        var made: NSObject?, err: Error?
+        if let ex = SDKCovCatch({ do { made = try p27sFromEmptyCoder(cls) } catch { err = error } }) { bad.append(n + ":raises \(ex.first ?? "")"); continue }
+        if let err { throw err }
+        guard let o = made else { bad.append(n + ":nil"); continue }
+        guard type(of: o) == cls, let back = try p27sRoundTrip(o), type(of: back) == cls else { bad.append(n + ":roundtrip"); continue }
+        ok += 1
+    }
+    return (ok, bad)
+}
+
+// MARK: IdentityLookup: classification requests / communications from archives, capabilities response, Live Caller ID
+
+extension Registry {
+    static var p28tIdentityLookup: [Check] {
+        var c: [Check] = []
+#if canImport(IdentityLookup) && (os(iOS) || os(visionOS))
+        c.append(check("IdentityLookup", "p28-requests-live-caller-id") {
+            let (ok, bad) = try p28tCoderTable(["ILCallClassificationRequest", "ILMessageClassificationRequest", "ILCallCommunication", "ILMessageCommunication",
+                                                "ILCommunication", "ILMessageFilterCapabilitiesQueryRequest", "ILNetworkResponse"])
+            let hier = p28tClasses([("ILCallCommunication", "ILCommunication"), ("ILMessageCommunication", "ILCommunication"),
+                                    ("ILCallClassificationRequest", "ILClassificationRequest"), ("ILMessageClassificationRequest", "ILClassificationRequest")])
+            #if os(iOS)
+            let resp = ILMessageFilterCapabilitiesQueryResponse()
+            resp.transactionalSubActions = [.transactionalFinance, .transactionalOrders]
+            resp.promotionalSubActions = [.promotionalOffers]
+            let rb = try p27sRoundTrip(resp) as? ILMessageFilterCapabilitiesQueryResponse
+            try expect(rb?.transactionalSubActions == [.transactionalFinance, .transactionalOrders] && rb?.promotionalSubActions == [.promotionalOffers], "capabilities response \(String(describing: rb))")
+            let ctx = LiveCallerIDLookupExtensionContext(serviceURL: URL(string: "https://x86sim.test/pir")!, tokenIssuerURL: URL(string: "https://x86sim.test/token")!, userTierToken: Data([1, 2]))
+            try expect(try p28tRoundTrip(ctx) == ctx, "context round trip")
+            let st: CallLookupExtensionStatus = LiveCallerIDLookupManager.shared.status(forExtensionWithIdentifier: "com.x86sim.test.sdkcov.nolookup")
+            let meta = [p28tName((any LiveCallerIDLookupProtocol).self), p28tName((any LiveCallerIDLookupExtensionConfiguration).self)]
+            #else
+            let st = "n/a", meta: [String] = []
+            #endif
+            try expect(bad.isEmpty && hier.isEmpty, "\(ok)/7 \(bad) \(hier)")
+            return "\(ok)/7 request / communication classes from archives; unknown lookup extension: \(st); \(meta.joined(separator: ", "))"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: Messages: sticker browser / view, the message layout base, UPI request, critical messaging values
+
+extension Registry {
+    static var p28tMessages: [Check] {
+        var c: [Check] = []
+#if canImport(Messages) && os(iOS)
+        c.append(check("Messages", "p28-stickers-upi-critical", timeout: 30) {
+            let r = try await onMain { () throws -> String in
+                let bv = MSStickerBrowserView(frame: CGRect(x: 0, y: 0, width: 320, height: 200), stickerSize: .large)
+                let bvc = MSStickerBrowserViewController(stickerSize: .small)
+                let sv = MSStickerView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), sticker: nil)
+                bv.reloadData(); _ = bvc.view
+                try expect(bv.stickerSize == .large && bvc.stickerSize == .small && bvc.stickerBrowserView.stickerSize == .small && sv.sticker == nil && !sv.isAnimating(), "sticker views")
+                return "browser view / controller / sticker view, animation \(sv.animationDuration)"
+            }
+            let upi = MSUPIRequest(validationToken: "p28-token", recipients: ["+15555550100"])
+            try expect(upi.validationToken == "p28-token" && upi.recipients == ["+15555550100"], "upi")
+            let layout: MSMessageLayout = MSMessageTemplateLayout()
+            try expect(layout.copy() is MSMessageTemplateLayout, "layout copy")
+            let rec = MSRecipient(phoneNumber: "+15555550101"), msg = MSCriticalMessage(messageText: "p28")
+            let errs: [MSCriticalMessagingError] = [.notSupported, .notAuthorized]
+            let st: MSCriticalMessagingAuthorizationStatus? = .init(rawValue: 0)
+            let m = MSCriticalSMSMessenger()
+            let ans = await p27sAnswer(10) { "\(try await m.checkAuthorizationStatus(for: [rec]).mapValues(\.rawValue))" }
+            try expect(Set([rec, MSRecipient(phoneNumber: "+15555550101")]).count == 1 && msg.messageText == "p28" && st == .unknown && errs[0].errorCode != errs[1].errorCode, "critical values")
+            return "\(r); UPI request; critical messaging: max \(m.maximumCriticalMessagingRecipients), status \(ans)"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: NetworkExtension: network / filter rules and settings, transparent proxy and Ethernet tunnel settings, providers
+
+extension Registry {
+    static var p28tNetworkExtension: [Check] {
+        var c: [Check] = []
+#if canImport(NetworkExtension)
+        // the filter / transparent proxy / Ethernet tunnel classes are macOS API (unavailable in Swift on the simulator
+        // platforms): which of them the runtime still carries, each under its declared superclass, and an instance
+        // made through init(coder:) from an empty archive for the secure-coding ones
+        c.append(check("NetworkExtension", "p28-macos-classes") {
+            let rows: [(String, String)] = [("NENetworkRule", "NSObject"), ("NEFilterRule", "NSObject"), ("NEFilterSettings", "NSObject"),
+                                            ("NETransparentProxyNetworkSettings", "NETunnelNetworkSettings"), ("NEEthernetTunnelNetworkSettings", "NEPacketTunnelNetworkSettings"),
+                                            ("NEEthernetTunnelProvider", "NEPacketTunnelProvider"), ("NEFilterPacketProvider", "NEFilterProvider"),
+                                            ("NETransparentProxyProvider", "NEAppProxyProvider"), ("NEFilterPacketContext", "NSObject"), ("NETransparentProxyManager", "NEVPNManager")]
+            let present = rows.filter { NSClassFromString($0.0) != nil }
+            let wrong = p28tClasses(present)
+            var coded: [String] = []
+            for n in ["NENetworkRule", "NEFilterRule", "NEFilterSettings"] where NSClassFromString(n) != nil {
+                if let o = try p27sFromEmptyCoder(NSClassFromString(n)!) { coded.append("\(n):\(type(of: o))") } else { coded.append("\(n):nil") }
+            }
+            try expect(wrong.isEmpty, "\(wrong)")
+            return "present \(present.count)/\(rows.count): \(present.map(\.0).joined(separator: " ")); from archives: \(coded.joined(separator: " "))"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: CallKit: the call actions (DTMF, group, translating) and their bases, a round trip each; the observer's calls
+
+extension Registry {
+    static var p28tCallKit: [Check] {
+        var c: [Check] = []
+#if canImport(CallKit) && !os(tvOS)
+        c.append(check("CallKit", "p28-call-actions") {
+            let call = UUID(), other = UUID()
+            let dtmf = CXPlayDTMFCallAction(call: call, digits: "12#", type: .singleTone)
+            let group = CXSetGroupCallAction(call: call, callUUIDToGroupWith: other)
+            let tr = CXSetTranslatingCallAction(call: call, isTranslating: true, localLanguage: "en", remoteLanguage: "de")
+            let base: [CXCallAction] = [dtmf, group, tr]
+            let back = try base.map { try p27sRoundTrip($0) as? CXCallAction }
+            let db = back[0] as? CXPlayDTMFCallAction, gb = back[1] as? CXSetGroupCallAction, tb = back[2] as? CXSetTranslatingCallAction
+            try expect(db?.digits == "12#" && db?.type == .singleTone && gb?.callUUIDToGroupWith == other && tb?.isTranslating == true && tb?.remoteLanguage == "de", "round trip \(back)")
+            let actions: [CXAction] = base
+            try expect(actions.allSatisfy { !$0.isComplete && $0.uuid != call } && back.allSatisfy { $0?.callUUID == call }, "bases")
+            #if os(iOS) || os(visionOS)
+            let calls: [CXCall] = CXCallObserver().calls
+            #else
+            let calls: [CXCall] = []
+            #endif
+            return "DTMF / group / translating actions round trip; \(calls.count) calls"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: NearbyInteraction: DL-TDOA configuration, convergence values, the result classes from archives
+
+extension Registry {
+    static var p28tNearby: [Check] {
+        var c: [Check] = []
+#if canImport(NearbyInteraction) && (os(iOS) || os(watchOS))
+        c.append(check("NearbyInteraction", "p28-dltdoa-convergence") {
+            let cfg = NIDLTDOAConfiguration(networkIdentifier: 7)
+            let base: NIConfiguration = cfg
+            let back = try p27sRoundTrip(base) as? NIDLTDOAConfiguration
+            try expect(back?.networkIdentifier == 7 && (cfg.copy() as? NIDLTDOAConfiguration)?.networkIdentifier == 7, "dltdoa \(String(describing: back))")
+            let r = NIAlgorithmConvergenceStatus.Reason(rawValue: "p28")
+            let st: NIAlgorithmConvergenceStatus = .notConverged([r])
+            try expect(st != .converged && st == .notConverged([r]), "status")
+            // (NIDLTDOAMeasurement's init(coder:) raises NSInternalInconsistencyException on an empty archive: "NSData must
+            // contain enough bytes for simd_double3"; only its class is checked)
+            let (ok, bad) = try p28tCoderTable(["NIAlgorithmConvergence", "NIDiscoveryToken"])
+            let hier = p28tClasses([("NIDLTDOAMeasurementFloorElevation", "NSObject"), ("NIDLTDOAMeasurement", "NSObject")])
+            let tok: NIDiscoveryToken? = NISession().discoveryToken
+            try expect(hier.isEmpty, "\(hier)")
+            return "DL-TDOA configuration round trip, convergence status; \(ok)/2 result classes from archives\(p28tFirst(bad)); session token \(tok == nil ? "nil" : "present")"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: VideoSubscriberAccount: metadata request, application providers, subscriptions, the account manager's answer
+
+extension Registry {
+    static var p28tVSA: [Check] {
+        var c: [Check] = []
+#if canImport(VideoSubscriberAccount) && (os(iOS) || os(tvOS) || os(visionOS))
+        c.append(check("VideoSubscriberAccount", "p28-metadata-request", timeout: 30) {
+            let ap = VSAccountApplicationProvider(localizedDisplayName: "p28 TV", identifier: "p28.provider")
+            let rq = VSAccountMetadataRequest()
+            rq.channelIdentifier = "p28"; rq.includeAccountProviderIdentifier = true; rq.isInterruptionAllowed = false
+            rq.applicationAccountProviders = [ap]; rq.attributeNames = ["uid"]
+            try expect(rq.applicationAccountProviders?.first?.identifier == "p28.provider" && !rq.isInterruptionAllowed, "request")
+            let sub = VSSubscription()
+            sub.accessLevel = .freeWithAccount; sub.tierIdentifiers = ["p28"]
+            try expect(sub.accessLevel == .freeWithAccount && sub.tierIdentifiers == ["p28"], "subscription")
+            let mgr = VSAccountManager()
+            let box = P28TBox<String>()
+            let res: VSAccountManagerResult = mgr.enqueue(rq) { (md: VSAccountMetadata?, e: Error?) in
+                box.set(md.map { "metadata \(String(describing: $0.accountProviderIdentifier))" } ?? "error \((e as NSError?)?.domain ?? "") \((e as NSError?)?.code ?? 0)")
+            }
+            let ans = await box.wait(15) ?? "no answer in 15 s"
+            res.cancel()
+            let hier = p28tClasses([("VSAccountProviderResponse", "NSObject"), ("VSAutoSignInToken", "NSObject"), ("VSAutoSignInTokenUpdateContext", "NSObject"), ("VSAppleSubscription", "NSObject")])
+            try expect(hier.isEmpty && !ans.hasPrefix("metadata"), "\(ans) \(hier)")
+            return "metadata request: \(ans)"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: BrowserKit: the browser data exchange records and options, secure-coding round trips
+
+extension Registry {
+    static var p28tBrowserKit: [Check] {
+        var c: [Check] = []
+#if canImport(BrowserKit) && os(iOS)
+        c.append(check("BrowserKit", "p28-browser-data") {
+            let t = Date(timeIntervalSince1970: 1_790_000_000)
+            let objs: [BEBrowserData] = [
+                BEBrowserDataBookmark(isFolder: false, title: "p28", identifier: "b1", url: URL(string: "https://x86sim.test/b")!, parentIdentifier: nil),
+                BEBrowserDataReadingListItem(title: "p28 read", url: URL(string: "https://x86sim.test/r")!, dateOfLastVisit: t),
+                BEBrowserDataExtension(displayName: "p28 ext", developerName: "x86sim", identifier: "e1", storeIdentifier: "123"),
+                BEBrowserDataHistoryVisit(url: URL(string: "https://x86sim.test/h")!, dateOfLastVisit: t, title: "p28 h", loadedSuccessfully: true, httpGet: true, redirectSourceURL: nil, redirectSourceDateOfVisit: nil, redirectDestinationURL: nil, redirectDestinationDateOfVisit: nil, visitCount: 3),
+            ]
+            var bad: [String] = []
+            for o in objs { if let b = try p27sRoundTrip(o), type(of: b) == type(of: o), p27sBytes(b) == p27sBytes(o) {} else { bad.append("\(type(of: o))") } }
+            let base = BEBrowserData(sourceApplicationBundleIdentifier: "com.x86sim.p28", sourceApplicationLocalizedName: "p28")
+            let md = BEExportMetadata(supportForExportToFiles: true, bookmarksCount: 1, readingListCount: 2, historyCount: 3, extensionsCount: 4)
+            let eo = BEExportOptions(exportToFiles: false, dataTypes: [.bookmarks, .history]), io = BEImportOptions(importFromFiles: true)
+            let mb = try p27sRoundTrip(md) as? BEExportMetadata, eob = try p27sRoundTrip(eo) as? BEExportOptions, iob = try p27sRoundTrip(io) as? BEImportOptions
+            try expect(bad.isEmpty && base.sourceApplicationLocalizedName == "p28" && mb?.historyCount == 3 && eob?.dataTypes == [.bookmarks, .history] && iob?.importFromFiles == true,
+                       "round trips \(bad)")
+            return "4 browser data records, export metadata / options, import options round trip"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: ExposureNotification: configuration and keys; the result classes
+
+extension Registry {
+    static var p28tExposure: [Check] {
+        var c: [Check] = []
+#if canImport(ExposureNotification) && os(iOS)
+        c.append(check("ExposureNotification", "p28-configuration-keys") {
+            let cfg = ENExposureConfiguration()
+            cfg.immediateDurationWeight = 150; cfg.infectiousnessForDaysSinceOnsetOfSymptoms = [0: 1]; cfg.attenuationDurationThresholds = [50, 70]
+            let key = ENTemporaryExposureKey()
+            key.keyData = Data(repeating: 7, count: 16); key.rollingStartNumber = 2_900_000; key.rollingPeriod = 144; key.transmissionRiskLevel = 2
+            try expect(cfg.immediateDurationWeight == 150 && cfg.attenuationDurationThresholds == [50, 70] && key.keyData.count == 16 && key.rollingPeriod == 144, "values")
+            let hier = p28tClasses(["ENExposureDaySummary", "ENExposureDetectionSummary", "ENExposureInfo", "ENExposureSummaryItem", "ENExposureWindow", "ENScanInstance"].map { ($0, "NSObject") })
+            try expect(hier.isEmpty, "\(hier)")
+            return "configuration + key values; 6 result classes present"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: Photos: upload job options, project classes, background upload extension types
+
+extension Registry {
+    static var p28tPhotos: [Check] {
+        var c: [Check] = []
+#if canImport(Photos) && (os(iOS) || os(visionOS) || os(tvOS))
+        c.append(check("Photos", "p28-upload-projects") {
+            var parts: [String] = []
+            #if os(iOS) || os(visionOS)
+            let o = PHAssetResourceUploadJobOptions()
+            o.preventsExpensiveNetworkAccess = true
+            try expect((o.copy() as? PHAssetResourceUploadJobOptions)?.preventsExpensiveNetworkAccess == true, "upload options")
+            let results: [PHBackgroundResourceUploadProcessingResult] = [.init(rawValue: 0), .init(rawValue: 1)].compactMap { $0 }
+            parts.append("upload results \(results.count)")
+            parts.append(p28tName((any PHBackgroundResourceUploadExtension).self))
+            parts.append(p28tName((any PHBackgroundResourceUploadJobExtension).self))
+            #endif
+            let hier = p28tClasses([("PHProject", "PHAssetCollection"), ("PHProjectChangeRequest", "PHChangeRequest"), ("PHAssetExtendedMetadata", "NSObject")])
+            try expect(hier.isEmpty, "\(hier)")
+            return parts.joined(separator: ", ") + "; project classes present"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: AccessorySetupKit: picker display items and settings, property compare strings (no accessory to discover)
+
+extension Registry {
+    static var p28tAccessorySetup: [Check] {
+        var c: [Check] = []
+#if canImport(AccessorySetupKit) && os(iOS)
+        c.append(check("AccessorySetupKit", "p28-display-items", timeout: 30) {
+            let cs = ASPropertyCompareString(string: "p28", compareOptions: [.caseInsensitive])
+            try expect(cs.string == "p28" && cs.compareOptions == [.caseInsensitive], "compare string")
+            let settings = ASPickerDisplaySettings.default
+            settings.discoveryTimeout = .short
+            let img = await onMain { UIImage(systemName: "star")! }
+            let d = ASDiscoveryDescriptor(); d.bluetoothServiceUUID = .init(string: "180D")
+            let mig = ASMigrationDisplayItem(name: "p28 old", productImage: img, descriptor: d)
+            mig.peripheralIdentifier = UUID()
+            try expect(mig.name == "p28 old" && mig.peripheralIdentifier != nil, "migration item")
+            let hier = p28tClasses([("ASDiscoveredAccessory", "ASAccessory"), ("ASDiscoveredDisplayItem", "ASPickerDisplayItem"), ("ASAccessoryEvent", "NSObject")])
+            try expect(hier.isEmpty, "\(hier)")
+            return "compare string, picker settings timeout \(settings.discoveryTimeout), migration item; discovered accessory / item / event classes present"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: WebKit: content world configuration; the context menu / preview / open panel / immersive classes
+
+extension Registry {
+    static var p28tWebKit: [Check] {
+        var c: [Check] = []
+#if canImport(WebKit) && (os(iOS) || os(visionOS))
+        c.append(check("WebKit", "p28-content-world-config", timeout: 30) {
+            let r = try await onMain { () throws -> String in
+                let cfg = WKContentWorld.Configuration()
+                try expect(NSStringFromClass(type(of: cfg)) == "WKContentWorldConfiguration", "class \(type(of: cfg))")
+                cfg.allowAccessingClosedShadowRoots = true
+                cfg.isInspectable = true
+                let back = try p27sRoundTrip(cfg) as? WKContentWorld.Configuration
+                try expect(back?.allowAccessingClosedShadowRoots == true, "config round trip")
+                // (neither -copy nor WKContentWorld(configuration:) is called: after either the app dies at the next
+                // autorelease-pool drain, a message to a freed WKContentWorldConfiguration (copy over-releases it), on
+                // Apple's simulator too)
+                return "inspectable \(back?.isInspectable == true)"
+            }
+            let hier = p28tClasses([("WKContextMenuElementInfo", "NSObject"), ("WKPreviewElementInfo", "NSObject"), ("WKOpenPanelParameters", "NSObject")])
+            try expect(hier.isEmpty, "\(hier)")
+            return "configuration round trip, \(r); element info / open panel classes present"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: SafariServices: the Safari view controller's configuration, activity button, data store and prewarming token
+
+extension Registry {
+    static var p28tSafari: [Check] {
+        var c: [Check] = []
+#if canImport(SafariServices) && (os(iOS) || os(visionOS))
+        c.append(check("SafariServices", "p28-config-datastore-prewarm", timeout: 30) {
+            let r = await onMain { () -> String in
+                let cfg = SFSafariViewController.Configuration()
+                cfg.entersReaderIfAvailable = true; cfg.barCollapsingEnabled = false
+                let btn = SFSafariViewController.ActivityButton(templateImage: UIImage(systemName: "star")!, extensionIdentifier: "com.x86sim.test.sdkcov.share")
+                cfg.activityButton = btn
+                let names = [NSStringFromClass(type(of: cfg)), NSStringFromClass(type(of: btn))]
+                let tok = SFSafariViewController.prewarmConnections(to: [URL(string: "https://x86sim.test/")!])
+                let tn = NSStringFromClass(type(of: tok)); tok.invalidate()
+                let cp = cfg.copy() as? SFSafariViewController.Configuration
+                return "\(names.joined(separator: ",")),\(tn) reader \(cp?.entersReaderIfAvailable == true) button \(cp?.activityButton?.extensionIdentifier ?? "nil")"
+            }
+            try expect(r.hasPrefix("SFSafariViewControllerConfiguration,SFSafariViewControllerActivityButton,SFSafariViewControllerPrewarmingToken reader true button com.x86sim"), r)
+            let b = P28TBox<String>()
+            let ds = SFSafariViewController.DataStore.default
+            ds.clearWebsiteData { b.set("cleared") }
+            let ans = await b.wait(10) ?? "no answer in 10 s"
+            try expect(NSStringFromClass(type(of: ds)) == "SFSafariViewControllerDataStore" && ans == "cleared", "data store \(ans)")
+            return r + "; data store \(ans)"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: ClassKit: activities and binary items in the app's main context
+
+extension Registry {
+    static var p28tClassKit: [Check] {
+        var c: [Check] = []
+#if canImport(ClassKit) && (os(iOS) || os(visionOS))
+        c.append(check("ClassKit", "p28-activity-items", timeout: 30) {
+            let item = CLSBinaryItem(identifier: "p28-done", title: "Done", type: .yesNo)
+            item.value = true
+            let gen: CLSActivityItem = item, obj: CLSObject = item
+            try expect(gen.identifier == "p28-done" && item.valueType == .yesNo && obj.dateCreated.timeIntervalSinceNow < 1, "binary item")
+            let ctx = CLSDataStore.shared.mainAppContext
+            let act: CLSActivity = ctx.createNewActivity()
+            act.start()
+            act.addProgressRange(fromStart: 0, toEnd: 0.5)
+            let afterRange = act.progress
+            act.progress = 0.5
+            act.stop()
+            act.primaryActivityItem = item
+            act.addAdditionalActivityItem(CLSScoreItem(identifier: "p28-score", title: "Score", score: 8, maxScore: 10))
+            let prim = act.primaryActivityItem?.identifier ?? "nil", extra = act.additionalActivityItems.map(\.identifier)
+            // Apple's simulator: an activity of the main app context (no ClassKit entitlement) takes progress but keeps no items
+            try expect(act.progress == 0.5 && prim == "nil" && extra.isEmpty, "activity items \(prim) \(extra), progress \(act.progress)")
+            let back = try p27sRoundTrip(item) as? CLSBinaryItem
+            return "activity progress after range \(afterRange), set \(act.progress), items \(prim) + \(extra); binary item archive \(back == nil ? "nil" : "ok")"
         })
 #endif
         return c
