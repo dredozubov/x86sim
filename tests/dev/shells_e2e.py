@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""x86Sim: cross-platform app shells built on Linux (x86sim dev's devweb.rs: the shell's own CLI writes the Xcode
-project, Swift Build builds it), run on a phone and driven through x86sim-mcp.
+"""x86Sim: cross-platform app shells built on Linux (x86sim dev through the dev toolchain's tools/build-project: the
+shell's own CLI writes the Xcode project, Swift Build builds it), run on a phone and driven through x86sim-mcp.
 
 Each check copies the dev toolchain's sample (shells/samples/<name>) to OUT/work/<name>, then dev_run installs its
 packages, runs the shell's iOS step, builds the Xcode project with Swift Build, installs and launches the app; the

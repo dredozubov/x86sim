@@ -352,7 +352,7 @@ fn run(cmd: &str, mut args: Vec<String>) -> anyhow::Result<ExitCode> {
         "rn-device" => {
             // x86sim dev device for a React Native / Expo app: device build, then xtool install (sign + install)
             let p = dev::project(Path::new("."))?;
-            let app = x86sim_core::devpods::build(&p.dir, &p.kind, "iphoneos", true, &mut |l| println!("{l}"))?;
+            let app = dev::device_build(&p.dir, true, &mut |l| println!("{l}"))?;
             let mut c = dev::command(dev::which("xtool").unwrap_or_else(|| PathBuf::from("xtool")));
             c.arg("install").arg(&app).args(&args).args(&app_args);
             exec(c)

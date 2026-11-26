@@ -2,7 +2,8 @@
 """x86Sim dev check: apps that use other iOS build setups, built only on Linux, run on an x86Sim phone.
 
 Each setup has one real open-source sample, cloned at a pinned commit into WORK and run by dev_run through MCP, which
-sees the setup and runs its steps before Swift Build builds the Xcode project (x86sim dev / devgen.rs):
+sees the setup and runs its steps before Swift Build builds the Xcode project (x86sim dev / the dev toolchain's
+tools/build-project):
   carthage   demolaf/movies-uikit (MIT): a Cartfile with Alamofire, SDWebImage, realm-swift (built from their Xcode
              projects by `carthage bootstrap --use-xcframeworks`), RxSwift and rive-ios (their prebuilt xcframeworks)
   xcodegen   HelioMesquita/Swiftmazing (MIT): project.yml with two local Swift packages and a remote one; XcodeGen
