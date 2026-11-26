@@ -643,6 +643,33 @@ fn layer_of(bundle: &str, window: &str, class: &str, id: &str) -> &'static str {
 /// (the front window's "window-controls:<bundle>" and its resize grabber, a "card:<bundle>:..." over each window behind
 /// it, back to front). Those are the "window" layer, not a system overlay (the app switcher has no window controls).
 /// Answers each windowed app's stacking order (higher: nearer the front); empty when no app is in a window.
+/// Unity's reader (simax_unity.m) skips a control's own Text / TMP_Text child by asking the engine for the text's
+/// parent control, a call code stripping can remove from a real build: then each button's caption came twice, as the
+/// button's label and as a text element. A Unity text element whose label is a control's label or value, centered
+/// inside that control, is the control's caption: it goes.
+fn drop_engine_captions(els: &mut Vec<El>) {
+    let unity = |e: &El| e.key.as_deref().is_some_and(|k| k.starts_with("unity:"));
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let controls: Vec<(u32, [f64; 4], String, String)> = els
+        .iter()
+        .filter(|e| unity(e) && actionable(&e.role))
+        .map(|e| (e.pid, e.frame, norm(e.label.as_deref().unwrap_or("")), norm(e.value.as_deref().unwrap_or(""))))
+        .collect();
+    if controls.is_empty() {
+        return;
+    }
+    els.retain(|e| {
+        if !unity(e) || e.role != "text" {
+            return true;
+        }
+        let l = norm(e.label.as_deref().unwrap_or(""));
+        let (cx, cy) = (e.frame[0] + e.frame[2] / 2.0, e.frame[1] + e.frame[3] / 2.0);
+        !controls.iter().any(|(pid, f, cl, cv)| {
+            *pid == e.pid && !l.is_empty() && (l == *cl || l == *cv) && cx >= f[0] && cx <= f[0] + f[2] && cy >= f[1] && cy <= f[1] + f[3]
+        })
+    });
+}
+
 fn windows_z(snap: &mut Snapshot) -> HashMap<String, i32> {
     let mut z = HashMap::new();
     let chrome = |e: &El| e.app == SPRINGBOARD && e.window == "SBMainSwitcherWindow";
@@ -977,6 +1004,8 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     if inst.inner.is_some() {
         snap.display = Some(if inst.inner_active() { "inner" } else { "outer" }.into());
     }
+    // a game engine's control and the caption inside it, read as two elements: the control says it
+    drop_engine_captions(&mut snap.elements);
     // watchOS: Carousel's app grid covers the watch face (which stays active under it)
     if snap.elements.iter().any(|e| e.app == "com.apple.Carousel" && e.layer == "home") {
         snap.elements.retain(|e| e.app != WATCH_FACE);
@@ -2256,6 +2285,37 @@ mod tests {
 
     fn el(r: &str, pid: u32, oid: &str, role: &str, label: &str, y: f64) -> El {
         El { r: r.into(), pid, oid: oid.into(), role: role.into(), label: Some(label.into()), app: "a".into(), layer: "app".into(), frame: [0.0, y, 100.0, 40.0], enabled: true, ..Default::default() }
+    }
+
+    #[test]
+    fn unity_captions_once() {
+        // what a stripped Unity build gave: each control and the Text inside it
+        let u = |role: &str, label: &str, value: Option<&str>, frame: [f64; 4], id: u32| El {
+            key: Some(format!("unity:{id}")),
+            value: value.map(str::to_string),
+            frame,
+            ..el("", 7, &id.to_string(), role, label, 0.0)
+        };
+        let mut els = vec![
+            u("text", "Unity on x86Sim", None, [100.0, 180.0, 200.0, 40.0], 1),
+            u("button", "Play", None, [140.0, 317.0, 120.0, 40.0], 2),
+            u("text", "Play", None, [150.0, 322.0, 100.0, 30.0], 3),
+            u("textfield", "Your name", None, [100.0, 437.0, 200.0, 40.0], 4),
+            u("text", "Your name", None, [105.0, 442.0, 190.0, 30.0], 5),
+            u("text", "Score: 0", None, [140.0, 537.0, 120.0, 40.0], 6),
+            // the same words elsewhere on the screen stay (a heading "Play" above the button)
+            u("text", "Play", None, [140.0, 250.0, 120.0, 40.0], 8),
+        ];
+        // a UIKit label with a button's caption inside it is not the engine's
+        let mut uikit = el("", 7, "99", "text", "Play", 0.0);
+        uikit.frame = [150.0, 322.0, 100.0, 30.0];
+        els.push(uikit);
+        drop_engine_captions(&mut els);
+        let got: Vec<(&str, &str)> = els.iter().map(|e| (e.role.as_str(), e.label.as_deref().unwrap_or(""))).collect();
+        assert_eq!(
+            got,
+            [("text", "Unity on x86Sim"), ("button", "Play"), ("textfield", "Your name"), ("text", "Score: 0"), ("text", "Play"), ("text", "Play")]
+        );
     }
 
     #[test]
