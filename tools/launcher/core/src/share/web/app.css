@@ -399,7 +399,11 @@ dialog::backdrop { background: var(--scrim); }
 .segscroll::-webkit-scrollbar { display: none; }
 .fbody .seg { align-self: flex-start; }
 .hingerow { display: flex; align-items: center; gap: 10px; }
-.hingerow .muted { white-space: nowrap; }
+/* the reading's width is fixed: it changes length at 85 degrees ("half open" / "open"), and a slider that took the
+   rest of the row then changed width under the finger, so the same finger position read ~9 degrees apart and the
+   hinge flapped across the screen swap */
+.hingerow input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.hingerow .muted { white-space: nowrap; flex: none; width: 15ch; text-align: right; font-variant-numeric: tabular-nums; }
 .hscale { position: relative; height: 22px; margin: 2px 8px 6px; }
 .hscale .tk { position: absolute; top: 0; width: 1px; height: 4px; background: var(--ink-3); }
 .hscale .tk.big { height: 7px; }
