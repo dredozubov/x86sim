@@ -100,6 +100,13 @@ against a CPU decoder.
 Optional: `X86SIM_VKMTL_LOG=1` (metalhostd trace), `X86SIM_VKMTL_DUMP=1` (metalhostd saves every metallib it
 receives to `var/metal/captured/`), `X86SIM_METAL_PROFILE=<n>` (hostFeatureProfile, default 10001 =
 Mac2 + Common3, no tile shaders), `MTLVK_LOG=1` (mtlvk trace).
+Slow or hung GPU work (issue #37: amdgpu `ring gfx_0.0.0 timeout`, thread `m2v-submit`): mtlvk.log names the Vulkan
+driver and version at start, logs every command buffer still not complete `MTLVK_HANG_SECS` s after its commit
+(default 1, `0` = off) with what it carries (passes and target sizes, draws, dispatches, blits, its pipelines'
+function names, event waits with whether each is met: a wait not met is held on the host and never reaches the GPU)
+and how long it finally took, and logs the device's first loss with the driver's fault report (`VK_EXT_device_fault`,
+where the driver gives one). On RADV, `RADV_DEBUG=hang` in mtlvk's environment (the launcher's) also writes a hang
+report (`~/radv_dumps_*`); it slows every submission.
 
 ## Build and run
 
