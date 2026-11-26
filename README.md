@@ -720,6 +720,10 @@ x86sim dev reload                     # reload the JavaScript (r in Metro); x86s
 - **.NET for iOS**: a directory with a `net*-ios` `.csproj` builds with `dotnet/build.sh` (the iOS workload on Linux,
   NativeAOT; set up once with `external/omarchy-apple-dev/dotnet/setup.sh`): `x86sim dev run` builds, installs and
   launches it (`tests/dev/dotnet_e2e.py`: a UIKit counter in C# on a phone).
+- **Rust apps**: a cargo package is built with cargo for `aarch64-apple-ios-sim` / `aarch64-apple-ios` with the same
+  SDK and `ld64.lld` (the fork's `rust/`: `rust/setup.sh` adds the rustup targets, `rust/build.py` makes the `.app`);
+  `x86sim dev run <crate dir>` builds, installs and launches it. Status per setup, checked by `tests/dev/rust_e2e.py`
+  on a phone: plain Rust (UIKit through objc2), Tauri 2 (its Swift half built with Linux Swift), Dioxus mobile and Bevy run. See `external/omarchy-apple-dev/rust/README.md`.
 - **Run on a device**: `device-run.sh` (`x86sim dev device`) pairs an iPhone, installs and launches the app, attaches
   LLDB, streams its console and symbolicates crash reports.
 - **Publish**: `ship.sh` (`x86sim dev ship`) builds a release `.ipa`, creates certificates and profiles, signs it and

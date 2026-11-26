@@ -325,7 +325,7 @@ impl App {
                 }
                 let detail = format!("{} · {} · {}", p.kind, if p.bundle_id.is_empty() { "-" } else { &p.bundle_id }, p.dir.display());
                 list_row(ui, icon::FILE_CODE, &p.name, &detail, |ui| {
-                    let can = st.ready_sim && p.kind == "xtool" && !task_running;
+                    let can = ((st.ready_sim && p.kind == "xtool") || p.kind == "rust") && !task_running;
                     if ui.add_enabled(can && !self.develop.phone.is_empty(), Btn::primary("Run").icon(icon::PLAY)).on_hover_text("Build, install and open it on the device above").clicked() {
                         act = Some(("run".into(), p.dir.clone()));
                     }
