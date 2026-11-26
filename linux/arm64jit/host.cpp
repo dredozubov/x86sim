@@ -137,7 +137,11 @@ static Mapped map_macho(const std::string &path, bool want_unixthread) {
         int prot = (sg->initprot & 1 ? PROT_READ : 0) | (sg->initprot & 2 ? PROT_WRITE : 0);  // guest code is never host-executed
         if (!prot) prot = PROT_READ;
         if (sg->filesize) {
-            void *p = mmap((void *)(sg->vmaddr + m.slide), sg->filesize, prot | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, slice + sg->fileoff);
+            // RAM 14: a segment the guest cannot write (__TEXT, __LINKEDIT) is mapped read-only, so the idle file trim
+            // (X86SIM_A64_FILETRIM, r-p mappings only) drops its clean pages: a daemon's own __TEXT stayed resident
+            // (locationd 17 of 19 MB). dyld_sim keeps write: dyldsim.cpp patches its __TEXT in place.
+            const int mprot = is_dyld || (sg->initprot & 2) ? prot | PROT_WRITE : prot;
+            void *p = mmap((void *)(sg->vmaddr + m.slide), sg->filesize, mprot, MAP_PRIVATE | MAP_FIXED, fd, slice + sg->fileoff);
             if (p == MAP_FAILED) die("cannot map %s %s", path.c_str(), sg->segname);
         }
         if (sg->vmsize > sg->filesize) {
