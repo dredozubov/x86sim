@@ -628,6 +628,9 @@ function phoneView(id) {
   let lastState = {};
   function onText(m) {
     if (m.t === "hello") {
+      // a server restarted on another build: this tab still runs the old scripts, so load the new ones
+      if (m.build && window.__x86simBuild && m.build !== window.__x86simBuild) { location.reload(); return; }
+      if (m.build) window.__x86simBuild = m.build;
       info = { ...info, ...m };
       head();
       document.title = m.name + " · x86Sim";
@@ -925,6 +928,9 @@ function phoneView(id) {
     const slider = h("input", { type: "range", min: 0, max: 180, step: "any", value: cur, class: "vol", "aria-label": "Hinge angle",
       oninput: (e) => {
         const v = Number(e.target.value);
+        // an input that only repeats what the device sync just set is no move of the user's (some browsers fire one
+        // when the value is set under a finger): never sent back, so a stale angle can't echo to the device
+        if (synced && performance.now() - synced[1] < 250 && Math.abs(v - synced[0]) < 0.01) return;
         cur = v; show(v); lit();
         // while dragged: a short move at most every 40 ms, the last value when let go
         clearTimeout(pend);
@@ -946,15 +952,16 @@ function phoneView(id) {
     // moved from elsewhere (a pose, the MCP, the CLI): the slider follows unless it was just used here
     // held: a finger or the mouse is on the slider (a touch doesn't focus it); it never follows the device then, and
     // after a move from here only once the device has caught up with the angle sent (or 3 s on)
-    let held = false;
-    slider.addEventListener("pointerdown", () => { held = true; });
-    for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) slider.addEventListener(ev, () => { held = false; });
+    let held = false, synced = null;
+    // pointer and touch both (a touch on a range can end its pointer events early, as the browser takes the gesture)
+    for (const ev of ["pointerdown", "touchstart", "mousedown"]) slider.addEventListener(ev, () => { held = true; }, { passive: true });
+    for (const ev of ["pointerup", "touchend", "touchcancel", "mouseup"]) window.addEventListener(ev, () => { held = false; }, { passive: true });
     hingeSyncs.add((deg, o) => {
       if (o) orient = o;
       const since = performance.now() - sentAt;
       if (held || document.activeElement === slider || since < 1000) return;
       if (since < 3000 && Math.abs(deg - Number(slider.value)) > 1.5) return;
-      slider.value = deg; cur = deg; show(deg); lit();
+      slider.value = deg; synced = [Number(slider.value), performance.now()]; cur = deg; show(deg); lit();
     });
     const reset = tool(I.resetView, "Reset the view", () => duo && duo.resetView && duo.resetView());
     return h("div", { class: "hingepanel" }, h("div", { class: "hingerow" }, slider, val), scale,

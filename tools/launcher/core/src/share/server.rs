@@ -43,6 +43,23 @@ const ICONS_TTF: &[u8] = include_bytes!("web/icons.ttf");
 // the Network section (netapi.rs)
 const NET_JS: &str = include_str!("web/netpanel.js");
 
+/// The page's build: a hash of every embedded page file. A page loaded from another build reloads itself when its
+/// socket reconnects to this one (a server restarted on new code; an open tab otherwise keeps running the old scripts)
+fn web_build() -> String {
+    use std::sync::OnceLock;
+    static B: OnceLock<String> = OnceLock::new();
+    B.get_or_init(|| {
+        let mut h: u64 = 1469598103934665603;
+        for part in [INDEX.as_bytes(), APP_JS.as_bytes(), APP_CSS.as_bytes(), AX_JS.as_bytes(), AX_CSS.as_bytes(), MIC_JS.as_bytes(), DUO_JS.as_bytes(), PANELS_JS.as_bytes(), NET_JS.as_bytes(), ICONS_TTF] {
+            for b in part {
+                h = (h ^ *b as u64).wrapping_mul(1099511628211);
+            }
+        }
+        format!("{h:016x}")
+    })
+    .clone()
+}
+
 pub struct Server {
     pub opts: Options,
     pub port: u16,
@@ -906,7 +923,7 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let state = |inst: &Instance| json!({"t": "state", "orientation": inst.orientation(), "hinge": inst.hinge(), "inner_active": inst.inner_active(), "running": crate::ring::Ring::new(&inst.ring).seq() != 0});
     let _ = tx.send(Out::Text(
         json!({"t": "hello", "role": g.role, "phone": inst.id, "name": inst.name, "model": inst.model, "platform": inst.platform, "two_screens": inst.inner.is_some(),
-               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle, "orientation": p.orientation})).collect::<Vec<_>>()})
+               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "build": web_build(), "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle, "orientation": p.orientation})).collect::<Vec<_>>()})
         .to_string(),
     ));
     let key = |screen, width| StreamKey { phone: inst.id.clone(), codec, width, quality, fps, screen };
