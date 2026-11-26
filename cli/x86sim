@@ -179,6 +179,10 @@ Apps (as xcrun simctl install/uninstall/launch)
   profile [PHONE] BUNDLEID|PID [--secs N] [--out FILE] [--format speedscope|gecko|text] [--period-us N]
                        CPU profile of the app (as Instruments' Time Profiler): top functions by self / total time per
                        thread, and a speedscope or Firefox Profiler file (the translator's sampler, profile.rs)
+  gpu [PHONE] [list] | gpu [PHONE] set auto|cpu|NAME|ID
+                       the host's GPUs and the one the device renders on (Metal through the GPU helper, mtlvk); set
+                       picks it for the next start: auto, cpu (no GPU: lavapipe), or a GPU by name (nvidia, amd), id
+                       or list index. Devices on the same GPU share one helper (launcher: Advanced > GPU; MCP sim_gpu)
   net [PHONE] capture APP on|off [--relaunch] | log [APP] [--filter F] [--since S] [--follow S] | show ID | clear
   net [PHONE] mock add URL [--status N] [--body B|--body-file F] [--latency MS] [--fail KIND] | mock list|remove ID|clear
                        an app's network traffic (URLSession requests with headers, bodies, timings; other stacks as
@@ -323,6 +327,12 @@ case $c in
 		. "$X/cli/lib/pickdevice.sh"
 		if [ $# -ge 1 ] && case $1 in software|sw|hardware|hw|status) false ;; *) true ;; esac && pick_device "$1"; then shift; use_device; fi
 		ax keyboard "$@" ;;
+	gpu)
+		# the GPU a device renders on (x86sim-ax gpu, core gpu.rs); a leading <device> as for keyboard
+		. "$X/cli/lib/pickdevice.sh"
+		if [ $# -ge 1 ] && case $1 in list|ls|set|-*) false ;; *) true ;; esac && pick_device "$1"; then shift; use_device; fi
+		export X86SIM_DEVICE
+		ax gpu "$@" ;;
 	net)
 		# network capture of native apps (x86sim-ax net, core net.rs); a leading <device> as for keyboard
 		. "$X/cli/lib/pickdevice.sh"

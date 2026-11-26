@@ -268,7 +268,8 @@ impl App {
                         let (r, dr) = ui.allocate_exact_size(egui::vec2(8.0, 16.0), egui::Sense::hover());
                         dot(ui.painter(), r.center(), col);
                         let up = st.as_ref().and_then(|s| s.uptime_s).map(|u| format!(" · up for {}", fmt_uptime(u))).unwrap_or_default();
-                        dr.on_hover_text(format!("{label}{up}"));
+                        let gpu = st.as_ref().filter(|_| phase != Phase::Off).and_then(|s| s.gpu.as_ref()).and_then(|g| g.device.as_ref()).map(|d| format!(" · {}", d.label())).unwrap_or_default();
+                        dr.on_hover_text(format!("{label}{up}{gpu}"));
                         if x86sim_core::instance::needs_restart(&inst, st.as_ref()) {
                             ui.label(egui::RichText::new(icon::ARROW_CLOCKWISE).family(icons()).size(13.0).color(pal.warn)).on_hover_text("Settings changed: restart to apply");
                         }
@@ -277,10 +278,17 @@ impl App {
                 });
                 let mut line = device_line(&inst.name, &inst.model, &inst.ios);
                 match &st {
-                    Some(s) if phase != Phase::Off && s.pss_mb >= 1.0 => line += &format!(" · {} · {:.0}%", fmt_mb(s.pss_mb), s.cpu_pct),
+                    Some(s) if phase != Phase::Off && s.pss_mb >= 1.0 => {
+                        line += &format!(" · {} · {:.0}%", fmt_mb(s.pss_mb), s.cpu_pct);
+                        // the GPU it renders on (its helper's), in a word or two
+                        if let Some(d) = s.gpu.as_ref().and_then(|g| g.device.as_ref()) {
+                            line += &format!(" · {}", d.compact());
+                        }
+                    }
                     _ if phase != Phase::Off && phase != Phase::Running => line += &format!(" · {}", label.to_lowercase()),
                     _ => {}
                 }
+                // truncated: egui shows the whole line (the GPU at its end) on hover
                 ui.add(egui::Label::new(muted(line)).truncate().selectable(false));
             });
             });

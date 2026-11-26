@@ -7,6 +7,9 @@ use x86sim_core::instance;
 // ---- network capture (x86sim net): its own option parsing ----
 #[path = "ax_parts/net.rs"]
 mod ax_net;
+// ---- the GPU a device renders on (x86sim gpu) ----
+#[path = "ax_parts/gpu.rs"]
+mod ax_gpu;
 
 const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
   snapshot [--json] [--all] [--diff] [--ocr]
@@ -67,6 +70,7 @@ const USAGE: &str = "usage: x86sim-ax [--phone NAME] <command> [args]
                                        an accessibility action: activate increment decrement scroll escape magic_tap
                                        custom
 {NET}
+{GPU}
 Actions print what they did and the screen after it (--after diff: only changes, --after none: nothing; --json).
 The phone: --phone NAME (name, folder or path), else $X86SIM_DEVICE, else the only running phone.";
 
@@ -101,6 +105,17 @@ fn run() -> Result<()> {
         let phone = (first == 2).then(|| args[1].clone());
         let rest = args.split_off(first + 1);
         return ax_net::run(&pick(phone.as_deref())?, rest);
+    }
+    if args.get(first).map(String::as_str) == Some("gpu") {
+        let phone = (first == 2).then(|| args[1].clone());
+        let rest = args.split_off(first + 1);
+        // a list needs no device: the one picked, if any
+        let inst = match pick(phone.as_deref()) {
+            Ok(i) => Some(i),
+            Err(e) if phone.is_some() || rest.first().is_some_and(|c| c == "set") => return Err(e),
+            Err(_) => None,
+        };
+        return ax_gpu::run(inst, rest);
     }
     let mut flag = |name: &str| -> bool {
         if let Some(i) = args.iter().position(|a| a == name) {
@@ -166,7 +181,7 @@ fn run() -> Result<()> {
         None => None,
     };
     if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-        println!("{}", USAGE.replace("{NET}", ax_net::USAGE));
+        println!("{}", USAGE.replace("{NET}", ax_net::USAGE).replace("{GPU}", ax_gpu::USAGE));
         return Ok(());
     }
     // device-delete NAME [--stop] [--privileged] (cli/x86sim device delete): the device named, never a default one

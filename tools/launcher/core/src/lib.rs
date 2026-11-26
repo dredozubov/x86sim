@@ -24,6 +24,7 @@ pub mod devxcode;
 pub mod discover;
 pub mod dyldcache;
 pub mod features;
+pub mod gpu;
 pub mod hid;
 pub mod host;
 pub mod hot;

@@ -37,12 +37,15 @@ mod mcp_actions;
 // ---- devices and apps, round 2 (feat/agent-tools-2 D): sim_delete, ... ----
 #[path = "mcp_parts/devices.rs"]
 mod mcp_devices;
+// ---- the GPU a device renders on: sim_gpu ----
+#[path = "mcp_parts/gpu.rs"]
+mod mcp_gpu;
 
 fn tools() -> Value {
     let phone = json!({"type": "string", "description": "the device: its name (as in the hub, e.g. \"QA\"), folder (device-a64-qa) or path. Default: the only running device, else the configured one"});
     let after = json!({"type": "string", "enum": ["full", "diff", "none"], "description": "what to answer with after the action settled: the whole screen (default), only what changed, or nothing"});
     let mut t = json!([
-        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime; responsive (SpringBoard answers; null while not known) and hung (running, but SpringBoard has not answered for 10 s or more: restart the device).",
+        {"name": "phones_list", "description": "Every device, as the hub shows it: name, model, iOS version and whether it is installed, state (off / starting / running / stopping), home screen reached, memory (MB), CPU %, processes, uptime; the GPU helper's memory and the GPU it renders on (gpu_name, gpu_id; sim_gpu); responsive (SpringBoard answers; null while not known) and hung (running, but SpringBoard has not answered for 10 s or more: restart the device).",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "sim_status", "description": "Same as phones_list (kept for older clients).",
          "inputSchema": {"type": "object", "properties": {}}},
@@ -167,6 +170,7 @@ fn tools() -> Value {
     if let Value::Array(v) = &mut t {
         v.iter_mut().for_each(mcp_devices::extend_terminate);
         v.extend(mcp_devices::tools(&phone));
+        v.extend(mcp_gpu::tools(&phone));
     }
     t
 }
@@ -282,6 +286,9 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
         return r.map(|(t, v)| Answer::Text(t, v));
     }
     if let Some(r) = mcp_devices::call(name, a, &|| phone_of(a, &cfg)) {
+        return r.map(Answer::Json);
+    }
+    if let Some(r) = mcp_gpu::call(name, a, &|| phone_of(a, &cfg)) {
         return r.map(Answer::Json);
     }
     if name == "batch" {

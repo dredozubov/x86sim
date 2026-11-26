@@ -63,7 +63,8 @@ impl Devices {
             "memory_mb": s.map(|s| s.pss_mb), "cpu_pct": s.map(|s| s.cpu_pct), "uptime_s": s.and_then(|s| s.uptime_s),
             "processes": s.map(|s| s.procs.len()),
             "procs": procs.iter().take(25).map(|p| json!({"pid": p.pid, "name": p.comm, "memory_mb": p.pss_mb, "cpu_pct": p.cpu_pct})).collect::<Vec<_>>(),
-            "gpu": s.and_then(|s| s.gpu.as_ref()).map(|g| json!({"pid": g.pid, "memory_mb": g.pss_mb, "cpu_pct": g.cpu_pct, "users": g.users})),
+            "gpu": s.and_then(|s| s.gpu.as_ref()).map(|g| json!({"pid": g.pid, "memory_mb": g.pss_mb, "cpu_pct": g.cpu_pct, "users": g.users,
+                "name": g.device.as_ref().map(|d| d.label()), "short": g.device.as_ref().map(|d| d.compact()), "driver": g.device.as_ref().map(|d| d.driver.clone())})),
             "needs_restart": instance::needs_restart(inst, st.as_ref()),
         }))
     }
@@ -149,6 +150,30 @@ impl Devices {
         };
         r.map_err(|e| bad(500, format!("{e:#}")))?;
         self.features(inst)
+    }
+
+    /// GPU: the device's setting (BootSettings::gpu), the choices, the GPU it renders on now; restart to apply
+    pub fn gpu(&self, inst: &Instance) -> Answer {
+        let l = crate::gpu::list().map_err(|e| bad(500, format!("{e:#}")))?;
+        let st = self.status(&inst.id);
+        let set = instance::load_settings(&inst.dir);
+        let now = st.as_ref().filter(|s| s.phase != Phase::Off).and_then(|s| s.gpu.as_ref()).and_then(|g| g.device.as_ref()).map(|d| d.label());
+        Ok(json!({
+            "gpu": if set.gpu.is_empty() { "auto".to_string() } else { set.gpu.clone() },
+            "label": crate::gpu::setting_label(&set.gpu, &l),
+            "choices": crate::gpu::choices(&l).into_iter().map(|(v, l)| json!({"value": v, "label": l})).collect::<Vec<_>>(),
+            "metal": set.metal != "0",
+            "renders_on": now,
+            "running": st.as_ref().is_some_and(|s| s.phase != Phase::Off),
+            "needs_restart": instance::needs_restart(inst, st.as_ref()),
+        }))
+    }
+
+    /// `{"gpu": "auto" | "cpu" | an id | part of a name}`
+    pub fn set_gpu(&self, inst: &Instance, b: &Value) -> Answer {
+        let w = b["gpu"].as_str().ok_or_else(|| bad(400, "gpu: auto, cpu or a GPU"))?;
+        crate::gpu::set(&inst.dir, w).map_err(|e| bad(400, format!("{e:#}")))?;
+        self.gpu(inst)
     }
 
     /// Simulate: what `x86sim ui` and `x86sim fidelity` say, and the hardware keyboard

@@ -253,7 +253,8 @@ function dashboard() {
     c.dot.className = "dot " + p.state;
     c.dot.title = stateLabel(p.state);
     c.st.replaceChildren(h("span", { class: "dot " + p.state }), stateLabel(p.state));
-    c.stats.textContent = p.state === "running" && p.memory_mb ? `${fmtMem(p.memory_mb)} · ${Math.round(p.cpu_pct || 0)}% CPU` : p.state === "off" ? "" : stateLabel(p.state);
+    c.stats.textContent = p.state === "running" && p.memory_mb ? `${fmtMem(p.memory_mb)} · ${Math.round(p.cpu_pct || 0)}% CPU` + (p.gpu ? ` · ${p.gpu.short}` : "") : p.state === "off" ? "" : stateLabel(p.state);
+    c.stats.title = p.state !== "off" && p.gpu ? p.gpu.name : "";
     c.stats.hidden = !c.stats.textContent && pref.view !== "list";
     if (running && !c.loading) {
       c.loading = true;
@@ -801,7 +802,7 @@ function phoneView(id) {
       keyHold(0x50, "◀", "Left"), keyHold(0x28, "●", "Select"), keyHold(0x4f, "▶", "Right"),
       h("span"), keyHold(0x51, "▼", "Down"), h("span")), true));
     if (control && p === "ios" && info.two_screens) parts.push(fold("hinge", "Hinge", hingePanel(), true));
-    if (pan) parts.push(pan.features, pan.logs);
+    if (pan) parts.push(pan.features, pan.gpu, pan.logs);
     // the Network section (netpanel.js): an app's requests, control links only
     if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast, copy, name: info.name || id }); parts.push(netp.panel); }
     // Share, as the launcher's section: this device's links and the tunnels that make them reach other machines

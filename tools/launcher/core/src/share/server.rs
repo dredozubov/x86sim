@@ -485,6 +485,8 @@ impl Server {
                     "state": s.map(|s| s.state.clone()).unwrap_or_else(|| "off".into()),
                     "home": s.is_some_and(|s| s.home),
                     "memory_mb": s.map(|s| s.memory_mb), "cpu_pct": s.map(|s| s.cpu_pct), "uptime_s": s.and_then(|s| s.uptime_s),
+                    // the GPU it renders on (its GPU helper's)
+                    "gpu": s.and_then(|s| s.gpu_name.as_ref().map(|n| json!({"name": n, "short": s.gpu_short.clone().unwrap_or_default()}))),
                     "screen": [t.size.0, t.size.1], "two_screens": i.inner.is_some(), "inner_active": i.inner_active(),
                     "orientation": i.orientation(), "hinge": i.hinge(),
                     "ipad": i.model.contains("iPad"),
@@ -740,15 +742,17 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
                 }
                 "features" if control => answer(&mut s, srv.devices.features(&inst)),
                 "simulate" if control => answer(&mut s, srv.devices.simulate(&inst)),
+                "gpu" if control => answer(&mut s, srv.devices.gpu(&inst)),
                 _ => json_resp(&mut s, 404, &json!({"error": "not found"})),
             }
         }
-        ("POST", ["api", "phones", id, "features" | "simulate" | "restart"]) if control && srv.visible(&g, id) => {
+        ("POST", ["api", "phones", id, "features" | "simulate" | "gpu" | "restart"]) if control && srv.visible(&g, id) => {
             let Some(inst) = instance::find(id) else { return json_resp(&mut s, 404, &json!({"error": "no such device"})) };
             let b: Value = serde_json::from_slice(&req.body).unwrap_or_default();
             let r = match seg[3] {
                 "features" => srv.devices.set_feature(&inst, &b),
                 "simulate" => srv.devices.set_simulate(&inst, &b),
+                "gpu" => srv.devices.set_gpu(&inst, &b),
                 _ => srv.devices.restart(&inst),
             };
             srv.phones_cache.lock().unwrap().0 = None;
