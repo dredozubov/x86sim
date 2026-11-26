@@ -4,7 +4,10 @@
 //   ran / on the alt stack / si_signo / si_code / si_addr / pc (exact = the labeled faulting instruction, else the
 //   symbol) / sp, fp, x10 marker (guest registers at the fault) / lr / far, then the child's wait status.
 // Modes: exit (handler _exits 42), skip (the handler moves the pc past a faulting instruction: RETURNED), reraise
-// (SIG_DFL + re-raise / return to re-fault: dies with that signal), none (no handler: x86Sim's own diagnostics). Usage: crashsig.sim [exit|skip|reraise|none] [case...]
+// (SIG_DFL + re-raise / return to re-fault: dies with that signal), none (no handler: x86Sim's own diagnostics),
+// redirect (.NET NativeAOT's: SA_SIGINFO | SA_RESTART, no altstack; the handler sends the pc to a throw helper with
+// x0 = code, x1 = faulting pc: REDIRECTED, exit 0).
+// Usage: crashsig.sim [exit|skip|reraise|none|redirect] [case...]
 //   tests/arm64/run.sh tests/arm64/crashsig.sim                       (Apple: xcrun simctl spawn <dev> crashsig.sim)
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
@@ -34,6 +37,15 @@ static void sym(unsigned long a, char *out, size_t n) {
     else snprintf(out, n, "%#lx", a);
 }
 
+// where mode redirect sends a fault (NativeAOT: RhpThrowHwEx), on the thread's own stack
+static void redirected(unsigned long code, unsigned long ip) {
+    volatile char here;
+    printf("case %-10s REDIRECTED code=%#lx ip=%s onalt=%d\n", g_case, code, ip == (unsigned long)g_exact ? "exact" : "WRONG",
+           (char *)&here >= alt_lo && (char *)&here < alt_hi);
+    fflush(stdout);
+    _exit(0);
+}
+
 static void handler(int sig, siginfo_t *si, void *ctx) {
     volatile char here;
     ucontext_t *uc = ctx;
@@ -57,6 +69,12 @@ static void handler(int sig, siginfo_t *si, void *ctx) {
         uc->uc_mcontext->__ss.__pc += 4;
         return;
     }
+    if (!strcmp(g_mode, "redirect") && g_exact) {  // as NativeAOT's RedirectNativeContext: pc, x0, x1
+        uc->uc_mcontext->__ss.__x[0] = 0xc0000005;
+        uc->uc_mcontext->__ss.__x[1] = pc;
+        uc->uc_mcontext->__ss.__pc = (unsigned long)redirected;
+        return;
+    }
     if (!strcmp(g_mode, "reraise")) {
         signal(sig, SIG_DFL);
         if (!g_exact) raise(sig);   // abort-like: re-raise; a fault re-executes the instruction on return
@@ -75,7 +93,7 @@ static void install(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = handler;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sa.sa_flags = !strcmp(g_mode, "redirect") ? SA_SIGINFO | SA_RESTART : SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     int sigs[] = {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE};
     for (unsigned i = 0; i < sizeof sigs / sizeof *sigs; i++) sigaction(sigs[i], &sa, NULL);
