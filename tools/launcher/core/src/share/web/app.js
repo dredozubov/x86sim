@@ -660,6 +660,7 @@ function phoneView(id) {
     wrap.prepend(duo.el);
     duo.state({ ...info, ...lastState });
     bindKeys(duo.canvas);
+    window.__x86simDuo = duo.debug;
     fit();
   }
 

@@ -600,7 +600,7 @@ void main() {
     canvas.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       canvas.focus({ preventScroll: true });
-      canvas.setPointerCapture(e.pointerId);
+      try { canvas.setPointerCapture(e.pointerId); } catch {}
       const [px, py] = local(e);
       if (e.pointerType === "touch" || e.pointerType === "pen") {
         pts.set(e.pointerId, [px, py]);
@@ -608,7 +608,7 @@ void main() {
           const h = opts.control ? hit(px, py) : null;
           if (h) {
             // the first finger waits a moment for a second one (both fingers of a pinch land within a few frames)
-            g = { kind: "wait", hit: h, start: [px, py], timer: setTimeout(() => { if (g && g.kind === "wait" && pts.size === 1) { g.kind = "touch"; touchAt(h, "down", ...g.start); const [p] = pts.values(); touchAt(h, "move", p[0], p[1]); } }, 60) };
+            g = { kind: "wait", hit: h, start: [px, py], timer: setTimeout(() => { if (g && g.kind === "wait" && pts.size === 1) { g.kind = "touch"; touchAt(h, "down", ...g.start); const [p] = pts.values(); if (p[0] !== g.start[0] || p[1] !== g.start[1]) touchAt(h, "move", p[0], p[1]); } }, 60) };
           } else g = { kind: "view", last: [px, py], t0: performance.now(), moved: 0 };
         } else if (pts.size === 2 && g) {
           if (g.kind === "wait") { clearTimeout(g.timer); g.kind = "touch2"; two("down"); }
@@ -724,7 +724,15 @@ void main() {
       el.remove();
     }
     // for scripted checks: the drawn hinge and where a screen point is on the page
-    const debug = { get shown() { return shown; }, get proj() { return proj; }, hit, project(s, x, y) {
+    const debug = { get shown() { return shown; }, get proj() { return proj; }, get orbit() { return orbit; }, get zoom() { return zoom; }, hit,
+      // n frames drawn back to back, GPU included: ms per frame (the hinge swept so the mesh is rebuilt each time)
+      bench(n = 60, sweep = true) {
+        const t0 = performance.now(), keep = hinge;
+        for (let i = 0; i < n; i++) { if (sweep) { shown = 30 + (i * 2.5) % 140; } render(performance.now() / 1000); }
+        gl.finish();
+        hinge = keep; dirty = true;
+        return (performance.now() - t0) / n;
+      }, project(s, x, y) {
       // the page point of picture point (x, y) on screen s ("inner" | "outer"), by search along the ray map
       let best = null;
       for (let py = 0; py < cssH; py += 3) for (let px = 0; px < cssW; px += 3) {
