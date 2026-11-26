@@ -52,7 +52,14 @@ window.PANELS = (() => {
         gpuLine.textContent = `+ ${fmtMem(g.memory_mb)} GPU helper` + (g.short ? ` · ${g.short}` : "") + (g.users > 1 ? ` · ${g.users} devices` : "");
         gpuLine.title = (g.name ? g.name + (g.driver ? ` · ${g.driver}` : "") + "\n" : "") + "mtlvk runs every Metal call on Vulkan. It is not in this device's memory.";
       }
-      facts.replaceChildren(...[d.screen ? kv("Screen", `${d.screen[0]} × ${d.screen[1]} pixels`) : null, on && d.processes != null ? kv("Processes", String(d.processes)) : null].filter(Boolean));
+      // how guest buffers reach that GPU: shared, or copied each time they change (the slow path) and why
+      const b = g && g.buffers;
+      const buf = b ? kv("Buffers", b.copying ? (b.shared + b.udmabuf > 0 ? "Partly copied" : "Copied") : b.udmabuf > 0 ? "Shared · udmabuf" : "Shared") : null;
+      if (buf) {
+        buf.title = `${b.summary} · shared ${b.shared} · udmabuf ${b.udmabuf} · copied ${b.copied}`;
+        if (b.copying) buf.classList.add("warn");
+      }
+      facts.replaceChildren(...[d.screen ? kv("Screen", `${d.screen[0]} × ${d.screen[1]} pixels`) : null, on && d.processes != null ? kv("Processes", String(d.processes)) : null, buf].filter(Boolean));
     }
 
     // ---- Performance: the screen's rate, who uses what

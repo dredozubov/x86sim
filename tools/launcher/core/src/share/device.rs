@@ -64,7 +64,9 @@ impl Devices {
             "processes": s.map(|s| s.procs.len()),
             "procs": procs.iter().take(25).map(|p| json!({"pid": p.pid, "name": p.comm, "memory_mb": p.pss_mb, "cpu_pct": p.cpu_pct})).collect::<Vec<_>>(),
             "gpu": s.and_then(|s| s.gpu.as_ref()).map(|g| json!({"pid": g.pid, "memory_mb": g.pss_mb, "cpu_pct": g.cpu_pct, "users": g.users,
-                "name": g.device.as_ref().map(|d| d.label()), "short": g.device.as_ref().map(|d| d.compact()), "driver": g.device.as_ref().map(|d| d.driver.clone())})),
+                "name": g.device.as_ref().map(|d| d.label()), "short": g.device.as_ref().map(|d| d.compact()), "driver": g.device.as_ref().map(|d| d.driver.clone()),
+                "buffers": g.buffers.as_ref().filter(|b| b.direct + b.udmabuf_buffers + b.mirrored > 0).map(|b| json!({"summary": b.summary(), "copying": b.copying(),
+                    "shared": b.direct, "udmabuf": b.udmabuf_buffers, "copied": b.mirrored}))})),
             "needs_restart": instance::needs_restart(inst, st.as_ref()),
         }))
     }

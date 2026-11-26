@@ -289,6 +289,9 @@ pub struct Summary {
     /// its id ("<uuid>,<vendor>:<device>"), the GPU setting's form
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_id: Option<String>,
+    /// how its guest buffers reach the GPU: "Shared", "Shared (udmabuf)", "Copied (why)" (None: not known)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_buffers: Option<String>,
     /// that GPU in a word or two ("RTX 5090", "Radeon", "CPU")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_short: Option<String>,
@@ -363,6 +366,7 @@ fn summaries_with(sample_ms: u64, probe: bool) -> Vec<Summary> {
             gpu_name: s.gpu.as_ref().and_then(|g| g.device.as_ref()).map(|d| d.label()),
             gpu_short: s.gpu.as_ref().and_then(|g| g.device.as_ref()).map(|d| d.compact()),
             gpu_id: s.gpu.as_ref().and_then(|g| g.device.as_ref()).map(|d| if d.kind == "cpu" { "cpu".into() } else { d.id.clone() }),
+            gpu_buffers: s.gpu.as_ref().and_then(|g| g.buffers.as_ref()).map(|b| b.summary()),
             cpu_pct: s.cpu_pct.round(),
             processes: s.procs.len(),
             uptime_s: s.uptime_s.map(|u| u.round()),
@@ -433,6 +437,8 @@ pub struct GpuHelper {
     pub users: usize,
     /// the device it serves on (its .gpu record; None for an mtlvk older than the record)
     pub device: Option<crate::gpu::HelperGpu>,
+    /// how guest buffers reach the GPU (shared or copied, and why; None for an mtlvk older than the state file)
+    pub buffers: Option<crate::gpu::GpuBuffers>,
 }
 
 /// Memory of the running phones together: each phone's own processes plus every GPU helper once (a shared helper was
@@ -646,7 +652,7 @@ impl Monitor {
                 let r = procs.get(&g)?;
                 let (c, m) = *gpu_seen.entry(g).or_insert_with(|| self.sample(g, r.ticks, now, hz));
                 seen_pids.insert(g);
-                Some(GpuHelper { pid: g, pss_mb: m, cpu_pct: c, users: 0, device: crate::gpu::helper_of_socket(&sock) })
+                Some(GpuHelper { pid: g, pss_mb: m, cpu_pct: c, users: 0, device: crate::gpu::helper_of_socket(&sock), buffers: crate::gpu::buffers_of_socket(&sock) })
             });
             let boot_time = launchd.and_then(|l| procs.get(&l)).map(|r| bt + r.start_ticks as f64 / hz);
             let uptime_s = boot_time.map(|b| (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0) - b).max(0.0));

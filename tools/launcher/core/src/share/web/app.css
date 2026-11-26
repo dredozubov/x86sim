@@ -443,3 +443,4 @@ dialog::backdrop { background: var(--scrim); }
 .axpanel > :empty { display: none; }
 .side > .overview { padding-bottom: 14px; }
 .offscreen { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
+.kv.warn > span:last-child { color: var(--warn); }

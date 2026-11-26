@@ -219,6 +219,47 @@ pub fn helper_of_socket(sock: &Path) -> Option<HelperGpu> {
     serde_json::from_slice(&b).ok()
 }
 
+/// How a running mtlvk's guest buffers reach the GPU (its `<socket>.state`, mtlvk bufstate.rs): shared without a copy
+/// (by address, or as a udmabuf where the driver refuses addresses: AMD / RADV) or mirrored, copied each time they change
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GpuBuffers {
+    /// "unused" (every import took the address), "on", "off: …" or "unavailable: …"
+    pub udmabuf: String,
+    pub direct: u64,
+    pub udmabuf_buffers: u64,
+    pub mirrored: u64,
+    /// why the first mirrored buffer was not imported
+    pub mirror_reason: Option<String>,
+}
+
+impl GpuBuffers {
+    /// One line for a status row: "Shared", "Shared (udmabuf)", "Copied (udmabuf unavailable: …)", …
+    pub fn summary(&self) -> String {
+        if self.mirrored == 0 {
+            return if self.udmabuf_buffers > 0 { "Shared (udmabuf)".into() } else { "Shared".into() };
+        }
+        let why = if let Some(u) = self.udmabuf.strip_prefix("unavailable: ").or_else(|| self.udmabuf.strip_prefix("off: ")) {
+            format!("udmabuf {}: {u}", if self.udmabuf.starts_with("off") { "off" } else { "unavailable" })
+        } else {
+            self.mirror_reason.clone().unwrap_or_default()
+        };
+        let some = self.direct + self.udmabuf_buffers > 0;
+        format!("{} ({})", if some { "Partly copied" } else { "Copied" }, why)
+    }
+
+    /// Whether buffers are being copied (the slow path)
+    pub fn copying(&self) -> bool {
+        self.mirrored > 0
+    }
+}
+
+/// The buffer state of the mtlvk at `sock` (None: no such mtlvk, or one older than the state file)
+pub fn buffers_of_socket(sock: &Path) -> Option<GpuBuffers> {
+    let b = std::fs::read(format!("{}.state", sock.display())).ok()?;
+    serde_json::from_slice(&b).ok()
+}
+
 /// Every mtlvk a boot started in `state_dir` (one per GPU choice): (pid, socket) of the live ones
 pub fn helpers_in(state_dir: &Path) -> Vec<(u32, PathBuf)> {
     let mut v = vec![];

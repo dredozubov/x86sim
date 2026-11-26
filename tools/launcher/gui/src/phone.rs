@@ -775,6 +775,15 @@ impl App {
                     ui.add(egui::Label::new(egui::RichText::new(d.label()).size(T_SMALL).color(pal().ink_2)).truncate()).on_hover_text(format!("{} · {} · {}", d.name, d.driver, d.pci));
                 });
             }
+            // how guest buffers reach that GPU: shared, or copied each time they change (the slow path) and why
+            if let Some(b) = s.gpu.as_ref().and_then(|g| g.buffers.as_ref()).filter(|b| b.direct + b.udmabuf_buffers + b.mirrored > 0) {
+                kv(ui, lw, "Buffers", |ui| {
+                    let col = if b.copying() { pal().warn } else { pal().ink_2 };
+                    let short = if b.copying() { if b.direct + b.udmabuf_buffers > 0 { "Partly copied" } else { "Copied" } } else if b.udmabuf_buffers > 0 { "Shared · udmabuf" } else { "Shared" };
+                    ui.add(egui::Label::new(egui::RichText::new(short).size(T_SMALL).color(col)).truncate())
+                        .on_hover_text(format!("{} · shared {} · udmabuf {} · copied {}", b.summary(), b.direct, b.udmabuf_buffers, b.mirrored));
+                });
+            }
         }
         let prof = features::load(&inst.dir);
         let off: Vec<String> = features::defs().features.iter().filter(|f| !prof.enabled(&f.id)).map(|f| f.title.clone()).collect();
