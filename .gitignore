@@ -30,38 +30,7 @@ core.[0-9]*
 /tests/metal/shaders/probe.metallib
 # Mach-O probes built by hand on the Mac (the outputs of build/mac-build-*.sh are committed, see the end of this file)
 /host/debugserver/debugserver
-# screenshots: only the curated milestones are committed (the rest stay local, the progress site shows them)
-/docs/screens/*
-!/docs/screens/01-boot-logo.png
-!/docs/screens/12-home-screen.png
-!/docs/screens/24-metal-backboardd-home.png
-!/docs/screens/26-tap-opens-settings.png
-!/docs/screens/33-metal-all-safari.png
-!/docs/screens/36-metal-wallpaper-astc-fixed.png
-!/docs/screens/38-photos-opens-with-assetsd.png
-!/docs/screens/58-safari-wikipedia.png
-!/docs/screens/60-health-summary.png
-!/docs/screens/64-news-today.png
-!/docs/screens/71-spotlight-search-maps.png
-!/docs/screens/78-files-opens-text-document.png
-!/docs/screens/83-app-survey-3.13.png
-!/docs/screens/84-x86sim-boot-home.png
-!/docs/screens/85-x86sim-openurl-and-tap.png
-!/docs/screens/86-files-live-update-from-linux.png
-!/docs/screens/87-preview-opens-png-from-files.png
-!/docs/screens/89-app-survey-3.14.png
-!/docs/screens/90-install-hellouikit-icon.png
-!/docs/screens/91-hellouikit.png
-!/docs/screens/92-hellouikit-taps.png
-!/docs/screens/93-swiftuidemo.png
-!/docs/screens/94-swiftuidemo-detail.png
-!/docs/screens/95-metaldemo.png
-!/docs/screens/96-spritedemo.png
-!/docs/screens/97-home-installed-apps.png
-!/docs/screens/98-apple-sample-queries.png
 *.profraw
-!/docs/screens/99-devtools-push-location.png
-!/docs/screens/100-photos-addmedia.png
 /host/arm64host/arm64host
 
 /sdks/

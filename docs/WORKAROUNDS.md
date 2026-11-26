@@ -12,16 +12,16 @@ coverage), **F** = faithful fix listed for contrast because it replaced an earli
 | What | Where | Coverage / gap |
 |---|---|---|
 | CoreSimulator's launchd handshake (bootstrap port, service port, holding tank) | host/simhost | MIG 708 and the holding-tank child; on tvOS / watchOS also the host's MIG 700 (the host port launchd_sim watches, which ends the system domain's bootstrap mode). Other requests are logged and dropped. |
-| SimFramebuffer.framework (display) | host/simfb | One built-in display, no external displays, no host compositor. Frames are copied (not shared) into the ring. |
-| SimulatorHID.framework (input) | host/simhid | Touchscreen (1-2 fingers), buttons, keyboard over a socket; Apple Watch: the Digital Crown (scroll events through Apple's crown service, page 0xff0b). Apple TV: no Siri Remote services, the hardware keyboard stands in (arrows, return = select, escape = back). No Indigo protocol, no accelerometer/pencil/game controllers. |
+| SimFramebuffer.framework (display) | host/simfb | The device's own screens (one, or the iPhone Duo's two; an Apple TV's as its HDMI output), no further external displays, no host compositor. Frames are copied (not shared) into the ring; a swap waits for the GPU as a free swapchain surface would make it (backpressure), see protocols/SIMFB.md. |
+| SimulatorHID.framework (input) | host/simhid | Touchscreen (1-2 fingers), buttons, keyboard over a socket; a game controller, the iPad's pointer and trackpad device, biometrics, shake and orientation, the iPhone Duo's hinge; Apple Watch: the Digital Crown (scroll events through Apple's crown service, page 0xff0b). Apple TV: the hardware keyboard stands in for the Siri Remote (arrows, return = select, escape = back), its buttons are consumer usages on the buttons service. No Indigo protocol, no accelerometer or gyroscope data, no Apple Pencil, no trackpad gestures (protocols/SIMHID.md). |
 | MTLSimDriverHost / SimMetalHost (GPU) | host/metalhostd + linux/mtlvk + metal2vulkan | The runtime's own MTLSimImplementation on a Vulkan-backed device; feature coverage is what metal2vulkan translates (see METAL.md). |
 | SimRenderServer's com.apple.IOSurface.Remote | host/iosurfaced | Surfaces as shared anonymous memory; no compression, no GPU-private surfaces. |
-| Host mDNSResponder | linux/mdnsd | Unicast DNS (GetAddrInfo, QueryRecord). Register/Browse/Resolve are accepted but return nothing (no multicast DNS, no Bonjour). |
+| Host mDNSResponder | linux/mdnsd | Unicast DNS (GetAddrInfo, QueryRecord). Bonjour on the device itself: services registered through it are found by Browse and answered by Resolve, and the registering host's `.local` name resolves to loopback. No multicast DNS on the host's network, so nothing is found on or advertised to the LAN. |
 | Host configd (network state for configd_sim's SimulatorSupport) | linux/hostnet + host/netconfig + com.x86sim.host-configd | A snapshot of the default-route interface at boot; not updated when Linux networking changes. |
-| Host fileproviderd (com.apple.FileProvider.sim2host) | host/fpsim2host | All 16 methods. Dataless files are SF_DATALESS + a sparse file of the logical size: nothing faults on read (materialization handlers are kept but never called); purgeable and sync-root marks are only recorded (xattrs). |
+| Host fileproviderd (com.apple.FileProvider.sim2host) | host/fpsim2host | All 16 methods. Dataless files are SF_DATALESS + a sparse file of the logical size; opening one faults it in: Darling sends the request to fpsim2host, which calls the registered materialization handler (the simulator's fileproviderd), as the Mac host's kernel upcall does. Purgeable and sync-root marks are only recorded (xattrs). |
 | `simctl openurl` / `simctl launch` / terminate / get_app_container / listapps / push / location / addmedia / io | host/openurl (com.x86sim.openurl) + cli/libexec/simctl.py | Opens through FrontBoard's open-application service with the Bridge's debug options (arguments, environment, `--console` through stdout/stderr files the CLI follows, `--wait-for-debugger`), carrying the Bridge's entitlements. `--console` follows stdout/stderr files; `--console-pty` gives the app a Linux pty (opened by path through `/Volumes/SystemRoot/dev/pts/N`). `location` (set/clear/list/run/start) goes through CLSimulationManager to locationd as on a Mac. |
 | `simctl install` / `uninstall` (CoreSimulatorBridge in the device) | host/openurl + cli/libexec/appinstall.sh | Same call as CoreSimulatorBridge (IXAppInstallCoordinator with developer MIInstallOptions), from a launchd job instead of the Bridge; the bundle is first copied into the device's tmp directory (staging), installd then copies it as on a Mac. No `installationInfo` result, no app data containers (`simctl install_app_data`). |
-| Device type (CoreSimulator's `.simdevicetype`: capabilities.plist via `SIMULATOR_CAPABILITIES`) | cli/lib/devicetypes-a64.json, cli/lib/devicetype-*.json, mksimdevice.py | The models in devicetypes-a64.json (`<device>/model`). The profile's other parts (chrome, framebuffer mask PDF, sensor-bar image) are not used. |
+| Device type (CoreSimulator's `.simdevicetype`: capabilities.plist via `SIMULATOR_CAPABILITIES`) | cli/lib/devicetypes-a64.json, cli/lib/devicetype-*.json, mksimdevice.py | The models in devicetypes-a64.json (`<device>/model`), read from Xcode.xip on Linux (tools/devicetypes); a runtime refuses the models its profile does not support, as CoreSimulator. The launcher takes the screen's corner radius from the capabilities. The profile's other parts (chrome, framebuffer mask PDF, sensor-bar image) are not used: devices are drawn with plain bezels. |
 | Host /System/Library lookups by absolute path | cli/libexec/arm64/boot-a64.sh (links into the Darling prefix) | CoreSpotlight.framework (the runtime's copy) and GeoServicesData (a seed resource manifest boot-a64.sh writes; geod downloads the rest from Apple); others the simulator might open on the host path are absent. |
 | Host time zone (/etc/localtime) | cli/libexec/arm64/boot-inner.sh | Links the container's /private/etc/localtime to Linux's zone. |
 | A new device's language and region (CoreSimulator writes `AppleLanguages` / `AppleLocale` into its `.GlobalPreferences` from the Mac user's settings) | cli/libexec/mksimdevice.py | From the Linux locale (`LC_ALL` / `LC_MESSAGES` / `LANG`), `en_US` otherwise; written only when the device has none. Without them the tvOS / watchOS devices ran as `en_001` (region "001"): no phone numbers from DataDetection, an empty CNPostalAddressFormatter. |
@@ -70,8 +70,9 @@ required parts.
 
 - `xpc_init_services` was skipped in simshim (launchd_sim never answered the pid-domain uncork); removed once the
   underlying Darling bugs were fixed.
-- Settings' gray row icons were first blamed on Metal; they also happen with software rendering and remain open
-  (in-process IconServices store lookup misses).
+- Settings' gray row icons: iconservicesagent has no Core Image context without a Metal device and crashed in CoreUI,
+  so with software rendering the icons it had not cached stayed gray. Metal is on by default for every boot now and
+  iconservicesagent always gets a device; the icons draw. They stay gray only with `X86SIM_METAL=0`.
 - The workloop interposer (`host/simshim/diag/workloop_shim.c`) predates kernel workloops in Darling; it is kept for
   reference and not used.
 - simfb's fixed 40 ms delay before copying a frame was replaced by waiting for GPU completion.
@@ -79,13 +80,18 @@ required parts.
 ## Backlog (not started or unfinished)
 
 - Apple's simulator MCP server: research what Apple ships (which tool, the transport, and which simctl/CoreSimulator calls
-  it makes) and whether its tool names and arguments should be mirrored. x86Sim's own MCP server (x86sim-mcp) already
-  covers boot, install, launch, screenshot, the screen as text, tap/type and logs.
-- Scroll wheel in simview: wheel and touchpad scroll events should scroll the content (as on a Mac simulator:
-  scroll events or a synthesized two-finger pan), not be ignored.
-
+  it makes) and whether its tool names and arguments should be mirrored. x86Sim's own MCP server (x86sim-mcp, 103
+  tools, [AGENT-TOOLS.md](AGENT-TOOLS.md)) is independent of it.
+- Scroll wheel in simview (the GTK viewer): on a phone, wheel and touchpad scroll events should scroll the content
+  (as on a Mac simulator: scroll events or a synthesized two-finger pan); today the wheel only turns an Apple Watch's
+  Digital Crown there. The browser view (`x86sim serve`) scrolls with the wheel.
+- Pairing a watch with an iPhone: both devices' `ids_simd` must reach each other's Mach ports, which live in
+  different Darling containers.
+- App toolchains that do not build on Linux yet: Bazel `rules_apple` workspaces and Unreal Engine iOS projects
+  (`x86sim dev build` names the reason; external/omarchy-apple-dev has the notes).
 - Audio: host/simaudio (in-process HAL stand-in, in every process: silent devices by default) +
   cli/libexec/simaudio.py (PipeWire), heard on the host with `X86SIM_AUDIO=1` and in `x86sim serve`'s page. A faithful version would
   answer coreaudiod's MIG protocol on `com.apple.audio.audiohald`.
-- Software keyboard toggle (Apple's Cmd-K): not started. (Clipboard sync is `x86sim pbcopy|pbpaste --host` and
-  `pbsync`; rotation is `x86sim rotate`; the home swipe from the bottom edge goes home: `x86sim swipe home`.)
+- Done since this list was started: the software keyboard toggle and Connect Hardware Keyboard (`x86sim keyboard`,
+  Apple's Cmd-K / Shift-Cmd-K), clipboard sync (`x86sim pbcopy|pbpaste --host`, `pbsync`), rotation (`x86sim
+  rotate`), the home swipe from the bottom edge (`x86sim swipe home`).

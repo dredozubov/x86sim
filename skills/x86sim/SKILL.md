@@ -255,7 +255,14 @@ x86sim dev status                             # Swift, xtool, iOS SDK: what is r
 x86sim dev new HelloApp                       # SwiftUI app for iOS / tvOS / watchOS / visionOS
 x86sim dev run HelloApp --phone qa --start    # build for the phone's platform, install, launch (--start boots it)
 x86sim dev test HelloApp --phone qa --shot out.png    # run, wait, fail if it died, screenshot
+x86sim dev reload                             # React Native / Expo: reload the JavaScript
 ```
+
+`dev run DIR` builds whatever the directory is: an xtool Swift package, an Xcode project or workspace (Swift Build),
+CocoaPods, Carthage, XcodeGen, Tuist, React Native / Expo, Kotlin Multiplatform, .NET for iOS, Rust (Tauri, Dioxus,
+Bevy), Capacitor / Ionic, Cordova, NativeScript, Godot, Unity. A missing piece is named with its setup command
+(`x86sim dev setup swiftbuild|cocoapods|carthage|xcodegen|tuist`). docs/BUILDING-APPS.md has the table. Signing in to
+an Apple Account (`x86sim account`) is the user's to do: there is no MCP tool for it.
 
 ### Unit and UI tests (XCTest, XCUITest)
 
@@ -269,8 +276,10 @@ x86sim dev test --xctest MyPackage --phone qa # a Swift package's tests, built o
 
 Prints XCTest's log, then the failing tests with `file:line` and `** TEST SUCCEEDED / FAILED **`; exit 0 / 1.
 `results.json` (per test: result, duration, failures) and `junit.xml` go to the dir it names (`--out`, `--json -`
-for JSON only). MCP: `xctest_run`. App test targets and UI test runners come from a Mac's `xcodebuild
-build-for-testing` (copy the whole `Build/Products` dir with the `.xctestrun`). XCTest's frameworks come from Xcode:
+for JSON only). MCP: `xctest_run`. An Xcode project's unit test targets build on Linux with the dev toolchain's
+`xcodebuild` stand-in (`build-for-testing`, `test`; `x86sim dev setup swiftbuild`). UI-test targets do not build on
+Linux: a UI test runner comes from Xcode's `xcodebuild build-for-testing` (copy the whole `Build/Products` dir with
+the `.xctestrun`). XCTest's frameworks come from Xcode:
 if it says "no XCTest frameworks", run `x86sim dev setup sdk --xip Xcode.xip` (the Darwin SDK, built on Linux from
 Xcode.xip, holds them). UI tests need the phone's `xctest` feature (on by default; `x86sim-aot --device qa features set xctest on`
 and a restart if someone turned it off). A run takes seconds for unit tests, ~5-10 s per UI test.
@@ -340,7 +349,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 
 The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `app_state`, `sim_record_video` (`action=start|stop|status`), `screenshot`,
 `app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start`, `net_log`, `sim_gpu` and the rest (103 tools;
-README.md lists them by group). Every tool takes `phone`.
+docs/AGENT-TOOLS.md lists them by group). Tools that act on a device take `phone`.
 
 ```sh
 claude mcp add x86sim -- /path/to/x86sim-*.AppImage mcp       # AppImage

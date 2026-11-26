@@ -1,16 +1,16 @@
 # x86Sim releases: one AppImage, set up by the launcher
 
 Goal: download one file, run it, and get a booted phone with as little work as possible. GitHub CI builds it.
-Full releases are tagged `v<version>` (first: `v0.1.0`, 2026-11-11); pre-releases `v<version>-pre<N>`.
+Full releases are tagged `v<version>` (first: `v0.1.0`, 2026-11-11; this document describes `v0.7.2`); pre-releases
+`v<version>-pre<N>`. The repository and its releases are public (`x86sim/x86sim`).
 
-Status (2026-11-08): the build, the AppImage, the setup wizard (GUI + `x86sim-aot setup` CLI), the no-root "userns"
-mode and the CI workflows are written. Tested locally: the Ubuntu 24.04 build (docker, the same script CI runs), the
-AppImage in fresh data/cache dirs (`XDG_DATA_HOME`/`XDG_CACHE_HOME`), host checks, catalogue + resumable download
-from Apple, linking an existing runtime, and **a phone booted to the home screen from the AppImage's Darling without
-root** (userns mode). Not tested yet: the root install (`pkexec`, no password here), the GUI wizard on screen, CI on
-GitHub's runners, other distros.
+What a release is: one AppImage built by `.github/workflows/release.yml` from a tag, with its `.zsync` and
+`SHA256SUMS`. It carries Darling, the translator, mtlvk, the launcher and its command-line tools, and our
+simulator-side binaries; nothing from Apple. The launcher's Setup page (or `x86sim.AppImage aot setup ...`) checks the
+computer, makes Darling usable (no root in userns or nonroot mode, one password prompt in system mode), downloads the
+runtime from Apple, pre-translates it and creates the first device.
 
-## 1. What a fresh machine needs today (developer setup)
+## 1. What a fresh machine needs (developer setup)
 
 | Step | What | Root? | Machine-specific? |
 |---|---|---|---|
@@ -18,34 +18,35 @@ GitHub's runners, other distros.
 | Darling | `make darling-install`: ~26k ninja targets, installed to `darling-prefix/`, then `bin/darling` chowned root + setuid (`tools/debug/dinstall.sh`) | **yes**: setuid root | the install prefix is **compiled into** the binaries (`darling` execs `$PREFIX/bin/darlingserver`, darlingserver overlays `$PREFIX/libexec/darling`, mldr loads `$PREFIX/libexec/usr/lib/dyld`) |
 | arm64jit | `linux/arm64jit/install.sh`: libarm64jit.so, a64hugecopy and host/arm64host (built with Darling's in-tree ld64 and Darling's own SDK) copied into the prefix | no | no |
 | mtlvk | `make mtlvk` (Rust, Vulkan through the loader) | no | needs the user's Vulkan driver at run time |
-| Launcher | `cargo build --release` in tools/launcher (launcher, x86sim-aot, x86sim-mcp) | no | no |
+| Launcher | `cargo build --release` in tools/launcher (x86sim-launcher, x86sim-aot, x86sim-mcp, x86sim-ax, x86sim-dev, x86sim-serve, x86sim-pool, x86sim-account, x86sim-devapp) | no | no |
 | iOS runtime | `runtime-fetch.py fetch 24B8117`: Apple catalogue + gdmf, 8 GB download (curl, resumable), `ipsw fw aea` decrypt, aaextract.py, `7z x -snld`, symlink repair (extract-runtime.py). ~45 GB free during, ~27 GB after | no | Apple content: per machine, never redistributed |
 | Maps seed | boot-a64.sh writes `runtimes/geo-seed` (geod's seed manifest; geod downloads Apple's resources itself) | no | nothing to ship |
 | AOT image | x86sim-aot / Pre-translate page: built from the runtime, keyed by the translator's codegen version (read from libarm64jit.so's `g_build`, core/src/key.rs) | no | derived from Apple's code: local only |
 | First phone | `device-a64.py create` / launcher "Add phone"; a fresh phone's first boot can stall once (the launcher restarts it automatically) | no | |
 | Kernel | overlayfs (Darling's container), 6.11+ for PROCMAP_QUERY (faster darlingserver; older kernels fall back), no binfmt, no kernel module, no ptrace needs for normal use | - | |
-| GPU | Vulkan driver (NVIDIA proprietary, Mesa RADV/ANV) + loader; without one, software rendering | - | yes |
+| GPU | Vulkan driver (NVIDIA proprietary, Mesa RADV/ANV) + loader; without one, software rendering. AMD (RADV): read-write access to `/dev/udmabuf`, else buffers are copied ([METAL.md](METAL.md)) | - | yes |
 
 ## 2. What goes where
 
-**Inside the AppImage** (224 MB at 0.5.3-47, zstd; nothing from Apple):
+**Inside the AppImage** (zstd squashfs; `appimage.sh` prints its size; nothing from Apple):
 
 ```
 AppRun                         entry (build/release/AppRun)
 usr/share/x86sim/
   VERSION, DARLING_ID          version; content hash of the Darling tree (a new AppImage reinstalls Darling only if it changed)
-  payload/                     `git ls-files` of cli host linux tools/debug tools/runtime tests + build outputs at their
-                               repo paths (linux/mtlvk/target/release/mtlvk, tools/launcher/target/release/x86sim-{launcher,
-                               aot,mcp,ax,dev,serve,pool,devapp}) + external/omarchy-apple-dev's runtime files (the scripts
-                               `x86sim dev` runs: no receipts, docs, tests or demos)
+  payload/                     `git ls-files` of cli host linux tools/debug tools/runtime tests (and docs/RELEASE.md,
+                               README.md, LICENSE) + build outputs at their repo paths (linux/mtlvk/target/release/mtlvk,
+                               tools/launcher/target/release/x86sim-{launcher,aot,mcp,ax,dev,serve,pool,devapp}) +
+                               external/omarchy-apple-dev's install-toolchain.sh, ship.sh, ship-mac.sh, device-run.sh,
+                               tools/, sdk-free/, flutter/, kmp/, patches/, compat/ (no receipts, docs, tests or demos)
   darling/                     Darling installed with prefix /opt/x86sim/darling (DESTDIR), + libarm64jit.so,
-                               a64hugecopy, arm64host — 543 MB unpacked
+                               a64hugecopy, arm64host
   bin/ipsw (MIT), bin/7zz + 7z (7-Zip, LGPL-2.1 + unRAR), bin/rcodesign (MPL-2.0: re-signs converted .ipa / device
                                builds), pylib/dns (dnspython, ISC)
   webinspector/                WebKit's Web Inspector frontend for `x86sim inspect` (build/webinspector.sh: the
                                WebInspectorUI files of Arch's webkit2gtk-4.1 2.54.3-1 package, sha256 pinned; BSD-2 + MIT,
-                               its LICENSE); AppRun copies it to <app>/webinspector. 227 files, 6.3 MiB unpacked;
-                               +1.19 MiB on the AppImage (zstd squashfs: 236.1 -> 237.4 MB, +0.5%), 2026-11-24
+                               its LICENSE); AppRun copies it to <app>/webinspector. 227 files, 6.3 MiB unpacked,
+                               about 1.2 MiB of the AppImage
   install-helper.sh            the privileged step (system mode)
   darling-userns.sh            the no-root Darling wrapper (userns mode)
   darling-nonroot.sh           the no-root, no-namespace Darling wrapper (nonroot mode)
@@ -53,14 +54,27 @@ usr/share/x86sim/
                                lzfse (BSD-3), omarchy-apple-dev (MIT), webinspector (BSD-2 + MIT); NOTICE lists them all
 ```
 
-The committed simulator-side binaries in `host/` (simfb, simhid, simshim, simaudio frameworks/dylibs) are **ours**,
-built from `host/` sources with `build/mac-build-*.sh`; they link against Apple's SDK stubs but contain no Apple code.
-CI has no Apple SDK and needs none (it never rebuilds them). `appimage.sh` refuses to pack if it finds a dyld shared
-cache, a `.simruntime`, an SDK, GeoServicesData, a RuntimeRoot or a CoreSimulator Profiles tree.
+The committed simulator-side binaries in `host/` (simfb, simhid, simshim, simax, simnet, simaudio, metalhostd,
+iosurfaced, openurl and the others; iOS, tvOS, watchOS and visionOS builds) are **ours**, built on Linux from `host/`
+sources by `build/mac-build-*.sh` (clang, ld64.lld and the SDKs in `sdks/`; the scripts keep their names from when
+they ran on a Mac, see [LINUX-BUILD.md](LINUX-BUILD.md)). They link against Apple's SDK stubs but contain no Apple
+code. The release build does not rebuild them: it packs the committed files, so CI holds no Apple SDK. `appimage.sh`
+refuses to pack if it finds a dyld shared cache, a `.simruntime`, an SDK, GeoServicesData, a RuntimeRoot or a
+CoreSimulator Profiles tree.
+
+Up to v0.7.2 the AppImage lacked the `x86sim-account` binary (`x86sim account` on the command line; the launcher's
+Settings > Apple Account has the same sign-in built in) and omarchy-apple-dev's `swiftbuild/`, `linux-bin/`,
+`cocoapods/`, `carthage/`, `xcodegen/`, `tuist/`, `rust/`, `dotnet/`, `shells/` and `fastlane/` directories, which
+`x86sim dev` needs for Xcode projects, CocoaPods (React Native, Expo), Rust, .NET and the app shells
+([BUILDING-APPS.md](BUILDING-APPS.md)). `appimage.sh` packs them from the release after v0.7.2 on; on an older AppImage,
+`X86SIM_OAD=<dir>` points `x86sim dev` at a full checkout of the fork.
 
 **Fetched or built on the user's machine, never shipped:** the iOS runtime (straight from Apple's CDN with the same
 request Xcode makes; each user downloads their own copy), the Metal binary extracted from it (ensure-metal-framework.sh),
-AOT images and JIT caches (derived from Apple's code), GeoServicesData (needs a Mac; optional).
+AOT images and JIT caches (derived from Apple's code), XCTest's frameworks, the device SDK and the iPhone Duo's 3D model
+(from the user's own Xcode.xip: `x86sim account download-xcode`, `x86sim dev setup sdk --xip`), the Metal toolchain
+(`build/metal-toolchain.py`, only for compiling shaders from source), the OCR models (`~/.cache/x86sim/ocr`). Maps
+needs nothing shipped: boot-a64.sh writes geod's seed manifest and geod downloads Apple's resources.
 
 **On disk after setup** (the AppImage mount is read-only and lives only while the AppImage runs, but phones outlive the
 launcher, so AppRun copies the payload out once per version):
@@ -71,12 +85,15 @@ launcher, so AppRun copies the payload out once per version):
   cli host linux tools tests   -> app/<version>/...      (relative links: Darling resolves them under /Volumes/SystemRoot)
   darling-prefix               -> /opt/x86sim/darling (system mode) or app/<version>/darling-userns|darling-nonroot
   runtimes/ var/ setup.json    user data, kept across versions
+  devicemodels/                the iPhone Duo's 3D model, when the user's Xcode.xip gave it
 ~/.cache/x86sim/              X86SIM_SCRATCH: per-phone Darling prefixes, jc-<build> (AOT + JIT cache), logs
 /opt/x86sim/                  system mode only: darling-<id>/ (root-owned, bin/darling setuid), darling -> darling-<id>
 ```
 
 AppRun sets `X86SIM_ROOT`, `X86SIM_SCRATCH`, `PATH` (bundled ipsw/7z), `X86SIM_PYLIB`, `A64_PREFIX_HEAL=0` (no
-Darling build tree to heal from). Subcommands: `x86sim.AppImage [launcher|aot|mcp|dev|serve|x86sim|shell|version]`.
+Darling build tree to heal from). Subcommands: `x86sim.AppImage
+[launcher|aot|mcp|dev|serve|x86sim|shell|install-desktop|uninstall-desktop|version]`; every other command-line tool is
+reached through `x86sim.AppImage x86sim <command>`.
 In the checkout nothing changes: `repo_root()` is still the repo, `setup::needed()` is false, the Setup page only checks.
 
 ## 3. Root: three modes
@@ -124,18 +141,25 @@ it stays in the sidebar afterwards. The same steps from a terminal: `x86sim.AppI
 
 1. **This computer**: CPU (x86-64 with SSE4.1/POPCNT/CX16), kernel (overlayfs; 6.11+ noted), memory (16 GB
    recommended, 8 minimum), disk (45 GB free for a download, 10 GB with a runtime), Vulkan (loader, a driver JSON,
-   a GPU node; else a warning: software rendering), programs (python3, curl, openssl, setsid, ipsw, 7z),
+   a GPU node; else a warning: software rendering), GPU buffers on AMD (`/dev/udmabuf` readable and writable; else a
+   warning: buffers are copied), programs (python3, curl, openssl, setsid, ip, ipsw, 7z), shared libraries,
    dnspython, resource limits (a systemd user manager; else a warning: phones run uncapped).
 2. **Darling**: ready (userns) or Install/Update (system, one password).
 3. **Get iOS**: Download iOS 27.2 (the existing fetch with progress, Cancel, Resume — curl `-C -`, tested), or
    "use this folder" to link a runtime already on disk (a checkout's `runtimes/ios-27.2-24B8117-arm64`; relative link).
-4. **Pre-translate** (optional): opens the existing Pre-translate page.
-5. **First phone**: the existing Add phone dialog; then Done.
+4. **Pre-translate**: starts by itself as soon as iOS and Darling are ready. Afterwards the launcher keeps every
+   installed version's image up to date on its own (at start, after a device stops, when versions change, every
+   30 min), niced and while devices run; stopping a run pauses it until the next launcher start
+   (`X86SIM_NO_AUTO_AOT=1`: no automatic pass).
+5. **First phone**: the Add phone dialog; then Done.
 
 ## 5. Updates and versioning
 
 - The AppImage carries update information `gh-releases-zsync|x86sim|x86sim|latest-pre|x86sim-*-x86_64.AppImage.zsync`
-  and CI publishes the `.zsync`, so AppImageUpdate / AppImageLauncher can delta-update. (Needs a public repo, see §8.)
+  and CI publishes the `.zsync`, so AppImageUpdate / AppImageLauncher can delta-update. The launcher also updates
+  itself (`tools/launcher/core/src/update.rs`): the newest GitHub release, checked against its `SHA256SUMS` and
+  swapped in; the channel is `stable` (full releases) or `pre` (pre-releases too), by default that of the running
+  version.
 - A new version gets its own `app/<version>` copy; user data (`runtimes/`, `var/`, caches) is untouched. Darling is
   reinstalled (system mode: one prompt) only when `DARLING_ID` changes.
 - AOT images are already invalidated by the translator's codegen version (key.rs reads it from the installed
@@ -150,9 +174,9 @@ it stays in the sidebar afterwards. The same steps from a terminal: `x86sim.AppI
   reads the checkout only, writes `build/release/out` (gitignored). `CCACHE=1` uses ccache (hits only when the checkout
   and OUT paths are the same as the cached build's: Darling's compile lines carry both). Reproducible Darling:
   `ZERO_AR_DATE=1` (ld64's N_OSO object timestamps) and `SOURCE_DATE_EPOCH` = Darling's commit time (`__DATE__`), so
-  the same Darling source gives the same `DARLING_ID` and an update reinstalls Darling only when it changed (before
-  2026-11-24 every build had a new id: 0.5.0 and 0.5.1, same Darling, `0caec06c…` vs `67543ed4…`).
-- `build/release/appimage.sh`: payload, Darling tree, pinned tools (sha256 checked), the Web Inspector frontend
+  the same Darling source gives the same `DARLING_ID` and an update reinstalls Darling only when it changed.
+- `build/release/appimage.sh`: payload, Darling tree, pinned tools (ipsw, 7-Zip, rcodesign, dnspython; sha256
+  checked), the Web Inspector frontend
   (`build/webinspector.sh`: needs `zstd` and glib's `gresource`, in deps-ubuntu.sh), licenses, Apple-content check,
   appimagetool (continuous; prints its hash) → `x86sim-<version>-x86_64.AppImage` + `.zsync` + `SHA256SUMS`.
 - `build/release/docker-build.sh`: the same in an `ubuntu:24.04` container with the checkout mounted read-only (local
@@ -162,19 +186,19 @@ it stays in the sidebar afterwards. The same steps from a terminal: `x86sim.AppI
   `release.yml`: tag `v<version>` → GitHub release (marked latest), `v<version>-pre<N>` → pre-release (or a manual
   run naming a tag); each with AppImage, zsync, SHA256SUMS.
 
-Measured locally (Ryzen 7 9800X3D, `-j8`, a phone running alongside): Darling 26k targets ≈ 8.5 min wall, 50 CPU-min
-summed over jobs; arm64jit + arm64host < 1 min; mtlvk ≈ 1.5 min; launcher < 30 s; packing ≈ 1 min.
-2026-11-24 (same host, `JOBS=6`, nice, other agents' phones running; 28.8k targets): cold 21.5 min (build.sh 1212 s +
-appimage.sh 78 s); warm ccache (same paths) + sccache 3.3 min (build.sh 126 s: Darling 74 s; appimage.sh 71 s). Estimate on a
-4-vCPU GitHub runner: 30–60 min cold, much less with ccache — well inside the 6 h limit. Disk: Darling build tree
-1.7 GB, destdir 0.55 GB, cargo targets 2.2 GB, shallow submodules a few GB: fits the ~14 GB free (+~25 GB after the
-cleanup step).
+Build times, measured locally in November 2026 (Ryzen 7 9800X3D, `-j8`, a phone running alongside): Darling 26k targets
+≈ 8.5 min wall, 50 CPU-min summed over jobs; arm64jit + arm64host < 1 min; mtlvk ≈ 1.5 min; launcher < 30 s; packing ≈ 1
+min. 2026-11-24 (same host, `JOBS=6`, nice, other agents' phones running; 28.8k targets): cold 21.5 min (build.sh 1212 s
++ appimage.sh 78 s); warm ccache (same paths) + sccache 3.3 min (build.sh 126 s: Darling 74 s; appimage.sh 71 s).
+Estimate on a 4-vCPU GitHub runner: 30–60 min cold, much less with ccache — well inside the 6 h limit. Disk: Darling
+build tree 1.7 GB, destdir 0.55 GB, cargo targets 2.2 GB, shallow submodules a few GB: fits the ~14 GB free (+~25 GB
+after the cleanup step).
 
 Found and fixed for the Ubuntu toolchain: darlingserver used `PROCMAP_QUERY` from Linux 6.11 headers (Ubuntu 24.04
 has 6.8): the definitions are now provided when missing (stable ABI; old kernels answer ENOTTY and the maps parser runs).
 
 **glibc floor:** built on 24.04: glibc 2.38/2.39 symbols, libstdc++ GLIBCXX_3.4.30. Runs on Ubuntu 24.04+, Debian 13,
-Fedora 39+, Arch/derivatives; not Ubuntu 22.04 / Debian 12. Mac-side bits are Mach-O and don't care.
+Fedora 39+, Arch/derivatives; not Ubuntu 22.04 / Debian 12. The simulator-side binaries are Mach-O and don't care.
 
 ## 7. Licensing of what is bundled
 
@@ -185,15 +209,15 @@ Web Inspector frontend BSD-2 (WebKit's WebInspectorUI; bundled CodeMirror MIT, E
 documentation MIT: licenses/webinspector-LICENSE). Only the frontend's files ship, none of WebKitGTK's LGPL libraries.
 Our own code: GPL-3.0-or-later (LICENSE); bundled components and their licenses in NOTICE.
 
-## 8. Decisions (2026-11-08)
+## 8. How releases are set up
 
-1. **Repo visibility: private for now.** Pre-releases are visible to org members only, so AppImageUpdate/zsync does
-   not work for anyone else yet. Revisit (public repo or a public releases-only repo) before the first public release.
-2. **License: GPL-3.0-or-later** for our own code (LICENSE), components listed in NOTICE; both ship in the AppImage.
-3. **Root mode: userns (no root) by default, `pkexec` system install as the fallback**, as implemented.
-4. **Distro floor: Ubuntu 24.04+** (glibc 2.39): also Debian 13, Fedora 39+, Arch.
-5. **Pre-translate: automatic.** Setup starts it as soon as iOS and Darling are ready (not a choice). Afterwards the
-   launcher keeps every installed version's image up to date on its own (at start, after a device stops, when versions
-   change, every 30 min), niced and while devices run; stopping a run pauses it until the next launcher start.
-6. **First tag**: `v0.1.0-pre1`; first full release `v0.1.0`.
-7. **Pushing**: the gh token has `workflow` scope; push innermost first (darlingserver, darling, then this repo).
+- **Repository**: `x86sim/x86sim` is public, so the releases, their `.zsync` files and the forks CI clones over HTTPS
+  are readable by everyone.
+- **License**: GPL-3.0-or-later for our own code (LICENSE), components listed in NOTICE; both ship in the AppImage.
+- **Root**: userns (no root) by default, nonroot inside a container without user namespaces, the `pkexec` system
+  install otherwise (§3).
+- **Distro floor**: Ubuntu 24.04+ (glibc 2.39): also Debian 13, Fedora 39+, Arch.
+- **Pre-translate**: automatic (§4).
+- **Tags**: `v<version>` is a full release, marked latest; `v<version>-pre<N>` a pre-release. Releases are immutable:
+  `release.yml` uploads the assets to a draft and then publishes it.
+- **Pushing**: innermost first (darlingserver, darling, then this repo), see [REPOS.md](REPOS.md).

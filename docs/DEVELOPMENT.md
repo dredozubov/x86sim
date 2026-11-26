@@ -1,26 +1,30 @@
 # Developing x86Sim
 
 Building from source, the repository layout and day-to-day use from the command line. For the
-design, see [ARCHITECTURE.md](ARCHITECTURE.md).
+design, see [ARCHITECTURE.md](ARCHITECTURE.md), which also has the map of all documents; for using a built x86Sim,
+[USAGE.md](USAGE.md).
 
 ## Requirements
 
 - **Linux x86-64** with a recent kernel. Darling needs its usual setup: FUSE/overlayfs and a setuid-root `darling`
-  binary.
+  binary (a source build; the AppImage also runs without root, [RELEASE.md](RELEASE.md)).
 - **A Vulkan GPU**: NVIDIA (proprietary driver) or AMD (RADV), with `VK_EXT_external_memory_host`. On AMD also
   read-write access to `/dev/udmabuf` (the `udmabuf` module; RADV refuses host-pointer imports of Darling's memory,
-  and without udmabuf every buffer is mirrored). Development used an
-  NVIDIA RTX 5090. Without a usable GPU, `X86SIM_METAL=0` falls back to software rendering.
+  and without udmabuf every buffer is mirrored; [METAL.md](METAL.md#how-buffers-reach-the-gpu)). Development used an
+  NVIDIA RTX 5090 and an AMD integrated GPU. Without a usable GPU, a device's GPU setting `cpu` renders on lavapipe and
+  `X86SIM_METAL=0` falls back to CoreAnimation's software rendering (not for visionOS, which needs Metal).
 - **Darling's build dependencies**: clang/LLVM, cmake, ninja, bison, flex, FUSE, libcap, Python 3, and the rest of
   Darling's [build list](https://docs.darlinghq.org/build-instructions.html); dynarmic also needs boost headers.
 - **Rust** (stable, via rustup) for `linux/mtlvk` and metal2vulkan.
-- **Python 3** with `PIL` (Pillow) and `dnspython`. The viewer needs PyGObject with GTK 4, `x86sim io recordVideo` needs
-  `ffmpeg`, and `x86sim dismiss` needs `tesseract`.
-- **Apple's iOS 27 simulator runtime**, not included: `runtime-fetch.py` downloads it straight from Apple's catalogue
+- **Python 3** with `PIL` (Pillow) and `dnspython`. The GTK viewer (`x86sim view`) needs PyGObject with GTK 4,
+  `x86sim io recordVideo` needs `ffmpeg`, and `x86sim dismiss` needs `tesseract`.
+- **Apple's simulator runtimes**, not included: `runtime-fetch.py` downloads them straight from Apple's catalogue
   (no Mac, no Apple ID). It needs [`ipsw`](https://github.com/blacktop/ipsw) and 7-Zip.
-- **No Mac to run it.** The simulator-side binaries in `host/` and `tests/` are committed. Rebuilding them works on
-  Linux: `make sdks` sets up the SDKs without a Mac or an Apple ID (see *Simulator-side binaries*); only Metal shader
-  sources and the Swift parts still need Xcode's SDK.
+- **No Mac.** Everything builds on Linux (AGENTS.md, [LINUX-BUILD.md](LINUX-BUILD.md)). The simulator-side binaries in
+  `host/` and `tests/` are committed, and rebuilding them works here: `make sdks` sets up the SDKs without an Apple ID
+  (see *Simulator-side binaries*), and Metal shaders compile with Apple's Metal toolchain, a public download, run
+  under Darling. Only XCTest's frameworks and the Swift / UIKit parts need files from Xcode.xip (a free Apple ID),
+  which is unpacked on Linux. A Mac (`$X86SIM_MAC`) is used only to compare results with Apple's simulator.
 
 ## Layout
 
@@ -28,23 +32,29 @@ design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 cli/        x86sim front end; cli/libexec: the scripts it wraps (cli/libexec/arm64: boot, runtime fetch, placement,
             prefetch, shipped training); cli/lib: configuration and device types
 host/       simulator-side code (Mach-O, run inside Darling): simhost (x86_64), arm64host, and arm64 builds under
-            host/<name>/arm64 of simfb, simhid, simaudio, iosurfaced, metalhostd (+ vkmtl), fpsim2host, netconfig,
-            openurl, mmhost, simshim/{compat,diag}
+            host/<name>/arm64 (iOS), arm64-tvos, arm64-watchos, arm64-xros of simfb, simhid, simaudio, simax (the
+            accessibility reader), simnet (network capture), iosurfaced, metalhostd (+ vkmtl), fpsim2host, fseventsd,
+            netconfig, nisimhost, openurl, mmhost, simshim/{compat,diag}
 linux/      native Linux pieces: arm64jit (the JIT host library), mtlvk (Rust, Metal on Vulkan), mdnsd, hostnet,
             fmrelay (FoundationModels relay to a Mac)
-tests/      sample apps (tests/apps), arm64 JIT tests (tests/arm64), Metal (mtlprobe + shaders)
-            and IOSurface (iosprobe) tests, perf.py
-tools/      launcher/: the launcher GUI, x86sim-aot, x86sim-mcp; debug/: core dumps, stacks, stuck processes,
-            Darling install (dinstall.sh); runtime/extract-runtime.py: Apple's runtime image -> RuntimeRoot on Linux
-build/      build scripts (mac-build-*.sh) for the host/ and tests/ binaries: on Linux by default (linux-env.sh), or a
-            Mac; release/: the AppImage
-docs/       ARCHITECTURE, WORKAROUNDS, METAL, RELEASE, protocols/, REPOS, screens/
-external/   git submodules: darling, dynarmic and metal2vulkan (x86sim branches of the x86sim forks)
+tests/      sample apps and sdkcov (tests/apps), arm64 JIT tests (tests/arm64), Metal (tests/metal: mtlprobe +
+            shaders), end-to-end checks through MCP (tests/ax, tests/dev, tests/mcp, tests/share, tests/account),
+            tests/lldb, tests/profile, tests/web/webcov, perf.py
+tools/      launcher/: the launcher GUI and the Rust command-line tools (x86sim-aot, -mcp, -ax, -dev, -serve, -pool,
+            -account, -devapp); debug/: core dumps, stacks, stuck processes, Darling install (dinstall.sh);
+            runtime/extract-runtime.py: Apple's runtime image -> RuntimeRoot on Linux; devicetypes/, devicemodels/:
+            device types and the iPhone Duo's 3D model out of Xcode.xip
+build/      build scripts for the host/ and tests/ binaries, run on Linux (mac-build-*.sh keep their names;
+            linux-env.sh, linux-swiftc.sh, linux-metal.sh, linux-bin/); sdk/: the SDKs; release/: the AppImage
+docs/       ARCHITECTURE (with the map of all documents), protocols/, screens/
+skills/     x86sim/SKILL.md: the skill file for coding agents
+external/   git submodules: darling, dynarmic, metal2vulkan and omarchy-apple-dev (x86sim branches of the x86sim
+            forks)
 ```
 
 ## Setup
 
-Pre-built: the AppImage from the GitHub pre-releases sets itself up (host checks, Darling, iOS download, first
+Pre-built: the AppImage from the GitHub releases sets itself up (host checks, Darling, iOS download, first
 phone) from the launcher's Setup page; see [docs/RELEASE.md](RELEASE.md). From source:
 
 1. **Clone with submodules.**
@@ -60,8 +70,9 @@ phone) from the launcher's Setup page; see [docs/RELEASE.md](RELEASE.md). From s
    ```
    It decrypts Apple's archive (`ipsw`), unpacks the APFS image (`7z`), and remakes every symlink 7-Zip gets wrong
    (`tools/runtime/extract-runtime.py --links`, then `--check`).
-   Apple TV and Apple Watch: `runtime-fetch.py list all`, then e.g. `fetch 24K150` (tvOS 27.2, about 4 GB) or
-   `fetch 24S118` (watchOS 27.2) into `runtimes/tvos-...` / `runtimes/watchos-...`, and
+   Apple TV, Apple Watch and Vision Pro: `runtime-fetch.py list all`, then e.g. `fetch 24K150` (tvOS 27.2, about
+   4 GB), `fetch 24S118` (watchOS 27.2) or `fetch 24N120` (visionOS 27.2) into `runtimes/tvos-...` /
+   `runtimes/watchos-...` / `runtimes/xros-...`, and
    `x86sim device create --model "Apple TV 4K (3rd generation) (at 1080p)" tv` or `--model "Apple Watch Series 11 (46mm)"
    watch` (the newest runtime of the model's platform). Boot one with `A64_DEVICE=var/device-a64-tv` as usual.
 3. **Build and install Darling** (bin/darling must be setuid root, so this asks for sudo):
@@ -72,20 +83,24 @@ phone) from the launcher's Setup page; see [docs/RELEASE.md](RELEASE.md). From s
    ```sh
    make mtlvk                            # Metal on Vulkan
    linux/arm64jit/install.sh             # the arm64 JIT, installed into Darling
-   (cd tools/launcher && cargo build --release)   # launcher, x86sim-aot, x86sim-mcp
+   (cd tools/launcher && cargo build --release)   # x86sim-launcher, x86sim-aot, x86sim-mcp and the other tools
    ```
 5. **Pre-translate** (optional, much faster boots and app opens):
    `tools/launcher/target/release/x86sim-aot --device $PWD/var/device-a64 build --full`, or the launcher's
    Pre-translate page.
-6. **Boot:** from the launcher, or `X86SIM_METAL=all A64_KEEP=1 cli/libexec/arm64/boot-a64.sh` (see *Usage*).
+6. **Boot:** from the launcher, or `A64_KEEP=1 cli/libexec/arm64/boot-a64.sh` (see *Usage*). A boot without the
+   pre-translated image works too: cold code starts in the translator's interpreter tier
+   ([ARCHITECTURE.md](ARCHITECTURE.md#arm64-code-arm64host-and-libarm64jit)).
 
 Commands that need root (installing Darling, killing the setuid `darling` launcher, cores) read the password from
 `SUDO_PASS` in the environment or use sudo's prompt or cache. The password is never stored in a file.
 
 ## Usage
 
-Phones are started from the launcher, or by hand with `cli/libexec/arm64/boot-a64.sh` (`A64_DEVICE=<dir>` for another
-device, `A64_KEEP=1` to keep it running, `A64_STOP_ONLY=1` to stop it). With a phone running:
+Phones are started from the launcher, with `x86sim-aot --device NAME sim start|stop|restart`, or by hand with
+`cli/libexec/arm64/boot-a64.sh` (`A64_DEVICE=<dir>` for another device, `A64_KEEP=1` to keep it running,
+`A64_STOP_ONLY=1` to stop it). [USAGE.md](USAGE.md) and [AGENT-TOOLS.md](AGENT-TOOLS.md) describe the commands; the
+ones used most while developing, with a phone running:
 
 ```sh
 x86sim view [--bg]              # GTK window: mouse = touch, keyboard input
@@ -110,11 +125,13 @@ x86sim device models|list|create --model "iPhone 17 Pro" [name]
 tests/perf.py all               # short performance run (idle CPU, launch times, frame times, touch latency)
 ```
 
-Useful environment variables: `X86SIM_METAL=all|backboardd|0` (GPU for every process / backboardd only / software
-rendering), `A64_JOBS=min|slim|std|full`, `A64_DROP="label ..."`, `X86SIM_NODT=all,-<label>` (os_log text for one job),
-`X86SIM_INSERT=host/simshim/diag/...` (diagnostic shims, built with `make mac-diag`), `X86SIM_MDNS=0`,
-`X86SIM_JETSAM=0`, `X86SIM_MEM_MAX`. Debugging: `tools/debug/` (`lastcrash.sh`, `stuck.sh <process>`, `allstacks.sh`,
-`sigctx.py`).
+Useful environment variables: `X86SIM_METAL=all|backboardd|0` (GPU for every process, the default / backboardd only /
+software rendering), `MTLVK_DEVICE_ID=auto|cpu|<id>` (the GPU, [METAL.md](METAL.md#gpu-selection)),
+`X86SIM_A64_INTERP=N` (the interpreter tier's threshold, 0 = off), `X86SIM_A64_JITCACHE=0` / `X86SIM_A64_AOT=0` (no
+translation cache / no image), `A64_JOBS=min|slim|std|full`, `A64_DROP="label ..."`, `X86SIM_NODT=all,-<label>` (os_log
+text for one job), `X86SIM_INSERT=host/simshim/diag/...` (diagnostic shims, built with `make mac-diag`),
+`X86SIM_MDNS=0`, `X86SIM_JETSAM=0`, `X86SIM_MEM_MAX`. Debugging: `tools/debug/` (`lastcrash.sh`, `stuck.sh <process>`,
+`allstacks.sh`, `sigctx.py`).
 
 ### FoundationModels through a Mac
 
@@ -154,8 +171,11 @@ clang + ld64.lld, `build/linux-swiftc.sh`). Two ways to fill `sdks/`:
   and `tests/` byte-identically to Xcode's SDK (apart from clang's random temp-object names). Not covered: Swift and
   UIKit (`tests/arm64/objcswift`, `sleepprobe`, `tests/apps`), which need Xcode's own SDK. Using these files means
   accepting Apple's SDK agreement.
-- **From Xcode:** copy `iPhoneSimulator.sdk` and `MacOSX.sdk` from Xcode, plus `swift-6.4.2/` from swift.org and
-  `swift-lib/` from Xcode's toolchain for the Swift parts.
+- **From Xcode.xip** (a free Apple ID; `x86sim account download-xcode` fetches it, and it is unpacked on Linux, never
+  copied from a Mac): Xcode's own `iPhoneSimulator.sdk` and `MacOSX.sdk` in `sdks/`, its watchOS and visionOS SDKs as
+  `sdks/WatchSimulator-xcode.sdk` and `sdks/XRSimulator-xcode.sdk` (the test apps and simax build against those: the
+  plain ones are the substitutes), plus for the Swift parts `sdks/swift-6.4.2/` (swift.org's Linux toolchain) and
+  `sdks/swift-lib/` (the Darwin Swift resource dir of Xcode's toolchain); `build/linux-swiftc.sh` lists what it reads.
 
 tvOS and watchOS builds of the same binaries (`host/<name>/arm64-tvos`, `arm64-watchos`) take
 `X86SIM_PLATFORM=tvos|watchos build/mac-build-arm64-shims.sh ...` and their own SDK in `sdks/`: `AppleTVSimulator.sdk`
@@ -166,7 +186,8 @@ which our binaries need: use the substitute for watchOS.
 `cargo install apple-codesign` for signing either way. Metal shaders (`xcrun metal` / `metallib`, the probe library and
 sdkcov's Core Image kernels) compile with Apple's own Metal toolchain, a public download like the runtimes
 (`build/metal-toolchain.py fetch`: about 840 MB from Apple, 380 MB kept in `sdks/metal-<build>/`), run under Darling by
-`build/linux-metal.sh`.
+`build/linux-metal.sh`. The visionOS builds (`host/<name>/arm64-xros`) take `X86SIM_PLATFORM=xros` and
+`XRSimulator.sdk` in the same way.
 
 A committed binary can be checked against its source this way too: rebuild it and compare (the only differences
 should be the LC_UUID, the code signature and clang's temp-object names in the debug map).

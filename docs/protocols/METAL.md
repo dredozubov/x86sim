@@ -24,7 +24,8 @@ and per-command-buffer encoder streams. The server side (`MTLSimImplementation` 
 `MetalSerializer`) decodes the blobs and **replays them against a normal `id<MTLDevice>`**. Both halves exist as
 iossimulator x86_64 binaries in the runtime. So the cheapest stand-in is **not** to reimplement the wire format.
 Run Apple's `MTLSimImplementation` in a Darling process, and give it an `MTLDevice` that we implement on Vulkan
-(see PLAN.md, option B). The wire details below are needed for debugging, and for option A (a full clean-room server).
+(this is what was built: [../METAL.md](../METAL.md)). The wire details below are needed for debugging, and for the
+alternative, a full clean-room server.
 
 ## 1. Client-side architecture
 

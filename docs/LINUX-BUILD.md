@@ -30,7 +30,8 @@ from (for Mach-O files: the linker recorded in `LC_BUILD_VERSION`, `lld` = Linux
 | `cli/libexec/arm64/training-*.x86t` (pre-translate training) | Linux (x86sim-aot) | yes | none |
 | `build/sdk/xros-versionmap.json` | Apple's public SDK data, written by hand | n/a | none |
 | fonts (`tools/launcher/gui/assets/fonts/Inter-*.ttf`, `cli/libexec/fonts/Phosphor.ttf`) | upstream font releases | n/a | none |
-| `docs/screens/**/*.png`, `build/release/x86sim.png` | screenshots of x86Sim / artwork | n/a | none |
+| `build/release/x86sim.png` | artwork | n/a | none |
+| `docs/screens/*` (launch images and videos) | screenshots and recordings of x86Sim, made on Linux | n/a | none |
 
 ## Scripts that reached the Mac
 
