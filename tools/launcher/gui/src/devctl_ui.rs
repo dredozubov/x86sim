@@ -148,20 +148,18 @@ impl App {
         let idle = working.is_none() && (running || off);
         let field = |ui: &mut egui::Ui, label: &str, tip: &str| {
             ui.add_space(S1);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.label(egui::RichText::new(label).size(T_SMALL).family(medium()).color(pal().ink_2));
-                ui.label(egui::RichText::new(icon::INFO).family(icons()).size(12.0).color(pal().ink_3)).on_hover_text(tip);
-            });
+            ui.label(egui::RichText::new(label).size(T_SMALL).family(medium()).color(pal().ink_2)).on_hover_text(tip);
         };
         let mut cmd: Option<(Vec<String>, String)> = None;
-        ui.label(muted(if running { "Changes apply at once." } else if off { "The device is off: changes apply at its next start." } else { "Wait until it has started or stopped." }));
-        field(ui, "Appearance", "Light or Dark, as Features > Toggle Appearance / simctl ui appearance");
+        if !running {
+            ui.label(muted(if off { "Applies at next start" } else { "Starting or stopping" }));
+        }
+        field(ui, "Appearance", "Features > Toggle Appearance");
         let opts = [("light", "Light"), ("dark", "Dark")];
         if let Some(i) = segmented(ui, &opts.map(|o| o.1), opts.iter().position(|o| o.0 == st.appearance), idle) {
             cmd = Some((vec!["ui".into(), "appearance".into(), opts[i].0.into()], format!("{}: {} appearance", inst.name, opts[i].1)));
         }
-        field(ui, "Text size", "Dynamic Type (Settings > Display & Brightness > Text Size; simctl ui content_size). The larger accessibility sizes: x86sim ui content_size accessibility-medium …");
+        field(ui, "Text size", "Dynamic Type");
         let sel = SIZES.iter().position(|o| o.0 == st.content_size);
         if let Some(i) = segmented(ui, &SIZES.map(|o| o.1), sel, idle) {
             cmd = Some((vec!["ui".into(), "content_size".into(), SIZES[i].0.into()], format!("{}: text size {}", inst.name, SIZES[i].1)));
@@ -172,8 +170,7 @@ impl App {
         ui.add_space(S1);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(egui::RichText::new("Increase Contrast").size(T_SMALL).family(medium()).color(pal().ink_2));
-            ui.label(egui::RichText::new(icon::INFO).family(icons()).size(12.0).color(pal().ink_3)).on_hover_text("Settings > Accessibility > Display & Text Size (simctl ui increase_contrast)");
+            ui.label(egui::RichText::new("Increase Contrast").size(T_SMALL).family(medium()).color(pal().ink_2)).on_hover_text("Settings > Accessibility > Display & Text Size");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut on = st.increase_contrast == "enabled";
                 if ui.add_enabled_ui(idle, |ui| toggle(ui, &mut on)).inner.changed() {
@@ -181,7 +178,7 @@ impl App {
                 }
             });
         });
-        field(ui, "Fidelity", "Fast: a 3x iPhone drawn at 2x (same layout, 4/9 of the pixels) with Reduce Transparency and Reduce Motion on: smoother here. High: the model's own scale and every effect. The scale changes at the next start.");
+        field(ui, "Fidelity", "Fast: 2x scale, Reduce Transparency and Motion on. High: the model's own scale and every effect. Scale changes at next start");
         let opts = [("fast", "Fast"), ("high", "High")];
         if let Some(i) = segmented(ui, &opts.map(|o| o.1), opts.iter().position(|o| o.0 == st.fidelity), idle) {
             cmd = Some((vec!["fidelity".into(), opts[i].0.into()], format!("{}: fidelity {} (the scale at the next start)", inst.name, opts[i].1)));
@@ -193,8 +190,7 @@ impl App {
         ui.add_space(S1);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(egui::RichText::new("Connect Hardware Keyboard").size(T_SMALL).family(medium()).color(pal().ink_2));
-            ui.label(egui::RichText::new(icon::INFO).family(icons()).size(12.0).color(pal().ink_3)).on_hover_text("I/O > Keyboard > Connect Hardware Keyboard (Shift-Cmd-K; Ctrl+Shift+K in the viewer). Off: the software keyboard comes up on every text field, as on a device without a keyboard; typing still works.");
+            ui.label(egui::RichText::new("Connect Hardware Keyboard").size(T_SMALL).family(medium()).color(pal().ink_2)).on_hover_text("Ctrl+Shift+K · Off: the on-screen keyboard shows on every text field");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut on = hw;
                 if ui.add_enabled_ui(idle, |ui| toggle(ui, &mut on)).inner.changed() {
@@ -204,7 +200,7 @@ impl App {
         });
         ui.add_space(S1);
         let r = ui.add_enabled(running && working.is_none(), Btn::secondary("Toggle Software Keyboard").icon(icon::KEYBOARD).small());
-        if r.on_hover_text("I/O > Keyboard > Toggle Software Keyboard (Cmd-K; Ctrl+K in the viewer): the on-screen keyboard while a text field is focused and a hardware keyboard is connected").clicked() {
+        if r.on_hover_text("Ctrl+K · Needs a focused text field").clicked() {
             kb = Some(("software", "toggle"));
         }
         if let Some(w) = &working {
@@ -214,7 +210,7 @@ impl App {
         ui.add_space(S3);
         // ---- erase / clone (as simctl: only while off)
         if self.devctl.confirm_erase.as_deref() == Some(id.as_str()) {
-            ui.label(body(format!("Erase all content and settings of {}? Its apps and data go; it starts as new.", inst.name)));
+            ui.label(body(format!("Erase all content and settings of {}?", inst.name)));
             ui.horizontal(|ui| {
                 if ui.add_enabled(off && working.is_none(), Btn::danger("Erase").small()).clicked() {
                     cmd = Some((vec!["erase".into()], format!("Erased {}", inst.name)));
@@ -245,7 +241,7 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 let tip = if off { "" } else { "Stop it first" };
                 let r = ui.add_enabled(off && working.is_none() && !inst.is_default, Btn::secondary("Erase…").icon(icon::ERASER).small());
-                if r.on_disabled_hover_text(if inst.is_default { "The main device: x86sim erase --force" } else { tip }).clicked() {
+                if r.on_disabled_hover_text(if inst.is_default { "Not the main device" } else { tip }).clicked() {
                     self.devctl.confirm_erase = Some(id.clone());
                 }
                 let r = ui.add_enabled(off && working.is_none(), Btn::secondary("Clone…").icon(icon::COPY).small());
