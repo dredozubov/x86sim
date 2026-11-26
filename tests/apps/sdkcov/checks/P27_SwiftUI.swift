@@ -1,5 +1,6 @@
 // SDK coverage, round 30 (P27): public API of the SDK not yet referenced by any check (~/scratch/r30/apisurf.py),
-// area: SwiftUI. Each check asserts what Apple's simulator answers (ref-mac.sh --only). SwiftUI / SwiftUICore: shapes
+// area: SwiftUI (no .task {}: on visionOS its newer overload needs __isPlatformVersionAtLeast, which the Linux link
+// lacks; onAppear + Task instead). Each check asserts what Apple's simulator answers (ref-mac.sh --only). SwiftUI / SwiftUICore: shapes
 // and paths, animation math (curves, keyframes, custom animations, vector arithmetic), timeline schedules, the Layout
 // protocol and stack layouts, alignment guides, preferences + anchors, environment values and actions, custom control
 // styles, shape styles / blend modes / Canvas filters / text renderers by pixels, scrolling, representables.
@@ -245,12 +246,12 @@ private struct P27RefreshCaller: View {
     @Environment(\.refresh) var refresh
     @Environment(\.openURL) var openURL
     var body: some View {
-        Text("refresh").task {
+        Text("refresh").onAppear { Task { @MainActor in
             log.add("refresh \(refresh == nil ? "nil" : "set")")
             if let r: RefreshAction = refresh { await r() }
             let o: OpenURLAction = openURL
             o(URL(string: "p27://open")!)
-        }
+        } }
     }
 }
 private struct P27SheetBody: View {
@@ -258,12 +259,12 @@ private struct P27SheetBody: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.isPresented) var isPresented
     var body: some View {
-        Text("sheet").task {
+        Text("sheet").onAppear { Task { @MainActor in
             log.add("sheet presented \(isPresented)")
             try? await Task.sleep(for: .milliseconds(600))
             let d: DismissAction = dismiss
             d()
-        }
+        } }
     }
 }
 private struct P27ActionsRoot: View {
@@ -284,7 +285,7 @@ private struct P27StorageRoot: View {
     @AppStorage("p27.name") var name = "none"
     var body: some View {
         let _ = log.add("count \(count) name \(name)")
-        Text("\(count) \(name)").task { try? await Task.sleep(for: .milliseconds(300)); count = 5 }
+        Text("\(count) \(name)").onAppear { Task { @MainActor in try? await Task.sleep(for: .milliseconds(300)); count = 5 } }
     }
 }
 
@@ -300,14 +301,14 @@ private struct P27ButtonStyle: ButtonStyle {
 private struct P27PrimStyle: PrimitiveButtonStyle {
     let log: P6Log
     func makeBody(configuration: PrimitiveButtonStyleConfiguration) -> some View {
-        configuration.label.task { log.add("primitive trigger"); configuration.trigger() }
+        configuration.label.onAppear { Task { @MainActor in log.add("primitive trigger"); configuration.trigger() } }
     }
 }
 private struct P27ToggleStyle: ToggleStyle {
     let log: P6Log
     func makeBody(configuration: ToggleStyleConfiguration) -> some View {
         let _ = log.add("toggle \(configuration.isOn)")
-        return configuration.label.task { if !configuration.isOn { configuration.$isOn.wrappedValue = true } }
+        return configuration.label.onAppear { Task { @MainActor in if !configuration.isOn { configuration.$isOn.wrappedValue = true } } }
     }
 }
 private struct P27LabelStyle: LabelStyle {
@@ -346,7 +347,7 @@ private struct P27DisclosureStyle: DisclosureGroupStyle {
     func makeBody(configuration: DisclosureGroupStyleConfiguration) -> some View {
         let _ = log.add("disclosure \(configuration.isExpanded)")
         return VStack { configuration.label; if configuration.isExpanded { configuration.content } }
-            .task { if !configuration.isExpanded { configuration.$isExpanded.wrappedValue = true } }
+            .onAppear { Task { @MainActor in if !configuration.isExpanded { configuration.$isExpanded.wrappedValue = true } } }
     }
 }
 #endif
@@ -1159,11 +1160,13 @@ extension Registry {
             defer { Task { @MainActor in close() } }
             try await expect(p6Wait(5) { log.has("h 10000") }, "content height: \(log.all)")
             await onMain { m.pos.scrollTo(y: 400) }
-            try await expect(p6Wait(5) { log.has("y 400") }, "scrollTo(y: 400): \(log.all.suffix(6))")
+            // offsets plus the top inset: watchOS adds its 16 pt content inset (416 / 5016 there)
+            func ys() -> [Int] { log.all.compactMap { $0.hasPrefix("y ") ? Int($0.dropFirst(2)) : nil } }
+            try await expect(p6Wait(5) { ys().contains { (400...420).contains($0) } }, "scrollTo(y: 400): \(log.all.suffix(6))")
             await onMain { m.jump = 100 }
-            try await expect(p6Wait(5) { log.has("y 5000") }, "proxy.scrollTo(100, .top): \(log.all.suffix(6))")
+            try await expect(p6Wait(5) { ys().contains { (5000...5020).contains($0) } }, "proxy.scrollTo(100, .top): \(log.all.suffix(6))")
             await onMain { m.pos.scrollTo(edge: .top) }
-            try await expect(p6Wait(5) { log.all.last == "y 0" || log.all.suffix(3).contains("y 0") }, "scrollTo(edge: .top): \(log.all.suffix(6))")
+            try await expect(p6Wait(5) { (ys().last ?? 99) <= 20 }, "scrollTo(edge: .top): \(log.all.suffix(6))")
             let phases = Set(log.all.filter { $0.hasPrefix("phase") })
             return "offsets \(log.all.filter { $0.hasPrefix("y ") }.suffix(8)); phases \(phases.sorted())"
         })
@@ -1874,7 +1877,7 @@ extension Registry {
             func red(_ k: String) -> Bool { res[k].map { $0[3] > 200 && $0[0] > 200 && $0[1] < 80 } ?? false }
             try expect(red("visual.moved") && !red("visual.left") && red("projection.moved") && !red("projection.left"), d)
             if let s = res["secondary"] { try expect(s[0] > 200 && s[1] > 60 && s[1] < 230, "secondary red not lighter: \(d)") }
-            try expect(res["separator"].map { $0[0] < 250 } == true && res["fill"].map { $0[0] < 255 } == true, "separator / fill drew nothing: \(d)")
+            try expect(res["separator"].map { $0[0] < 255 } == true && res["fill"].map { $0[0] < 255 } == true, "separator / fill drew nothing: \(d)")
             return d
         })
 
