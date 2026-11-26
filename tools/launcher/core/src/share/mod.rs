@@ -34,6 +34,38 @@ pub enum Role {
     View,
 }
 
+/// The server's tokens kept across restarts (the main control / view tokens and the links made), 0600 in
+/// ~/.config/x86sim: a restart does not break the links people hold. `x86sim serve --new-tokens` removes it.
+pub fn tokens_path() -> PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config"));
+    base.join("x86sim/serve-tokens.json")
+}
+
+pub fn load_tokens() -> Vec<TokenRec> {
+    if cfg!(test) {
+        return vec![];
+    }
+    std::fs::read(tokens_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn save_tokens(t: &[TokenRec]) {
+    if cfg!(test) {
+        return;
+    }
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let p = tokens_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let tmp = p.with_extension("tmp");
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp) {
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        let _ = f.write_all(serde_json::to_string_pretty(t).unwrap_or_default().as_bytes());
+        let _ = std::fs::rename(&tmp, &p);
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenRec {
     pub token: String,

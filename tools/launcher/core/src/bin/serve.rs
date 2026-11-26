@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use x86sim_core::share::{self, Kind, Options, Role};
 
 const USAGE: &str = "usage: x86sim serve [run] [--listen ADDR:PORT] [--tailscale | --funnel] [--cloudflared [--cf-tunnel NAME --cf-host HOST]]
-                    [--ts-port 443|8443|10000] [--ttl 2h] [--require-token] [--phone NAME] [--open] [--bg]
+                    [--ts-port 443|8443|10000] [--ttl 2h] [--require-token] [--new-tokens] [--phone NAME] [--open] [--bg]
        x86sim serve status | stop [tailscale|funnel|cloudflared]
        x86sim serve link [--phone NAME] [--control] [--ttl 1h]
 
@@ -129,6 +129,10 @@ fn main() {
                 i += 1;
             }
             "--require-token" => opts.require_token = true,
+            // new main tokens and no links of the last run (they are kept across restarts otherwise)
+            "--new-tokens" => {
+                let _ = std::fs::remove_file(share::tokens_path());
+            }
             "--phone" => {
                 phone = Some(need(i));
                 i += 1;

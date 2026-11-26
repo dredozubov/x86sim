@@ -300,10 +300,15 @@ fn cookie(req: &Req, name: &str) -> Option<String> {
 impl Server {
     pub fn new(opts: Options, port: u16) -> Arc<Server> {
         let exp = opts.ttl_s.map(|t| now_s().saturating_add(t));
-        let tokens = vec![
-            TokenRec { token: random_token(), role: Role::Control, phone: None, expires: exp, label: "control".into() },
-            TokenRec { token: random_token(), role: Role::View, phone: None, expires: exp, label: "view".into() },
-        ];
+        // the tokens of the last run (links people hold keep working across restarts), unless the main tokens were to
+        // expire (--ttl) or none were kept (x86sim serve --new-tokens removes them)
+        let kept = if opts.ttl_s.is_none() { super::load_tokens() } else { vec![] };
+        let main = |label: &str, role: Role| {
+            kept.iter().find(|r| r.label == label && r.expires.is_none()).cloned().unwrap_or(TokenRec { token: random_token(), role, phone: None, expires: exp, label: label.into() })
+        };
+        let now = now_s();
+        let mut tokens = vec![main("control", Role::Control), main("view", Role::View)];
+        tokens.extend(kept.iter().filter(|r| r.label.starts_with("link:") && r.expires.is_none_or(|e| e > now)).cloned());
         Arc::new(Server {
             opts,
             port,
@@ -379,6 +384,10 @@ impl Server {
             let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
             let _ = f.write_all(serde_json::to_string_pretty(&self.state()).unwrap_or_default().as_bytes());
             let _ = std::fs::rename(&tmp, &p);
+        }
+        // the tokens for the next run (not --ttl ones: they expire with this server)
+        if self.opts.ttl_s.is_none() {
+            super::save_tokens(&self.tokens.lock().unwrap());
         }
     }
 
