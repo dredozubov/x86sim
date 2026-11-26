@@ -198,6 +198,21 @@ pub fn checks() -> Vec<Check> {
         let why = if !loader { "no Vulkan loader (libvulkan.so.1)" } else if icds.is_empty() { "no Vulkan driver" } else { "no GPU device node" };
         check("Graphics (Vulkan)", Level::Warn, why, "Install your GPU's Vulkan driver (NVIDIA's driver, or Mesa RADV / ANV) and vulkan-icd-loader. Without it devices draw in software: slow.")
     });
+    // AMD (Mesa RADV) refuses to import guest buffers by address: mtlvk hands them over as udmabufs instead, which
+    // needs /dev/udmabuf (kernel CONFIG_UDMABUF) open to this user; without it buffers are copied each time they change
+    let amd = std::fs::read_dir("/sys/class/drm").into_iter().flatten().flatten().any(|e| {
+        e.file_name().to_string_lossy().starts_with("renderD") && std::fs::read_to_string(e.path().join("device/vendor")).is_ok_and(|v| v.trim() == "0x1002")
+    });
+    if amd {
+        let open = std::fs::OpenOptions::new().read(true).write(true).open("/dev/udmabuf");
+        v.push(match open {
+            Ok(_) => check("GPU buffers (AMD)", Level::Ok, "shared through /dev/udmabuf", ""),
+            Err(e) => {
+                let why = if e.kind() == std::io::ErrorKind::NotFound { "/dev/udmabuf missing: kernel without udmabuf".to_string() } else { format!("/dev/udmabuf: {e}") };
+                check("GPU buffers (AMD)", Level::Warn, format!("{why}: copied, slower"), "Load the udmabuf module and give your user read/write access to /dev/udmabuf (e.g. the kvm group).")
+            }
+        });
+    }
     // tools the scripts run
     let mut miss = vec![];
     for t in ["python3", "curl", "openssl", "setsid", "ip"] {
