@@ -473,7 +473,11 @@ WATCH_UI_SLIM="com.apple.backboardd com.apple.Carousel com.apple.TextInput.kbd c
 # (func:SafariServices.reading-list-add-xros; Apple's visionOS simulator runs the daemon).
 # medialibraryd (on demand, as on iOS above): without it an app's MPMediaQuery opened the never-created music library
 # database and died (ML3DatabaseException "no such table: _MLDatabaseProperties"; func:MediaPlayer.library-authorized-queries).
-XR_UI="com.apple.installcoordinationd com.apple.backboardd com.apple.SurfBoard com.apple.vhmdd com.apple.wakeboardd
+# RAM 14: togetherd (visionOS only, on demand, as in Apple's simulator): SharePlay's daemon. Without it callservicesd's
+# CopresenceUtilities XPCSession to com.apple.togetherd was cancelled at once and re-activated, forever: ~100% CPU and
+# ~300 MB of file pages (a busy process never gets the idle file trim) on an idle Vision Pro. (FaceTimeSupportService,
+# which callservicesd also asks for, ran the same loop on togetherd and leaked ~40 MB/s.)
+XR_UI="com.apple.togetherd com.apple.installcoordinationd com.apple.backboardd com.apple.SurfBoard com.apple.vhmdd com.apple.wakeboardd
 	com.apple.homed com.apple.healthd com.apple.geod com.apple.navd
 	com.apple.RealityEnvironment
 	com.apple.PointerUI.pointeruid com.apple.sleepd com.apple.TextInput.kbd com.apple.FileCoordination
