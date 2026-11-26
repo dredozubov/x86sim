@@ -491,7 +491,7 @@ extension Registry {
             try objc(asset, "CKAsset"); try expect(asset.fileURL == file, "asset url")
             let loc = CKLocationSortDescriptor(key: "where", relativeLocation: CLLocation(latitude: 48.85, longitude: 2.35))
             try objc(loc, "CKLocationSortDescriptor"); try expect(loc.relativeLocation.coordinate.latitude == 48.85 && loc.key == "where", "location sort")
-            let info = CKSubscription.NotificationInfo(); info.alertBody = "a"; info.shouldSendContentAvailable = true; info.desiredKeys = ["s"]
+            let info = CKSubscription.NotificationInfo(); info.shouldSendContentAvailable = true; info.desiredKeys = ["s"]
             try objc(info, "CKNotificationInfo")
             let dbSub = CKDatabaseSubscription(subscriptionID: "db"); dbSub.notificationInfo = info
             try objc(dbSub, "CKDatabaseSubscription")
@@ -499,7 +499,7 @@ extension Registry {
             try objc(zSub, "CKRecordZoneSubscription")
             let arch = try NSKeyedArchiver.archivedData(withRootObject: zSub, requiringSecureCoding: true)
             let zBack = try NSKeyedUnarchiver.unarchivedObject(ofClass: CKRecordZoneSubscription.self, from: arch)
-            try expect(zBack?.zoneID == zid && zBack?.recordType == "Doc" && dbSub.notificationInfo?.alertBody == "a", "subscriptions")
+            try expect(zBack?.zoneID == zid && zBack?.recordType == "Doc" && dbSub.notificationInfo?.desiredKeys == ["s"], "subscriptions")
             let cfg = CKOperation.Configuration(); cfg.timeoutIntervalForRequest = 5; cfg.qualityOfService = .utility; cfg.allowsCellularAccess = false
             try objc(cfg, "CKOperationConfiguration")
             let grp = CKOperationGroup(); grp.name = "p27"; grp.expectedSendSize = .kilobytes; grp.defaultConfiguration = cfg
@@ -510,7 +510,7 @@ extension Registry {
             let lookup = CKUserIdentity.LookupInfo(emailAddress: "p27@example.com")
             try objc(lookup, "CKUserIdentityLookupInfo"); try expect(lookup.emailAddress == "p27@example.com", "lookup")
             let share = CKShare(rootRecord: rec)
-            #if !os(watchOS)
+            #if !os(watchOS) && !os(tvOS)
             let opts = CKAllowedSharingOptions(allowedParticipantPermissionOptions: .readOnly, allowedParticipantAccessOptions: .specifiedRecipientsOnly)
             try objc(opts, "CKAllowedSharingOptions"); try expect(opts.allowedParticipantPermissionOptions == .readOnly, "sharing options")
             #endif
@@ -818,7 +818,7 @@ extension Registry {
             let pw = ASAuthorizationPasswordProvider().createRequest()
             try objc(pw, "ASAuthorizationPasswordRequest")
             let chal = Data(repeating: 7, count: 32), uid = Data("user-1".utf8), cid = Data([1, 2, 3, 4])
-            #if !os(watchOS)
+            #if !os(watchOS) && !os(tvOS)
             let plat = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "example.com")
             let preg = plat.createCredentialRegistrationRequest(challenge: chal, name: "p27", userID: uid)
             preg.userVerificationPreference = .required
@@ -827,6 +827,7 @@ extension Registry {
             passt.allowedCredentials = [ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: cid)]
             try objc(passt, "ASAuthorizationPlatformPublicKeyCredentialAssertionRequest")
             try expect(preg.relyingPartyIdentifier == "example.com" && preg.userID == uid && preg.challenge == chal && passt.allowedCredentials.first?.credentialID == cid, "platform requests")
+            #if !os(visionOS)
             let skp = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(relyingPartyIdentifier: "example.com")
             let sreg = skp.createCredentialRegistrationRequest(challenge: chal, displayName: "P27", name: "p27", userID: uid)
             sreg.credentialParameters = [ASAuthorizationPublicKeyCredentialParameters(algorithm: .ES256)]
@@ -837,6 +838,7 @@ extension Registry {
             sast.allowedCredentials = [desc]
             try objc(sast, "ASAuthorizationSecurityKeyPublicKeyCredentialAssertionRequest"); try objc(desc, "ASAuthorizationSecurityKeyPublicKeyCredentialDescriptor")
             try expect(sreg.credentialParameters.first?.algorithm == .ES256 && sast.allowedCredentials.first?.transports.count == 2, "security key requests")
+            #endif
             #endif
             // results only the system makes: present, with their superclass
             var made: [(String, String)] = [("ASAuthorizationAppleIDCredential", "NSObject"), ("ASAuthorizationPlatformPublicKeyCredentialAssertion", "NSObject"),
@@ -894,8 +896,11 @@ extension Registry {
             try expect((reqs[0].0 as! ASPasskeyCredentialRequest).supportedAlgorithms == [.ES256] && (reqs[5].0 as! ASOneTimeCodeCredential).code == "123456"
                        && (reqs[9].0 as! ASGeneratedPassword).value == "abc-def-ghi" && (reqs[10].0 as! ASSavePasswordRequest).credential.password == "pw", "provider values")
             let inputs: [ASPasskeyCredentialExtensionInput] = [.none]
+            try expect(inputs.count == 1, "extension input")
+            #if os(iOS)
             let cd = ASPublicKeyCredentialClientData(challenge: chal, origin: "https://example.com", crossOrigin: .sameOriginWithAncestors)
-            try expect(inputs.count == 1 && cd.origin == "https://example.com", "client data")
+            try expect(cd.origin == "https://example.com", "client data")
+            #endif
             let scope = ASAutoFillURLScope(host: "example.com", path: "/login")
             try expect(scope.url?.absoluteString == "https://example.com/login" && ASAutoFillURLScope(url: URL(string: "http://example.com:8080/a")!)?.port == 8080, "url scope \(String(describing: scope.url))")
             let code = ASVerificationCode(code: "424242", timestamp: Date(timeIntervalSince1970: 1), domain: "example.com")
@@ -1476,11 +1481,13 @@ extension Registry {
             let allMade: [(String, String)] = [("SKPaymentTransaction", "NSObject"), ("SKProductDiscount", "NSObject"), ("SKProductSubscriptionPeriod", "NSObject"), ("SKStorefront", "NSObject"),
                                             ("SKStoreReviewController", "NSObject"), ("SKOverlayTransitionContext", "NSObject"), ("SKCloudServiceSetupViewController", "UIViewController"),
                                             ("SKOverlayConfiguration", "NSObject")]
-            #if os(watchOS)
+            #if os(watchOS) || os(tvOS)
             // watchOS's StoreKit has no review controller, overlays or cloud service setup view controller
             let notOnWatch: Set<String> = ["SKStoreReviewController", "SKOverlayTransitionContext", "SKCloudServiceSetupViewController", "SKOverlayConfiguration"]
             let made = allMade.filter { !notOnWatch.contains($0.0) }
+            #if os(watchOS)
             try expect(notOnWatch.allSatisfy { NSClassFromString($0) == nil }, "watchOS StoreKit classes")
+            #endif
             #else
             let made = allMade
             #endif
@@ -1497,11 +1504,15 @@ extension Registry {
             #else
             let promoOrder = "n/a"
             #endif
-            let cloudStatus = SKCloudServiceController.authorizationStatus()
+            #if os(visionOS)
+            let cloudStatus = "n/a"
+            #else
+            let cloudStatus = "\(SKCloudServiceController.authorizationStatus().rawValue)"
+            #endif
             let wrong = p27Hierarchy(made)
             try expect(wrong.isEmpty, "classes \(wrong)")
             // StoreKit 2 values and the simulator's answers without App Store products
-            #if !os(watchOS)
+            #if os(iOS)
             let kind = AppStoreMerchandisingKind.subscriptionBundle("group.p27")
             let types: [Any.Type] = [type(of: kind), RedeemOption.self, PurchaseIntent.self, InvalidRequestError.self, VerificationResult<StoreKit.Transaction>.self, ExternalPurchaseCustomLink.NoticeType.self,
                                      PaymentMethodBinding.self, AdvancedCommerceProduct.self]
@@ -1518,7 +1529,7 @@ extension Registry {
             let types: [Any.Type] = [InvalidRequestError.self, VerificationResult<StoreKit.Transaction>.self]
             let eligible = false, acp = "n/a", pmb = "n/a"
             #endif
-            let d = "\(n) SK1 objects; cloud authorization \(cloudStatus.rawValue); promotion \(promoOrder); custom link eligible \(eligible); advanced commerce: \(acp); payment method binding: \(pmb); \(types.count) types"
+            let d = "\(n) SK1 objects; cloud authorization \(cloudStatus); promotion \(promoOrder); custom link eligible \(eligible); advanced commerce: \(acp); payment method binding: \(pmb); \(types.count) types"
             try expect(!eligible && !acp.contains("ok: product") && !pmb.contains("ok: binding"), d)
             return d
         })
