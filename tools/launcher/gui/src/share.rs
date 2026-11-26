@@ -113,7 +113,7 @@ impl App {
         poll(ui.ctx());
         let sharing = ui_state().lock().unwrap().state.as_ref().is_some_and(|s| s.tunnels.iter().any(|t| t.state == "up"));
         let b = if sharing { Btn::tinted("", pal().good) } else { Btn::ghost("") }.icon(egui_phosphor::regular::GLOBE);
-        let tip = if sharing { "Open in a browser (shared through a tunnel: see Share in the side panel)" } else { "Open in a browser: watch and drive it from any browser tab (Share in the side panel for other machines)" };
+        let tip = if sharing { "Open in a browser · Shared through a tunnel" } else { "Open in a browser" };
         if ui.add(b).on_hover_text(tip).clicked() {
             open_in_browser(ui.ctx(), Some(inst.id.clone()));
         }
@@ -128,13 +128,11 @@ impl App {
         };
         let ctx = ui.ctx().clone();
         let id = inst.id.clone();
-        ui.label(muted("Watch and drive this device from a browser: here, on your tailnet or anywhere. Every link carries a token."));
-        ui.add_space(S2);
         if let Some(b) = &busy {
             busy_line(ui, b);
         }
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(busy.is_none(), Btn::primary("Open in browser").small().icon(egui_phosphor::regular::GLOBE)).clicked() {
+            if ui.add_enabled(busy.is_none(), Btn::primary("Open in browser").small().icon(egui_phosphor::regular::GLOBE)).on_hover_text("Watch and drive it from a browser; every link carries a token").clicked() {
                 open_in_browser(&ctx, Some(id.clone()));
             }
             if let Some(st) = &st {
@@ -185,7 +183,7 @@ impl App {
                 Some(t) => t.state.clone(),
                 None => detail,
             };
-            ui.label(muted(line)).on_hover_text("Tailscale: HTTPS for your tailnet only. Funnel and Cloudflare: a public HTTPS address (the link's token still guards it).");
+            ui.label(muted(line)).on_hover_text(if kind == Kind::Tailscale { "HTTPS for your tailnet only" } else { "Public HTTPS; the link's token guards it" });
             ui.add_space(2.0);
         }
         // the links for this phone: control (watch and drive) and view only, the remote one first

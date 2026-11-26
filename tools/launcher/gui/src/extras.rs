@@ -117,8 +117,8 @@ impl App {
     pub fn record_tool(&mut self, ui: &mut egui::Ui, inst: &Instance, live: bool) {
         let on = self.is_recording(&inst.id);
         let tip = match self.extras.recs.get(&inst.id) {
-            Some(r) => format!("Recording ({} s): click to stop and save it to {}", r.started.elapsed().as_secs(), r.path.parent().map(|p| p.display().to_string()).unwrap_or_default()),
-            None => "Record the screen to a video in Videos (click again to stop)".to_string(),
+            Some(r) => format!("Recording · {} s · Click to stop and save to {}", r.started.elapsed().as_secs(), r.path.parent().map(|p| p.display().to_string()).unwrap_or_default()),
+            None => "Record the screen to Videos".to_string(),
         };
         let b = if on { Btn::tinted("", pal().crit_ink) } else { Btn::ghost("") }.icon(icon::RECORD);
         if on {
@@ -179,7 +179,7 @@ impl App {
     pub fn profile_button(&mut self, ui: &mut egui::Ui, inst: &Instance) {
         let running = self.extras.profiling.lock().unwrap().contains(&inst.id);
         let r = ui.add_enabled(!running, Btn::secondary(if running { "Profiling…" } else { "Profile 5 s" }).icon(icon::CPU).small())
-            .on_hover_text("A CPU profile of the app in front for 5 seconds, saved to Downloads as speedscope JSON (open it at speedscope.app)");
+            .on_hover_text("5 s CPU profile of the app in front, to Downloads (speedscope JSON)");
         if running {
             ui.ctx().request_repaint_after(Duration::from_millis(500));
         }
@@ -212,11 +212,10 @@ impl App {
     /// device's webinspectord.
     pub fn web_section(&mut self, ui: &mut egui::Ui, inst: &Instance, live: bool) {
         let st = self.extras.web.lock().unwrap().get(&inst.id).cloned();
-        ui.label(muted("Safari's pages and apps' web views (isInspectable), in WebKit's Web Inspector in your browser."));
         ui.add_space(S1);
         let looking = matches!(st, Some(Web::Looking));
         ui.horizontal(|ui| {
-            if ui.add_enabled(live && !looking, Btn::secondary(if looking { "Looking…" } else { "Find web pages" }).icon(icon::CODE).small()).on_disabled_hover_text("Not running").clicked() {
+            if ui.add_enabled(live && !looking, Btn::secondary(if looking { "Looking…" } else { "Find web pages" }).icon(icon::CODE).small()).on_hover_text("Safari pages and inspectable web views, in Web Inspector").on_disabled_hover_text("Not running").clicked() {
                 self.extras.web.lock().unwrap().insert(inst.id.clone(), Web::Looking);
                 let (inst, web, ctx) = (inst.clone(), self.extras.web.clone(), ui.ctx().clone());
                 std::thread::spawn(move || {
@@ -234,7 +233,7 @@ impl App {
         });
         match st {
             Some(Web::Pages(p)) if p.is_empty() => {
-                ui.label(muted("No inspectable pages: open one in Safari, or an app whose WKWebView sets isInspectable."));
+                ui.label(muted("No inspectable pages")).on_hover_text("Open one in Safari, or an app whose WKWebView sets isInspectable");
             }
             Some(Web::Pages(pages)) => {
                 ui.add_space(S1);
@@ -356,7 +355,7 @@ impl App {
                             });
                         }
                         if urls.iter().all(|(k, _)| k == "local") {
-                            ui.label(muted("Only this machine can open it: turn on a tunnel above for others."));
+                            ui.label(muted("This machine only")).on_hover_text("Turn on a tunnel above for others");
                         }
                     });
                 });

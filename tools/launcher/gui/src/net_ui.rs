@@ -49,7 +49,7 @@ fn capture(ctx: &egui::Context, inst: &Instance, st: &Shared, app: String, on: b
         s.busy = false;
         s.status = match r {
             Ok(_) if !on => format!("Capture off for {app}"),
-            Ok(v) if v["hooked"] == serde_json::json!(false) => format!("Capture on for {app}, but its hook did not start"),
+            Ok(v) if v["hooked"] == serde_json::json!(false) => format!("Capture on for {app} · Hook not started"),
             Ok(_) => format!("Capturing {app}"),
             Err(e) => format!("{e:#}"),
         };
@@ -69,8 +69,6 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
         }
     }
     ui.ctx().request_repaint_after(Duration::from_secs(1));
-    ui.label(muted("An app's requests, HTTPS in the clear (URLSession; other stacks as connections). Capture starts with a launch."));
-    ui.add_space(S1);
     let mut s = st.lock().unwrap();
     // apps with capture on
     let caps = s.captures.clone();
@@ -85,7 +83,7 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut s.bundle).hint_text("Bundle id").desired_width(180.0));
         let ok = live && !s.busy && !s.bundle.trim().is_empty();
-        if ui.add_enabled(ok, Btn::secondary(if s.busy { "Working…" } else { "Capture + relaunch" }).small()).on_hover_text("Record this app's requests from a fresh launch").on_disabled_hover_text("Running device and a bundle id").clicked() {
+        if ui.add_enabled(ok, Btn::secondary(if s.busy { "Working…" } else { "Capture + relaunch" }).small()).on_hover_text("Its requests from a fresh launch, HTTPS in the clear (URLSession; other stacks as connections)").on_disabled_hover_text("Running device and a bundle id").clicked() {
             let b = s.bundle.trim().to_string();
             capture(&ctx, inst, &st, b, true, true);
         }
@@ -97,7 +95,7 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
     // filter and app
     let mut changed = false;
     ui.horizontal(|ui| {
-        changed |= ui.add(egui::TextEdit::singleline(&mut s.filter).hint_text("Filter: words, status:4xx, method:POST, error").desired_width(200.0)).changed();
+        changed |= ui.add(egui::TextEdit::singleline(&mut s.filter).hint_text("Filter").desired_width(200.0)).on_hover_text("Words, status:4xx, method:POST, error").changed();
         let apps: Vec<String> = {
             let mut a: Vec<String> = s.entries.iter().map(|e| e.app.clone()).chain(caps.iter().map(|c| c.app.clone())).collect();
             a.sort();
@@ -129,7 +127,7 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
     egui::Frame::new().fill(pal().window).corner_radius(radius_sm()).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
         egui::ScrollArea::vertical().id_salt(("netlist", &inst.id)).max_height(260.0).stick_to_bottom(true).auto_shrink([false, true]).show(ui, |ui| {
             if rows.is_empty() {
-                ui.label(muted(if s.captures.is_empty() { "No requests: turn capture on for an app" } else { "No requests yet" }));
+                ui.label(muted("No requests"));
             }
             for e in &rows {
                 let on = s.sel.as_deref() == Some(e.id.as_str());
