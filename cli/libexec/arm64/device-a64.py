@@ -6,6 +6,8 @@
     device-a64.py create --model MODEL [--ios 27.x] [NAME]
                                                  new var/device-a64-<name>: <device>/model, runtime (+ name), sim.env
     device-a64.py runtimes                       the iOS versions in runtimes/ (version, build, dir)
+    device-a64.py check DEVICE                   exit 1 with the reason when DEVICE's runtime refuses its model
+                                                 (CoreSimulator's "unavailable": boot-a64.sh and clone refuse it)
 
 Platforms 1: Apple TV and Apple Watch models (devicetypes-a64.json "platform": tvos / watchos) get the newest runtime of
 their platform in runtimes/ (tvos-<ver>-<build>-arm64, watchos-...; runtime-fetch.py list all); --ios also picks one of
@@ -57,18 +59,38 @@ def runtimes(platform="ios"):
     return sorted(out, key=lambda r: ([int(x) for x in r[0].split(".")], bool(restricted_to(r[2])), r[1]))
 
 
-def restricted_to(rt):
-    """Models 2: the model ids a runtime is limited to (its profile's restrictedToDeviceTypes; [] = any). iOS 27.2
-    24B91016s is the iPhone Duo's (iPhone19,4) build. The profile is a binary plist; its strings are plain ASCII."""
+def profile_models(rt, key):
+    """The model ids under <key> in a runtime's profile ([] without the key). The profile is a binary plist; its
+    strings are plain ASCII, and a profile has only one of the two keys that list models."""
     root = os.path.realpath(os.path.join(ROOT, "runtimes", rt, "RuntimeRoot"))
     try:
         with open(os.path.join(os.path.dirname(root), "profile.plist"), "rb") as f:
             b = f.read()
     except OSError:
         return []
-    if b"restrictedToDeviceTypes" not in b:
+    if key not in b:
         return []
     return sorted({m.decode() for m in re.findall(rb"(?:iPhone|iPad)[0-9]+,[0-9]+", b)})
+
+
+def restricted_to(rt):
+    """Models 2: the model ids a runtime is limited to (its profile's restrictedToDeviceTypes; [] = any). iOS 27.2
+    24B91016s is the iPhone Duo's (iPhone19,4) build."""
+    return profile_models(rt, b"restrictedToDeviceTypes")
+
+
+def unsupported(rt):
+    """The model ids a runtime refuses (its profile's unsupportedDeviceTypes): iOS 27.2 24B8117 refuses the iPhone Duo,
+    as `simctl create` does ("Incompatible device"). A Duo on it boots, but its SpringBoard predates the Duo: it treats
+    the inner screen as a second display to activate by hand ("Activate Display" / "Power Off Display" on every
+    unfold), where the Duo's own build (24B91016s) switches screens with the hinge."""
+    return profile_models(rt, b"unsupportedDeviceTypes")
+
+
+def runtime_takes(rt, mid):
+    """Whether a runtime takes a model, as CoreSimulator decides it from the runtime's profile"""
+    r = restricted_to(rt)
+    return (not r or mid in r) and mid not in unsupported(rt)
 
 
 def runtime_of(dev):
@@ -83,6 +105,23 @@ def env_of(dev):
         return dict(l.split("=", 1) for l in open(os.path.join(dev, "sim.env")).read().splitlines() if "=" in l)
     except OSError:
         return {}
+
+
+def unavailable(dev):
+    """Why a device can't run on its runtime (the runtime's profile refuses its model: runtime_takes), None when it
+    can. CoreSimulator lists such a device as unavailable and won't boot or clone it."""
+    try:
+        model = open(os.path.join(dev, "model")).read().strip()
+    except OSError:
+        return None
+    t = models().get(model)
+    mid = t.get("model", "") if isinstance(t, dict) else ""
+    rt = runtime_of(dev)
+    if not mid or not os.path.isdir(os.path.join(ROOT, "runtimes", rt)) or runtime_takes(rt, mid):
+        return None
+    m = re.match(r"(ios|tvos|watchos|xros)-([0-9.]+)-([0-9A-Za-z]+)-", rt)
+    return (f"{PLATFORM_NAMES[m[1]]} {m[2]} ({m[3]}) does not support {model} (Apple's simulator refuses it): make a new {model}, "
+            f"it gets the build that supports it" if m else f"{rt} does not support {model}")
 
 
 def cmd_list():
@@ -120,16 +159,23 @@ def cmd_create(args):
     rts = runtimes(plat)
     # Models 2: a runtime limited to some models (the iPhone Duo's 27.2 build) is taken for them, never for others
     mid = types[model].get("model", "") if isinstance(types[model], dict) else ""
-    fits = [r for r in rts if not restricted_to(r[2]) or mid in restricted_to(r[2])]
+    # and never on a runtime that refuses the model (iOS 27.2 24B8117: the iPhone Duo), as simctl create
+    fits = [r for r in rts if runtime_takes(r[2], mid)]
     own = [r for r in fits if mid in restricted_to(r[2])]
-    if plat != "ios" and not fits:
-        sys.exit(f"device create: {model} needs a {PLATFORM_NAMES[plat]} runtime in runtimes/ "
+    if not fits:
+        refused = [f"{r[0]} ({r[1]})" for r in rts if mid in unsupported(r[2])]
+        why = f" ({', '.join(refused)} does not support it)" if refused else ""
+        sys.exit(f"device create: {model} needs a {PLATFORM_NAMES[plat]} runtime that supports it in runtimes/{why} "
                  f"(cli/libexec/arm64/runtime-fetch.py list {plat}, then fetch BUILD)")
     # Platforms 1: an Apple TV / Watch takes the newest runtime of its platform
-    rt = own[0][2] if own else DEFAULT_RT if plat == "ios" else fits[-1][2]
+    rt = own[0][2] if own else DEFAULT_RT if plat == "ios" and any(r[2] == DEFAULT_RT for r in fits) else fits[-1][2]
     if ios:
         hit = [r for r in fits if ios in (r[0], r[1], r[2])]
         if not hit:
+            refused = [f"{r[0]} ({r[1]})" for r in rts if ios in (r[0], r[1], r[2]) and mid in unsupported(r[2])]
+            if refused:
+                sys.exit(f"device create: {PLATFORM_NAMES[plat]} {refused[0]} does not support {model} (Apple's simulator refuses it too); "
+                         f"--ios one of: {', '.join(r[1] for r in fits)}")
             sys.exit(f"device create: --ios one of: {', '.join(r[0] for r in fits)}")
         rt = ([r for r in hit if r in own] or hit)[0][2]
     name = name or model
@@ -188,6 +234,10 @@ def main():
         cmd_list()
     elif a[0] == "create":
         cmd_create(a[1:])
+    elif a[0] == "check" and len(a) == 2:
+        why = unavailable(a[1])
+        if why:
+            sys.exit(f"{os.path.basename(a[1].rstrip('/'))} is unavailable: {why}")
     else:
         sys.exit(__doc__)
 

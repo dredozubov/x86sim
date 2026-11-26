@@ -28,6 +28,9 @@ fi
 # overrides. Each runtime has its own JIT/AOT cache dir ($X86SIM_SCRATCH/jc-<build>; 27.0: jitcache) and placement table.
 A64_RT_DIR=$(cat "$X86SIM_DEVICE/runtime" 2>/dev/null)
 export X86SIM_RUNTIME=${A64_RUNTIME:-$X86SIM_ROOT/runtimes/${A64_RT_DIR:-ios-27.2-24B8117-arm64}/RuntimeRoot}
+# a device whose runtime refuses its model (the runtime profile's unsupportedDeviceTypes / restrictedToDeviceTypes:
+# iOS 27.2 24B8117 and the iPhone Duo) is "unavailable" in CoreSimulator, which won't boot it (A64_RUNTIME: no check)
+if [ -z "${A64_RUNTIME:-}" ] && ! python3 "$X86SIM_ROOT/cli/libexec/arm64/device-a64.py" check "$X86SIM_DEVICE"; then exit 1; fi
 A64_BUILD=$(basename "$(dirname "$X86SIM_RUNTIME")" | sed -n 's/^\(ios\|tvos\|watchos\|xros\)-[0-9.]*-\([0-9A-Za-z]*\)-arm64$/\2/p')
 # Platforms 1: the runtime's platform (ios, tvos, watchos): its runtimes/ dir name, else its SystemVersion.plist
 A64_PLATFORM=$(basename "$(dirname "$X86SIM_RUNTIME")" | sed -n 's/^\(ios\|tvos\|watchos\|xros\)-.*/\1/p')
