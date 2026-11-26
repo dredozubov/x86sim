@@ -25,6 +25,9 @@ pub struct Instance {
     pub runtime_root: PathBuf,
     /// the runtime's dyld cache is on disk (a 0-byte RuntimeRoot after a data loss is not)
     pub runtime_present: bool,
+    /// why the device can't run on its runtime (the runtime's profile refuses its model, sim::device_unavailable), as
+    /// CoreSimulator lists such a device "unavailable" and won't boot it; None when it can
+    pub unavailable: Option<String>,
     /// "iOS 27.2" (Platforms 1: "tvOS 27.2", "watchOS 27.2")
     pub ios: String,
     /// Platforms 1: "ios", "tvos" or "watchos" (the runtime's, else the model's)
@@ -201,6 +204,7 @@ pub fn load(dir: &Path) -> Instance {
         runtime_dir,
         runtime_root,
         runtime_present,
+        unavailable: crate::sim::device_unavailable(dir),
         ios,
         build,
         platform,
@@ -290,6 +294,9 @@ pub struct Summary {
     /// why the last check failed (empty when it answered)
     #[serde(skip_serializing_if = "String::is_empty")]
     pub hung_reason: String,
+    /// why the device can't boot on its runtime (Instance::unavailable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
 }
 
 /// Every phone's state; samples CPU over `sample_ms` (0: memory and state only). Probes each phone's SpringBoard
@@ -351,6 +358,7 @@ fn summaries_with(sample_ms: u64, probe: bool) -> Vec<Summary> {
             responsive: l.as_ref().and_then(|l| l.responsive),
             hung: l.as_ref().is_some_and(|l| l.hung),
             hung_reason: l.map(|l| l.why).unwrap_or_default(),
+            unavailable: i.unavailable.clone(),
         })
         .collect()
 }
@@ -709,6 +717,9 @@ fn shared_mtlvk(inst: &Instance, others: &[Status]) -> Option<PathBuf> {
 /// Boots a phone in its own prefix / state dir / ring. `others`: the current statuses (to share a running mtlvk).
 pub fn start(inst: &Instance, others: &[Status]) -> Result<u32> {
     anyhow::ensure!(inst.runtime_present, "{} is not downloaded", inst.ios);
+    if let Some(why) = &inst.unavailable {
+        anyhow::bail!("{} is unavailable: {why}", inst.name);
+    }
     let s = load_settings(&inst.dir);
     let log = std::fs::File::create(boot_log(inst))?;
     let mut cmd = Command::new("setsid");

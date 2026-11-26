@@ -370,14 +370,15 @@ impl App {
                 let pname = x86sim_core::sim::platform_name(mp);
                 ui.label(egui::RichText::new(format!("{pname} version")).size(T_SMALL).family(medium()).color(pal().ink_2));
                 // Models 2: a runtime limited to some models (iOS 27.2 24B91016s: iPhone Duo) is picked for them and
-                // greyed out for the others
-                let fits = |r: &x86sim_core::host::Runtime| r.platform == mp && (r.restricted_to.is_empty() || r.restricted_to.contains(&mid));
+                // greyed out for the others; a runtime that refuses a model (24B8117: the iPhone Duo) is greyed out for it, as
+                // CoreSimulator decides it (sim::runtime_allows)
+                let fits = |r: &x86sim_core::host::Runtime| r.platform == mp && (r.restricted_to.is_empty() || r.restricted_to.contains(&mid)) && !r.unsupported.contains(&mid);
                 if d.model != d.last_model {
                     d.last_model = d.model;
                     if let Some(i) = self.runtimes.iter().position(|r| r.present && r.platform == mp && r.restricted_to.contains(&mid)) {
                         d.runtime = i;
                     } else if !self.runtimes.get(d.runtime).is_some_and(fits) {
-                        d.runtime = self.runtimes.iter().rposition(|r| r.present && r.platform == mp && r.restricted_to.is_empty()).unwrap_or(usize::MAX);
+                        d.runtime = self.runtimes.iter().rposition(|r| r.present && r.restricted_to.is_empty() && fits(r)).unwrap_or(usize::MAX);
                     }
                 }
                 let label = |r: &x86sim_core::host::Runtime| {

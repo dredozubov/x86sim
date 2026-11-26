@@ -294,7 +294,7 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
         return Ok(Answer::Json(json!({"phones": instance::summaries(1000)})));
     }
     if name == "sim_devices" {
-        return Ok(Answer::Json(json!({"devices": instance::list().into_iter().map(|i| json!({"name": i.name, "id": i.id, "label": format!("{} · {}", i.model, i.name), "path": i.dir, "ios": i.ios, "installed": i.runtime_present})).collect::<Vec<_>>(),
+        return Ok(Answer::Json(json!({"devices": instance::list().into_iter().map(|i| json!({"name": i.name, "id": i.id, "label": format!("{} · {}", i.model, i.name), "path": i.dir, "ios": i.ios, "installed": i.runtime_present, "unavailable": i.unavailable})).collect::<Vec<_>>(),
                          "models": sim::models().into_iter().map(|m| m.0).collect::<Vec<_>>(),
                          "runtimes": sim::runtimes().into_iter().map(|r| r.0).collect::<Vec<_>>()})));
     }
@@ -317,7 +317,10 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             .find(|r| !sim::runtime_restricted_to(&r.1).is_empty())
             .or(cands.first())
             .map(|r| r.1.clone())
-            .ok_or_else(|| anyhow::anyhow!("no {pname} {want} installed for {model} (see sim_devices runtimes)"))?;
+            .ok_or_else(|| match sim::runtimes().into_iter().find(|r| r.0.contains(want) && sim::runtime_unsupported(&r.1).contains(&model_id)) {
+                Some(r) => anyhow::anyhow!("{} does not support {model} (Apple's simulator refuses it too); leave out ios for the build that does", r.0),
+                None => anyhow::anyhow!("no {pname} {want} installed for {model} (see sim_devices runtimes)"),
+            })?;
         return Ok(Answer::Json(json!({"device": sim::create_device(a["model"].as_str().unwrap_or(""), a["name"].as_str().unwrap_or(""), &rt)?})));
     }
     let inst = phone_of(a, &cfg)?;
