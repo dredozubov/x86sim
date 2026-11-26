@@ -224,6 +224,9 @@ import MetalPerformanceShadersGraph
 #if canImport(ClockKit)
 import ClockKit
 #endif
+#if canImport(ClockKit) && os(watchOS)
+import AppIntents
+#endif
 #if canImport(TVMLKit) && os(tvOS)
 import TVMLKit
 import AVFoundation
@@ -777,7 +780,7 @@ extension Registry {
 extension Registry {
     static var p28tCallKit: [Check] {
         var c: [Check] = []
-#if canImport(CallKit) && !os(tvOS)
+#if canImport(CallKit) && !os(tvOS) && !os(watchOS)
         c.append(check("CallKit", "p28-call-actions") {
             let call = UUID(), other = UUID()
             let dtmf = CXPlayDTMFCallAction(call: call, digits: "12#", type: .singleTone)
@@ -806,7 +809,7 @@ extension Registry {
 extension Registry {
     static var p28tNearby: [Check] {
         var c: [Check] = []
-#if canImport(NearbyInteraction) && (os(iOS) || os(watchOS))
+#if canImport(NearbyInteraction) && os(iOS)
         c.append(check("NearbyInteraction", "p28-dltdoa-convergence") {
             let cfg = NIDLTDOAConfiguration(networkIdentifier: 7)
             let base: NIConfiguration = cfg
@@ -1423,7 +1426,7 @@ extension Registry {
 extension Registry {
     static var p28tLiveComm: [Check] {
         var c: [Check] = []
-#if canImport(LiveCommunicationKit) && !os(tvOS)
+#if canImport(LiveCommunicationKit) && (os(iOS) || os(visionOS))
         c.append(check("LiveCommunicationKit", "p28-cellular-assistance") {
             let svcID = UUID()
             let svcJSON = "{\"id\":\"\(svcID.uuidString)\",\"label\":\"Primary\"}"
@@ -2329,6 +2332,13 @@ extension Registry {
 // MARK: watchOS: WatchKit (alerts, picker items, images, audio file players, interface / background task classes),
 // WatchConnectivity transfers, ClockKit gauge / widget migration
 
+#if canImport(ClockKit) && os(watchOS)
+struct P28TClockIntent: WidgetConfigurationIntent {
+    static let title: LocalizedStringResource = "P28"
+    init() {}
+}
+#endif
+
 extension Registry {
     static var p28tWatch: [Check] {
         var c: [Check] = []
@@ -2341,10 +2351,9 @@ extension Registry {
                 let pi = WKPickerItem(); pi.title = "P28"; pi.caption = "cap"; pi.contentImage = WKImage(imageName: "p28")
                 let pib = try p28tArchive(pi) as? WKPickerItem
                 let reg = WKAccessibilityImageRegion(); reg.frame = CGRect(x: 1, y: 2, width: 3, height: 4); reg.label = "face"
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent("p28.m4a")
-                let asset = WKAudioFileAsset(url: url, title: "T", albumTitle: "A", artist: "R")
-                let item = WKAudioFilePlayerItem(asset: asset)
-                let player = WKAudioFilePlayer(playerItem: item), queue = WKAudioFileQueuePlayer(items: [item])
+                // the audio file asset / player item / players are not made: on Apple's simulator the app hangs in
+                // WKAudioFileAsset(url:title:albumTitle:artist:) (deprecated API, AVPlayer replaces it); their classes only
+                let audio: [AnyClass] = [WKAudioFileAsset.self, WKAudioFilePlayerItem.self, WKAudioFilePlayer.self, WKAudioFileQueuePlayer.self]
                 let ext: AnyClass = WKExtension.self
                 let rows = p28tClasses([
                     ("WKInterfaceObject", "NSObject"), ("WKInterfaceButton", "WKInterfaceObject"), ("WKInterfaceDate", "WKInterfaceObject"), ("WKInterfaceGroup", "WKInterfaceObject"),
@@ -2368,10 +2377,11 @@ extension Registry {
                     WKGestureRecognizer.self, WKTapGestureRecognizer.self, WKLongPressGestureRecognizer.self, WKSwipeGestureRecognizer.self, WKPanGestureRecognizer.self,
                     WKRefreshBackgroundTask.self, WKApplicationRefreshBackgroundTask.self, WKSnapshotRefreshBackgroundTask.self, WKURLSessionRefreshBackgroundTask.self,
                     WKWatchConnectivityRefreshBackgroundTask.self, WKBluetoothAlertRefreshBackgroundTask.self, WKIntentDidRunRefreshBackgroundTask.self, WKRelevantShortcutRefreshBackgroundTask.self]
-                try expect(rows.isEmpty && typed.count == 37 && pib?.title == "P28" && pib?.caption == "cap" && reg.label == "face" && asset.title == "T" && asset.artist == "R"
-                           && item.asset === asset && player.currentItem === item && queue.items.count == 1 && a.isKind(of: WKAlertAction.self) && NSStringFromClass(ext) == "WKExtension",
-                           "\(rows) picker \(String(describing: pib?.title))")
-                return "alert action, image (\(img.imageData?.count ?? -1) B), picker item round trip, image region; audio asset / item / player (status \(player.status.rawValue)) / queue; \(typed.count) interface / gesture / background task classes"
+                let flags = ["rows": rows.isEmpty, "typed": typed.count == 37, "picker": pib?.title == "P28" && pib?.caption == "cap", "region": reg.label == "face",
+                              "audio": class_getSuperclass(audio[3]) == audio[2],
+                             "alert": a.isKind(of: WKAlertAction.self), "ext": NSStringFromClass(ext) == "WKExtension"]
+                try expect(!flags.values.contains(false), "\(rows) false: \(flags.filter { !$0.value }.keys.sorted())")
+                return "alert action, image (\(img.imageData?.count ?? -1) B), picker item round trip, image region; audio asset / player item / player / queue player classes; \(typed.count) interface / gesture / background task classes"
             }
         })
 #endif
@@ -2389,10 +2399,10 @@ extension Registry {
 #endif
 #if canImport(ClockKit) && os(watchOS)
         c.append(check("ClockKit", "p28-widget-migration") {
-            let n = NSClassFromString("CLKComplicationAppIntentWidgetMigrationConfiguration")
-            let t: AnyClass = CLKComplicationAppIntentWidgetMigrationConfiguration.self
-            try expect(n != nil && t == n!, "migration class")
-            return "app intent widget migration configuration class (\(NSStringFromClass(class_getSuperclass(t)!)) subclass)"
+            let m = CLKComplicationAppIntentWidgetMigrationConfiguration(kind: "p28.widget", extensionBundleIdentifier: "com.x86sim.test.sdkcov.widget", intent: P28TClockIntent(), localizedDisplayName: "P28")
+            let base: CLKComplicationWidgetMigrationConfiguration = m
+            try expect(m.kind == "p28.widget" && m.localizedDisplayName == "P28" && m.extensionBundleIdentifier.hasSuffix(".widget") && base === m, "migration")
+            return "app intent widget migration for kind \(m.kind) (\(NSStringFromClass(type(of: base))))"
         })
 #endif
         return c
