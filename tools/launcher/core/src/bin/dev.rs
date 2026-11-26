@@ -18,7 +18,8 @@ Toolchain (omarchy-apple-dev: Swift, xtool, the iOS SDK; nothing needs root)
                        cocoapods (a pinned user-local Ruby and CocoaPods for React
                        Native / Expo apps and Flutter plugins with a Podfile, about 70 MB), swiftbuild (Apple's Swift
                        Build for Xcode projects and the fork's xcodebuild, about 220 MB), carthage (Carthage
-                       built here from source, for apps with a Cartfile), xcodegen (XcodeGen, for a project.yml).
+                       built here from source, for apps with a Cartfile), xcodegen (XcodeGen, for a project.yml), tuist
+                       (Tuist's ProjectDescription for Linux, for a Tuist Project.swift; needs xcodegen).
                        --bg runs it in the background (the launcher's Develop page and MCP dev_status show it)
   job [--follow|--cancel]
                        the background setup job: its step and log

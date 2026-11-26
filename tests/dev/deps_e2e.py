@@ -7,10 +7,12 @@ sees the setup and runs its steps before Swift Build builds the Xcode project (x
              projects by `carthage bootstrap --use-xcframeworks`), RxSwift and rive-ios (their prebuilt xcframeworks)
   xcodegen   HelioMesquita/Swiftmazing (MIT): project.yml with two local Swift packages and a remote one; XcodeGen
              (built on Linux) generates the Xcode project
+  tuist      kiliankoe/MensaDresden (MIT): a Tuist Project.swift (iOS app embedding a watchOS app, seven remote Swift
+             packages, an Icon Composer icon), evaluated with Tuist's ProjectDescription built for Linux
 Then, on the phone:
   ui     the app's first screen is in the snapshot (carthage: "Watch Movies")
   tap    one tap changes it (carthage: the TV Shows tab, with its Search button;
-         xcodegen: a repository's detail, with its "See repository" button)
+         xcodegen: a repository's detail, with its "See repository" button; tuist: the Settings tab)
 
 Usage: tests/dev/deps_e2e.py SETUP [--phone at2-deps] [--model "iPhone 17"] [--work DIR] [--mcp PATH] [--keep]
        [--explore] (print the snapshot after launch instead of the checks)
@@ -57,6 +59,15 @@ SAMPLES = {
         "ui": "BEST REPOSITORIES",
         "tap": "awesome-ios",
         "after": "See repository",
+    },
+    "tuist": {
+        "repo": "https://github.com/kiliankoe/MensaDresden",
+        "commit": "6e72de6439a77faedd30c0ae621ec8285076858a",
+        "bundle": "io.kilian.MensaDresden",
+        # its canteen list comes from the Studentenwerk's API: the phone needs the network
+        "ui": "Canteens",
+        "tap": "Settings",
+        "after": "Ingredients & Allergens",
     },
 }
 

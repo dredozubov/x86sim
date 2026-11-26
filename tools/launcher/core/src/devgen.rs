@@ -1,7 +1,8 @@
 //! Dependency managers and project generators for `x86sim dev`, each built and run on Linux by the dev toolchain
-//! (omarchy-apple-dev): Carthage (a Cartfile next to the Xcode project), XcodeGen (project.yml). They prepare the
-//! Xcode project that devxcode then builds with Swift Build. Their tools are optional setup pieces (`x86sim dev setup
-//! carthage`, `xcodegen`).
+//! (omarchy-apple-dev): Carthage (a Cartfile next to the Xcode project), XcodeGen (project.yml), Tuist (Project.swift:
+//! its manifests evaluated with Tuist's own ProjectDescription built for Linux, the project written by XcodeGen). They
+//! prepare the Xcode project that devxcode then builds with Swift Build. Their tools are optional setup pieces (`x86sim
+//! dev setup carthage`, `xcodegen`, `tuist`).
 use crate::dev;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -31,6 +32,13 @@ const TOOLS: &[Tool] = &[
         bin: "xcodegen/bin/xcodegen",
         needed_for: "apps with a project.yml need it; built here from source, about 30 MB",
     },
+    Tool {
+        id: "tuist",
+        title: "Tuist",
+        install: "tuist/install.sh",
+        bin: "tuist/bin/tuist",
+        needed_for: "apps with a Tuist Project.swift need it (and XcodeGen); about 10 MB",
+    },
 ];
 
 fn tool(id: &str) -> Option<&'static Tool> {
@@ -47,6 +55,7 @@ pub fn job_steps(id: &str) -> &'static [&'static str] {
     match id {
         "carthage" => &["== carthage: fetch", "== carthage: patch", "== carthage: build"],
         "xcodegen" => &["== xcodegen: fetch", "== xcodegen: build"],
+        "tuist" => &["== tuist: fetch", "== tuist: build"],
         _ => &[],
     }
 }
@@ -86,9 +95,12 @@ fn runner(id: &str) -> Result<PathBuf> {
     Ok(dev::fork_dir().join(t.bin))
 }
 
-/// The kind of project in DIR this module prepares, if any: xcodegen (a project.yml), carthage (a Cartfile and an
-/// Xcode project)
+/// The kind of project in DIR this module prepares, if any: tuist (a Project.swift written against
+/// ProjectDescription), xcodegen (a project.yml), carthage (a Cartfile and an Xcode project)
 pub fn kind(dir: &Path) -> Option<&'static str> {
+    if is_tuist(dir) {
+        return Some("tuist");
+    }
     if is_xcodegen(dir) {
         return Some("xcodegen");
     }
@@ -97,6 +109,11 @@ pub fn kind(dir: &Path) -> Option<&'static str> {
         n.ends_with(".xcodeproj") || n.ends_with(".xcworkspace")
     });
     (dir.join("Cartfile").is_file() && has_xcode).then_some("carthage")
+}
+
+/// A Tuist project: Project.swift importing ProjectDescription
+fn is_tuist(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("Project.swift")).is_ok_and(|s| s.contains("import ProjectDescription"))
 }
 
 /// A project.yml that is an XcodeGen spec (it names targets)
@@ -126,7 +143,15 @@ pub fn prepare(dir: &Path, platform: &str, say: &mut dyn FnMut(&str)) -> Result<
         let rc = dev::stream(c, say)?;
         anyhow::ensure!(rc == 0, "carthage bootstrap failed (exit {rc}; its xcodebuild log is named above)");
     }
-    if is_xcodegen(dir) {
+    if is_tuist(dir) {
+        let tuist = runner("tuist")?;
+        runner("xcodegen")?;
+        say("== tuist generate");
+        let mut c = dev::command("bash");
+        c.arg(&tuist).args(["generate", "--no-open"]).current_dir(dir);
+        let rc = dev::stream(c, say)?;
+        anyhow::ensure!(rc == 0, "tuist generate failed (exit {rc})");
+    } else if is_xcodegen(dir) {
         let xcodegen = runner("xcodegen")?;
         say("== xcodegen generate");
         let mut c = dev::command("bash");
