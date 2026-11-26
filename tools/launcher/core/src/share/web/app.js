@@ -725,7 +725,7 @@ function phoneView(id) {
     if (control && p === "ios" && info.two_screens) parts.push(fold("hinge", "Hinge", hingePanel(), true));
     if (pan) parts.push(pan.features, pan.logs);
     // the Network section (netpanel.js): an app's requests, control links only
-    if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast }); parts.push(netp.panel); }
+    if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast, copy, name: info.name || id }); parts.push(netp.panel); }
     // Share, as the launcher's section: this device's links and the tunnels that make them reach other machines
     if (ME.owner) {
       const info2 = h("div", { class: "kvs" });
