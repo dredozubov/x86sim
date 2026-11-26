@@ -81,6 +81,25 @@ pub fn inner_display(model_id: &str, ring: &Path) -> Option<InnerDisplay> {
 }
 
 impl Instance {
+    /// The device dir as the launcher has it and as the kernel resolves it: boot-a64.sh boots the real path
+    /// (`realpath`), which differs where a parent is a symlink (Fedora Atomic / Bazzite: /home -> /var/home), and
+    /// the processes, state files and environment carry that form
+    pub fn dir_forms(&self) -> Vec<String> {
+        let mut v = vec![self.dir.to_string_lossy().into_owned()];
+        if let Ok(c) = std::fs::canonicalize(&self.dir) {
+            let c = c.to_string_lossy().into_owned();
+            if c != v[0] {
+                v.push(c);
+            }
+        }
+        v
+    }
+
+    /// `s` names this device's dir (either form)
+    pub fn is_dir(&self, s: &str) -> bool {
+        self.dir_forms().iter().any(|f| f == s)
+    }
+
     /// The hinge angle host/simhid last set (<device>/data/hinge: degrees, 0 folded .. 180 flat); None for a
     /// one-screen phone or before simhid wrote it (the phone boots folded)
     pub fn hinge(&self) -> Option<f64> {
@@ -529,8 +548,9 @@ impl Monitor {
         let mut seen_pids = std::collections::HashSet::new();
         let mut gpu_seen: HashMap<u32, (f64, f64)> = HashMap::new();
         for inst in insts {
-            let marker = format!("/Volumes/SystemRoot{}/data/var/run/launchd_bootstrap.plist", inst.dir.display());
-            let launchd = procs.iter().find(|(_, r)| r.comm == "launchd_sim" && r.cmd.contains(&marker)).map(|(p, _)| *p);
+            let forms = inst.dir_forms();
+            let markers: Vec<String> = forms.iter().map(|d| format!("/Volumes/SystemRoot{d}/data/var/run/launchd_bootstrap.plist")).collect();
+            let launchd = procs.iter().find(|(_, r)| r.comm == "launchd_sim" && markers.iter().any(|m| r.cmd.contains(m))).map(|(p, _)| *p);
             let mut pids = vec![];
             let mut prefix = inst.prefix.clone();
             let mut dserver = None;
@@ -557,9 +577,9 @@ impl Monitor {
             }
             // which state dir this boot uses: the one whose `device` file names this phone
             let mut state_dir = inst.state_dir.clone();
-            if read(&format!("{}/device", state_dir.display())).trim() != inst.dir.to_string_lossy() {
+            if !forms.iter().any(|f| read(&format!("{}/device", state_dir.display())).trim() == f) {
                 let def = repo_root().join("var/run-a64");
-                if read(&format!("{}/device", def.display())).trim() == inst.dir.to_string_lossy() {
+                if forms.iter().any(|f| read(&format!("{}/device", def.display())).trim() == f) {
                     state_dir = def;
                 }
             }
@@ -573,7 +593,7 @@ impl Monitor {
             });
             let booting = procs.iter().any(|(pid, r)| r.comm == "boot-a64.sh" && !r.cmd.is_empty() && {
                 // few bash processes: reading their environ is cheap
-                read(&format!("/proc/{pid}/environ")).split('\0').any(|kv| kv == format!("A64_DEVICE={}", inst.dir.display()))
+                read(&format!("/proc/{pid}/environ")).split('\0').any(|kv| kv.strip_prefix("A64_DEVICE=").is_some_and(|d| forms.iter().any(|f| f == d)))
             });
             let mut plist = vec![];
             let (mut cpu, mut pss) = (0.0, 0.0);
@@ -908,7 +928,7 @@ pub fn delete(inst: &Instance, st: Option<&Status>) -> Result<()> {
     for p in &plan {
         if p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("run-a64")) {
             let dev = read(&format!("{}/device", p.display()));
-            anyhow::ensure!(dev.trim().is_empty() || dev.trim() == inst.dir.to_string_lossy(), "{} belongs to {}", p.display(), dev.trim());
+            anyhow::ensure!(dev.trim().is_empty() || inst.is_dir(dev.trim()), "{} belongs to {}", p.display(), dev.trim());
         }
     }
     for p in &plan {

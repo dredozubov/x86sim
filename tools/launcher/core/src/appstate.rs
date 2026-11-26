@@ -102,8 +102,8 @@ fn scan() -> HashMap<u32, Row> {
 
 /// The phone's processes: its launchd_sim and everything below it (Linux pids)
 fn phone_pids(inst: &Instance, procs: &HashMap<u32, Row>) -> Vec<u32> {
-    let marker = format!("/Volumes/SystemRoot{}/data/var/run/launchd_bootstrap.plist", inst.dir.display());
-    let Some(l) = procs.iter().find(|(p, r)| r.comm == "launchd_sim" && read(&format!("/proc/{p}/cmdline")).contains(&marker)).map(|(p, _)| *p) else { return vec![] };
+    let markers: Vec<String> = inst.dir_forms().iter().map(|d| format!("/Volumes/SystemRoot{d}/data/var/run/launchd_bootstrap.plist")).collect();
+    let Some(l) = procs.iter().find(|(p, r)| r.comm == "launchd_sim" && { let c = read(&format!("/proc/{p}/cmdline")); markers.iter().any(|m| c.contains(m)) }).map(|(p, _)| *p) else { return vec![] };
     let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
     for (p, r) in procs {
         kids.entry(r.ppid).or_default().push(*p);
