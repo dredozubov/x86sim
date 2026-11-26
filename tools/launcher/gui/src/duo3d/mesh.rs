@@ -1,21 +1,46 @@
-//! The phone's geometry, in inner-screen pixels: two rounded halves (filleted edges, smooth normals) on a hinge
-//! spine, the inner screen as one panel across both halves that creases at the hinge, the outer screen on the left
-//! half's back (as on Apple's model, x86sim_core::devicemodel, drawn instead when this machine has it).
+//! The phone's geometry, in inner-screen pixels, shaped after Apple's model (x86sim_core::devicemodel, drawn instead
+//! when this machine has it; the sizes here were measured from it): two rounded halves (filleted edges, smooth
+//! normals) of different thickness, the left one thin with the outer screen on its back (a camera hole in it), the
+//! right one thicker with frosted back glass, a camera plateau with two round lens towers and a flash, and two side buttons on its far
+//! edge; speaker and microphone holes on the bottom and top edges. The inner screen is one panel across both halves
+//! that creases at the hinge. Between the halves a brushed metal spine bar, hidden inside the body when flat, turns
+//! out by half the fold and closes the gap at the fold edge.
 //!
-//! A half's own space: x from the hinge (0) out, y up, the front (inner screen) at z = 0, the back at -THICK. The
-//! left half is that space mirrored (x -> -x); the right half is turned about the hinge axis (the y axis) by phi =
-//! 180 - the hinge angle, so closed it lies on the left half with its back (the outer screen) towards +z. The spine
-//! is the part of a cylinder of the halves' thickness about the axis that lies between the two backs: nothing when
-//! flat, the closed phone's rounded edge when closed.
+//! A half's own space: x from the hinge (0) out, y up, the front (inner screen) at z = 0, the back at -THICK_L /
+//! -THICK_R. The left half is that space mirrored (x -> -x); the right half is turned by phi = 180 - the hinge angle
+//! about the hinge axis (parallel to y, AXIS_Z in front of the screen: closed, the two screens lie 2 AXIS_Z apart).
 
 /// Sizes in inner-screen pixels (the inner panel is 2007 x 2853, mounted turned: 2853 wide when open in portrait)
 pub const INNER: (f32, f32) = (2853.0, 2007.0);
 pub const OUTER: (f32, f32) = (1398.0, 2034.0);
-/// the case around the screens, a half's thickness, the case's outer corner radius, the edges' fillet
+/// the case around the screens, the halves' thicknesses (left: the outer screen's; right: the cameras'), the case's
+/// outer corner radius, the edges' fillet, where the hinge axis is (in front of the screen plane)
 pub const BEZEL: f32 = 46.0;
-pub const THICK: f32 = 105.0;
+pub const THICK_L: f32 = 95.0;
+pub const THICK_R: f32 = 158.0;
 pub const CORNER: f32 = 200.0;
 pub const FILLET: f32 = 13.0;
+pub const AXIS_Z: f32 = 4.7;
+/// the spine bar: its cross-section (across the hinge, through the body) and half length; where its middle is (x, z)
+/// at hinge angles 0, 22.5, .. 180 degrees (it turns by half the fold)
+const SPINE: (f32, f32, f32) = (148.0, 53.0, 1043.0);
+const SPINE_AT: [(f32, f32); 9] = [(20.6, 4.7), (20.3, 0.7), (19.1, -3.2), (17.2, -6.8), (14.7, -9.9), (15.0, -18.1), (14.1, -29.4), (8.9, -39.8), (0.0, -44.3)];
+/// the right half's camera plateau (x from, to; y from, to; its top), the towers on it (centre x, y; radius; lens
+/// radius) and their top, and the flash and microphone on it
+const PLATEAU: (f32, f32, f32, f32, f32) = (520.0, 1440.0, 600.0, 990.0, 182.0);
+const CAMS: [(f32, f32, f32, f32); 2] = [(893.0, 788.0, 147.0, 70.0), (1214.0, 788.0, 147.0, 95.0)];
+const CAM_TOP: f32 = 197.0;
+const FLASH: (f32, f32, f32) = (592.0, 708.0, 36.0);
+const MIC: (f32, f32, f32) = (591.0, 866.0, 14.0);
+/// the outer screen's camera hole (the left half's own x, y; radius)
+const HOLE: (f32, f32, f32) = (1297.0, 871.0, 32.0);
+/// the right half's side buttons on its far edge (y from, to), their middle's depth and half height, how far they stand
+const BUTTONS: [(f32, f32); 2] = [(-623.0, -322.0), (124.0, 454.0)];
+const BUTTON_Z: (f32, f32, f32) = (-45.0, 20.0, 8.0);
+/// the speaker holes on the right half's bottom edge and the microphone holes on the left half's top edge (own x),
+/// at depth -46
+const SPEAKER: [f32; 8] = [290.0, 330.0, 371.0, 412.0, 1070.0, 1111.0, 1152.0, 1192.0];
+const MICS: [f32; 4] = [620.0, 717.0, 766.0, 861.0];
 /// the corner radius of a half on the hinge side (the spine covers it)
 const HINGE_CORNER: f32 = 0.5;
 
@@ -26,8 +51,9 @@ pub fn half_h() -> f32 {
     OUTER.1 + 2.0 * BEZEL
 }
 
-/// Materials (the shader's): aluminium, back glass, front glass, inner screen, outer screen, hinge, dark (the
-/// spine's joint lines)
+/// Materials (the shader's): the frame (polished warm titanium), the right half's frosted white back glass, black
+/// glass (the fronts, the outer screen's cover, the camera caps), inner screen, outer screen, brushed metal (the spine
+/// bar, the camera rings), dark (lenses and holes)
 pub const ALU: f32 = 0.0;
 pub const BACK: f32 = 1.0;
 pub const FRONT: f32 = 2.0;
@@ -103,21 +129,36 @@ impl Mesh {
     }
 }
 
-/// A part's placement: the left half (mirrored) or the right half (turned by phi)
+/// A part's placement: an affine map (columns, then a translation); normals take the columns alone
 #[derive(Clone, Copy)]
-enum Place {
-    Left,
-    Right(f32),
+struct Place {
+    c: [V3; 3],
+    t: V3,
 }
 impl Place {
-    fn p(self, p: V3) -> V3 {
-        match self {
-            Place::Left => v3(-p.x, p.y, p.z),
-            Place::Right(phi) => rot_y(p, phi),
-        }
-    }
     fn n(self, n: V3) -> V3 {
-        self.p(n)
+        self.c[0].scale(n.x).add(self.c[1].scale(n.y)).add(self.c[2].scale(n.z))
+    }
+    fn p(self, p: V3) -> V3 {
+        self.n(p).add(self.t)
+    }
+    /// this placement after `inner` (a part placed in a half's own space)
+    fn of(self, inner: Place) -> Place {
+        Place { c: [self.n(inner.c[0]), self.n(inner.c[1]), self.n(inner.c[2])], t: self.p(inner.t) }
+    }
+    /// the left half: mirrored
+    fn left() -> Place {
+        Place { c: [v3(-1.0, 0.0, 0.0), v3(0.0, 1.0, 0.0), v3(0.0, 0.0, 1.0)], t: v3(0.0, 0.0, 0.0) }
+    }
+    /// the right half: turned by phi about the hinge axis (x = 0, z = AXIS_Z)
+    fn right(phi: f32) -> Place {
+        let a = v3(0.0, 0.0, AXIS_Z);
+        let (cx, cz) = (rot_y(v3(1.0, 0.0, 0.0), phi), rot_y(v3(0.0, 0.0, 1.0), phi));
+        Place { c: [cx, v3(0.0, 1.0, 0.0), cz], t: a.sub(rot_y(a, phi)) }
+    }
+    /// local x, y, z -> the given axes, at `t`
+    fn axes(x: V3, y: V3, z: V3, t: V3) -> Place {
+        Place { c: [x, y, z], t }
     }
 }
 
@@ -213,45 +254,54 @@ fn screen(m: &mut Mesh, (x0, x1, y0, y1): (f32, f32, f32, f32), r: f32, (nx, ny)
     }
 }
 
-/// The spine: the arc of a cylinder about the hinge axis between the two halves' backs (from the left half's back,
-/// -90 degrees, through the outside to the right half's, -90 + phi), its ends closed, a fine seam near each end
+/// A flat disc in a placement's local z = 0 plane, facing +z
+fn disc(m: &mut Mesh, at: Place, (cx, cy, r): (f32, f32, f32), mat: f32, seg: usize) {
+    let n = at.n(v3(0.0, 0.0, 1.0));
+    let c = m.vert(at.p(v3(cx, cy, 0.0)), n, (0.0, 0.0), mat);
+    let first = m.v.len() as u32;
+    for k in 0..=seg {
+        let a = std::f32::consts::TAU * k as f32 / seg as f32;
+        m.vert(at.p(v3(cx + r * a.cos(), cy + r * a.sin(), 0.0)), n, (0.0, 0.0), mat);
+    }
+    for k in 0..seg as u32 {
+        m.i.extend_from_slice(&[c, first + k, first + k + 1]);
+    }
+}
+
+/// A round tower standing on a half's back (its own space, the back at z = `z0`) out to `z1` (further back): its side
+/// and a cap of black glass with a darker lens in it
+#[allow(clippy::too_many_arguments)]
+fn tower(m: &mut Mesh, at: Place, (cx, cy, r, lens): (f32, f32, f32, f32), z0: f32, z1: f32, seg: usize) {
+    let base = m.v.len() as u32;
+    for k in 0..=seg {
+        let a = std::f32::consts::TAU * k as f32 / seg as f32;
+        let n = at.n(v3(a.cos(), a.sin(), 0.0));
+        for z in [z0, z1] {
+            m.vert(at.p(v3(cx + r * a.cos(), cy + r * a.sin(), z)), n, (0.0, 0.0), HINGE);
+        }
+    }
+    for k in 0..seg as u32 {
+        m.quad(base + 2 * k, base + 2 * k + 2, base + 2 * k + 3, base + 2 * k + 1);
+    }
+    // the caps face the back (-z)
+    let back = at.of(Place::axes(v3(1.0, 0.0, 0.0), v3(0.0, -1.0, 0.0), v3(0.0, 0.0, -1.0), v3(0.0, 0.0, z1)));
+    disc(m, back, (cx, -cy, r - 10.0), FRONT, seg);
+    let back2 = at.of(Place::axes(v3(1.0, 0.0, 0.0), v3(0.0, -1.0, 0.0), v3(0.0, 0.0, -1.0), v3(0.0, 0.0, z1 - 0.8)));
+    disc(m, back2, (cx, -cy, lens), DARK, seg);
+}
+
+/// The spine bar at hinge turn `phi`: a stadium of SPINE's section along the hinge, turned by phi / 2, its middle on
+/// the measured path; ends closed
 fn spine(m: &mut Mesh, phi: f32) {
-    if phi < 0.5f32.to_radians() {
-        return;
-    }
-    let r = THICK + 0.8;
-    let y1 = half_h() / 2.0 - HINGE_CORNER;
-    let segs = ((phi.to_degrees() / 6.0).ceil() as usize).max(2);
-    let ring = |m: &mut Mesh, r: f32, ya: f32, yb: f32, mat: f32| {
-        let base = m.v.len() as u32;
-        for s in 0..=segs {
-            let t = -std::f32::consts::FRAC_PI_2 + phi * s as f32 / segs as f32;
-            let n = v3(t.cos(), 0.0, t.sin());
-            m.vert(v3(r * t.cos(), ya, r * t.sin()), n, (0.0, 0.0), mat);
-            m.vert(v3(r * t.cos(), yb, r * t.sin()), n, (0.0, 0.0), mat);
-        }
-        for s in 0..segs as u32 {
-            m.quad(base + 2 * s, base + 2 * s + 2, base + 2 * s + 3, base + 2 * s + 1);
-        }
-    };
-    ring(m, r, -y1, y1, HINGE);
-    // the ends: pie wedges about the axis
-    for (y, ny) in [(-y1, -1.0f32), (y1, 1.0)] {
-        let n = v3(0.0, ny, 0.0);
-        let c = m.vert(v3(0.0, y, 0.0), n, (0.0, 0.0), HINGE);
-        let first = m.v.len() as u32;
-        for s in 0..=segs {
-            let t = -std::f32::consts::FRAC_PI_2 + phi * s as f32 / segs as f32;
-            m.vert(v3(r * t.cos(), y, r * t.sin()), n, (0.0, 0.0), HINGE);
-        }
-        for s in 0..segs as u32 {
-            m.i.extend_from_slice(&[c, first + s, first + s + 1]);
-        }
-    }
-    // the end caps' seams: a fine groove near each end, as on a hinge cover
-    for y in [-y1 + 70.0, y1 - 70.0] {
-        ring(m, r + 0.6, y - 2.0, y + 2.0, DARK);
-    }
+    let deg = (180.0 - phi.to_degrees()).clamp(0.0, 180.0);
+    let f = deg / 22.5;
+    let (i, t) = ((f.floor() as usize).min(7), f - f.floor().min(7.0));
+    let (a, b) = (SPINE_AT[i], SPINE_AT[(i + 1).min(8)]);
+    let c = v3(a.0 + (b.0 - a.0) * t, 0.0, a.1 + (b.1 - a.1) * t);
+    // local x: across the hinge, local y: through the body, local z: along the hinge
+    let at = Place::axes(rot_y(v3(1.0, 0.0, 0.0), phi / 2.0), rot_y(v3(0.0, 0.0, 1.0), phi / 2.0), v3(0.0, -1.0, 0.0), c);
+    let (w, h, len) = SPINE;
+    slab(m, at, (-w / 2.0, w / 2.0, -h / 2.0, h / 2.0), [h / 2.0 - 0.01; 4], (len, -len), 1.5, (HINGE, HINGE, HINGE), 6);
 }
 
 /// The phone at hinge angle `deg` (0 closed .. 180 flat)
@@ -260,29 +310,60 @@ pub fn build(deg: f32) -> Mesh {
     let (w, h) = (half_w(), half_h());
     let mut m = Mesh::default();
     let radii = [CORNER, CORNER, HINGE_CORNER, HINGE_CORNER];
-    for (at, back) in [(Place::Left, FRONT), (Place::Right(phi), BACK)] {
-        slab(&mut m, at, (0.0, w, -h / 2.0, h / 2.0), radii, (0.0, -THICK), FILLET, (ALU, FRONT, back), 10);
-    }
+    let (left, right) = (Place::left(), Place::right(phi));
+    slab(&mut m, left, (0.0, w, -h / 2.0, h / 2.0), radii, (0.0, -THICK_L), FILLET, (ALU, FRONT, FRONT), 10);
+    slab(&mut m, right, (0.0, w, -h / 2.0, h / 2.0), radii, (0.0, -THICK_R), FILLET, (ALU, FRONT, BACK), 10);
     spine(&mut m, phi);
+    // the right half's back: the camera plateau, the towers on it, the flash and the microphone
+    let (px0, px1, py0, py1, ptop) = PLATEAU;
+    let pr = (py1 - py0) / 2.0 - 0.01;
+    slab(&mut m, right, (px0, px1, py0, py1), [pr; 4], (-THICK_R + 1.0, -ptop), 8.0, (BACK, BACK, BACK), 12);
+    for cam in CAMS {
+        tower(&mut m, right, cam, -ptop + 1.0, -CAM_TOP, 40);
+    }
+    let back_r = right.of(Place::axes(v3(1.0, 0.0, 0.0), v3(0.0, -1.0, 0.0), v3(0.0, 0.0, -1.0), v3(0.0, 0.0, -ptop - 0.6)));
+    disc(&mut m, back_r, (FLASH.0, -FLASH.1, FLASH.2), ALU, 20);
+    disc(&mut m, back_r, (MIC.0, -MIC.1, MIC.2), DARK, 12);
+    // the side buttons: pills standing out of the right half's far edge (local x along y, y along z, z outwards)
+    for (y0, y1) in BUTTONS {
+        let at = right.of(Place::axes(v3(0.0, 1.0, 0.0), v3(0.0, 0.0, 1.0), v3(1.0, 0.0, 0.0), v3(w - 2.0, 0.0, 0.0)));
+        let (zc, hz, out) = BUTTON_Z;
+        slab(&mut m, at, (y0, y1, zc - hz, zc + hz), [hz - 0.01; 4], (out + 2.0, 0.0), 2.0, (ALU, ALU, ALU), 6);
+    }
+    // speaker holes (the right half's bottom edge) and microphone holes (the left half's top edge)
+    let bottom = right.of(Place::axes(v3(1.0, 0.0, 0.0), v3(0.0, 0.0, 1.0), v3(0.0, -1.0, 0.0), v3(0.0, -h / 2.0 - 0.6, 0.0)));
+    for x in SPEAKER {
+        disc(&mut m, bottom, (x, -46.0, 11.0), DARK, 10);
+    }
+    let top = left.of(Place::axes(v3(1.0, 0.0, 0.0), v3(0.0, 0.0, -1.0), v3(0.0, 1.0, 0.0), v3(0.0, h / 2.0 + 0.6, 0.0)));
+    for x in MICS {
+        disc(&mut m, top, (x, 46.0, 9.0), DARK, 10);
+    }
+    // the outer screen's camera hole, just off its glass
+    let back_l = left.of(Place::axes(v3(1.0, 0.0, 0.0), v3(0.0, -1.0, 0.0), v3(0.0, 0.0, -1.0), v3(0.0, 0.0, -THICK_L - 1.2)));
+    disc(&mut m, back_l, (HOLE.0, -HOLE.1, HOLE.2), DARK, 24);
     m.body = m.i.len();
     // the inner screen, one panel across both fronts: x < 0 on the left half, x > 0 turned with the right one; the
-    // grid has a column at x = 0, the crease, whose normal is between the two
+    // grid has a column at x = 0, the crease, between the two
     let (sw, sh) = INNER;
     let r = CORNER - BEZEL;
+    let z = v3(0.0, 0.0, 1.0);
     screen(&mut m, (-sw / 2.0, sw / 2.0, -sh / 2.0, sh / 2.0), r, (40, 28), INNER_SCREEN, |x, y| {
         if x < -0.01 {
-            (v3(x, y, 0.0), v3(0.0, 0.0, 1.0))
+            (v3(x, y, 0.0), z)
         } else if x > 0.01 {
-            (rot_y(v3(x, y, 0.0), phi), rot_y(v3(0.0, 0.0, 1.0), phi))
+            (right.p(v3(x, y, 0.0)), right.n(z))
         } else {
-            (v3(0.0, y, 0.0), v3(0.0, 0.0, 1.0).add(rot_y(v3(0.0, 0.0, 1.0), phi)).norm())
+            // closed, the two fronts face each other: the crease faces out of the fold
+            let n = z.add(right.n(z));
+            (v3(0.0, y, 0.0).add(right.p(v3(0.0, y, 0.0))).scale(0.5), if n.dot(n) < 1e-6 { v3(1.0, 0.0, 0.0) } else { n.norm() })
         }
     }, |x, y| ((x + sw / 2.0) / sw, (sh / 2.0 - y) / sh));
     // the outer screen on the left half's back (its own x runs out from the hinge: seen from behind, left to right)
     let (ow, oh) = OUTER;
     let cx = w / 2.0;
-    let (ox0, ox1) = (cx - ow / 2.0, cx + ow / 2.0);
-    screen(&mut m, (ox0, ox1, -oh / 2.0, oh / 2.0), r, (20, 28), OUTER_SCREEN, |x, y| (v3(-x, y, -THICK), v3(0.0, 0.0, -1.0)), |x, y| ((x - ox0) / ow, (oh / 2.0 - y) / oh));
+    let ox0 = cx - ow / 2.0;
+    screen(&mut m, (ox0, ox0 + ow, -oh / 2.0, oh / 2.0), r, (20, 28), OUTER_SCREEN, |x, y| (left.p(v3(x, y, -THICK_L)), v3(0.0, 0.0, -1.0)), |x, y| ((x - ox0) / ow, (oh / 2.0 - y) / oh));
     m
 }
 
@@ -302,14 +383,14 @@ mod tests {
 
     #[test]
     fn closed_right_half_lies_on_the_left_with_its_back_up() {
-        let p = rot_y(v3(half_w(), 0.0, -THICK), 180f32.to_radians());
-        assert!((p.x + half_w()).abs() < 0.01 && (p.z - THICK).abs() < 0.01, "{p:?}");
+        let p = Place::right(std::f32::consts::PI).p(v3(half_w(), 0.0, -THICK_R));
+        assert!((p.x + half_w()).abs() < 0.01 && (p.z - THICK_R - 2.0 * AXIS_Z).abs() < 0.01, "{p:?}");
     }
 
     #[test]
     fn half_open_right_half_stands_towards_the_viewer() {
-        let p = rot_y(v3(half_w(), 0.0, 0.0), 90f32.to_radians());
-        assert!(p.x.abs() < 0.01 && (p.z - half_w()).abs() < 0.01, "{p:?}");
+        let p = Place::right(90f32.to_radians()).p(v3(half_w(), 0.0, 0.0));
+        assert!((p.x - AXIS_Z).abs() < 0.01 && (p.z - half_w() - AXIS_Z).abs() < 0.01, "{p:?}");
     }
 
     #[test]
@@ -321,17 +402,21 @@ mod tests {
 
     #[test]
     fn inner_screen_has_no_seam_at_the_crease() {
-        // the crease column is one row of vertices shared by both halves' quads, at x = 0, z = 0
+        // the crease column is one row of vertices shared by both halves' quads, between them at the hinge
         let m = build(100.0);
-        let crease = m.v.iter().filter(|v| v.m == INNER_SCREEN && v.p[0].abs() < 1e-3 && v.p[2].abs() < 1e-3).count();
+        let crease = m.v.iter().filter(|v| v.m == INNER_SCREEN && v.p[0].abs() < AXIS_Z && v.p[2].abs() < AXIS_Z).count();
         assert!(crease >= 25, "{crease}");
     }
 
+    /// Flat, the spine bar is inside the body (hidden); closed, it stands across the fold edge
     #[test]
-    fn spine_only_when_bent() {
-        let hinge = |deg: f32| build(deg).v.iter().filter(|v| v.m == HINGE).count();
-        assert_eq!(hinge(180.0), 0);
-        assert_eq!(hinge(179.9), 0);
-        assert!(hinge(0.0) > 0 && hinge(90.0) > 0);
+    fn spine_hides_when_flat_and_closes_the_fold() {
+        let spine = |deg: f32| build(deg).v.into_iter().filter(|v| v.m == HINGE && v.p[0].abs() < 150.0).collect::<Vec<_>>();
+        for v in spine(180.0) {
+            assert!(v.p[2] < -1.0 && v.p[2] > -THICK_L + 1.0, "{:?}", v.p);
+        }
+        let closed = spine(0.0);
+        let (lo, hi) = closed.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.p[2]), hi.max(v.p[2])));
+        assert!(lo < -60.0 && hi > 70.0, "{lo} {hi}");
     }
 }

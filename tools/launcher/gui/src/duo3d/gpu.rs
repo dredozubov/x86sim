@@ -93,6 +93,17 @@ vec3 studio(vec3 d) {
 vec3 lin(vec3 g) { return pow(g, vec3(2.2)); }
 vec3 srgb(vec3 l) { return pow(clamp(l, 0.0, 1.0), vec3(1.0 / 2.2)); }
 vec3 tone(vec3 c) { return c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14); }
+// the studio seen in a rough surface (Apple's model's shader): its lights spread and dimmed with the roughness
+vec3 studioR(vec3 d, float r) {
+    float s = r * r, k = 1.0 / (1.0 + 5.0 * s), e = 0.9 * s;
+    float up = d.y * 0.5 + 0.5;
+    vec3 c = mix(vec3(0.008, 0.008, 0.009), vec3(0.07, 0.071, 0.075), smoothstep(0.2 - e, 0.9 + e, up));
+    c += vec3(2.0) * k * smoothstep(0.6 - e, 0.8 + e * 0.5, d.y) * box(d.x, -0.55, 0.55, 0.12 + e) * box(d.z, -0.2, 0.9, 0.15 + e);
+    c += vec3(1.05, 1.03, 1.0) * k * smoothstep(0.78 - e, 0.9 + e * 0.2, -d.x) * box(d.y, -0.3, 0.65, 0.12 + e);
+    c += vec3(0.38, 0.40, 0.45) * k * smoothstep(0.8 - e, 0.92 + e * 0.2, d.x) * box(d.y, -0.2, 0.6, 0.15 + e);
+    c += vec3(0.05) * smoothstep(0.8 - e, 0.97, d.z);
+    return c + vec3(0.12) * s;
+}
 
 void main() {
     vec3 n = normalize(v_n);
@@ -109,16 +120,19 @@ void main() {
         FRAG = vec4(srgb(pic + refl * 0.3), 1.0);
         return;
     }
-    if (v_m < 0.5 || (v_m > 4.5 && v_m < 5.5)) {
-        // the frame and spine: polished natural titanium (a metal: it shows its surroundings tinted by its colour)
-        vec3 f0 = v_m < 0.5 ? vec3(0.56, 0.54, 0.51) : vec3(0.30, 0.30, 0.29);
-        vec3 f = f0 + (vec3(1.0) - f0) * fres;
-        col = f * studio(r) + f0 * 0.05;
+    if (v_m < 0.5) {
+        // the frame: polished warm titanium (a metal: it shows its surroundings tinted by its colour)
+        vec3 f0 = vec3(0.89, 0.85, 0.78);
+        col = (f0 + (vec3(1.0) - f0) * fres) * studioR(r, 0.05);
+    } else if (v_m > 4.5 && v_m < 5.5) {
+        // the spine bar and the camera rings: brushed metal of the same colour
+        vec3 f0 = vec3(0.89, 0.86, 0.80);
+        col = (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
     } else if (v_m < 1.5) {
-        // back glass, frosted and dark: a broad, dim reflection over a little colour
-        vec3 base = vec3(0.028, 0.029, 0.032);
-        vec3 rr = normalize(mix(r, n, 0.35));
-        col = base * (0.3 + 0.7 * max(dot(n, normalize(vec3(-0.4, 0.7, 0.6))), 0.0)) + studio(rr) * (0.04 + 0.96 * fres) * 0.45;
+        // the right half's back: frosted white glass
+        vec3 base = vec3(0.98, 0.975, 0.95);
+        vec3 f0 = mix(vec3(0.04), base, 0.1);
+        col = base * 0.9 * studioR(n, 1.0) * 1.6 + (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
     } else if (v_m < 2.5) {
         // the front's black glass around the screen
         col = vec3(0.003) + studio(r) * (0.04 + 0.96 * fres) * 0.45;

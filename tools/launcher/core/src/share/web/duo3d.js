@@ -2,7 +2,7 @@
 // The iPhone Duo in 3D on the web page, as the launcher draws it (gui/src/duo3d.rs, duo3d/mesh.rs, duo3d/gpu.rs, ported
 // here): Apple's own model when the server has it (/devicemodel/duo: Xcode's, from the user's own Xcode.xip, never
 // public; core devicemodel.rs), skinned on the GPU with its materials, else the procedural one: two rounded halves on
-// a hinge spine. The inner screen is one panel across both fronts, the outer screen on the back of the left half, each
+// a hinge spine (shaped after Apple's: halves of different thickness, cameras, buttons). The inner screen is one panel across both fronts, the outer screen on the back of the left half, each
 // the phone's live picture (the socket's two streams: kind 1 / 2 the inner screen,
 // 17 / 18 the outer one). The right half turns about the hinge by 180 - angle; the device orientation turns the whole
 // phone. Touches on the drawn screens are traced back through the camera onto the screen under them (DuoMap) and go
@@ -14,7 +14,15 @@
 (function () {
   // ---- geometry (mesh.rs): sizes in inner-screen pixels
   const INNER = [2853, 2007], OUTER = [1398, 2034];
-  const BEZEL = 46, THICK = 105, CORNER = 200, FILLET = 13, HINGE_CORNER = 0.5;
+  const BEZEL = 46, THICK_L = 95, THICK_R = 158, CORNER = 200, FILLET = 13, HINGE_CORNER = 0.5, AXIS_Z = 4.7;
+  // measured from Apple's model (mesh.rs): the spine bar (section, half length; its middle at 0, 22.5 .. 180
+  // degrees), the camera plateau (x, y ranges, top), the towers on it (x, y, radius, lens radius) and their top, the flash, the microphone, the outer
+  // screen's camera hole, the side buttons (y from, to; depth, half height, standing out), speaker and microphone holes
+  const SPINE = [148, 53, 1043];
+  const SPINE_AT = [[20.6, 4.7], [20.3, 0.7], [19.1, -3.2], [17.2, -6.8], [14.7, -9.9], [15.0, -18.1], [14.1, -29.4], [8.9, -39.8], [0.0, -44.3]];
+  const PLATEAU = [520, 1440, 600, 990, 182], CAMS = [[893, 788, 147, 70], [1214, 788, 147, 95]], CAM_TOP = 197, FLASH = [592, 708, 36], MIC = [591, 866, 14], HOLE = [1297, 871, 32];
+  const BUTTONS = [[-623, -322], [124, 454]], BUTTON_Z = [-45, 20, 8];
+  const SPEAKER = [290, 330, 371, 412, 1070, 1111, 1152, 1192], MICS = [620, 717, 766, 861];
   const HALF_W = INNER[0] / 2 + BEZEL, HALF_H = OUTER[1] + 2 * BEZEL;
   const ALU = 0, BACK = 1, FRONT = 2, INNER_SCREEN = 3, OUTER_SCREEN = 4, HINGE = 5, DARK = 6;
   // SPEED: at most this many degrees a second; HINGE_RATE: how fast the drawn hinge closes on its target (an eased
@@ -23,6 +31,8 @@
   const rad = (d) => d * Math.PI / 180;
   const v3 = (x, y, z) => [x, y, z];
   const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const scale = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
   const norm = (a) => { const l = Math.max(Math.hypot(a[0], a[1], a[2]), 1e-9); return [a[0] / l, a[1] / l, a[2] / l]; };
   function rotX(p, a) { const s = Math.sin(a), c = Math.cos(a); return [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c]; }
   function rotY(p, a) { const s = Math.sin(a), c = Math.cos(a); return [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c]; }
@@ -34,8 +44,15 @@
     vert(p, n, uv, m) { this.v.push(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1], m); return this.n++; }
     quad(a, b, c, d) { this.i.push(a, b, c, a, c, d); }
   }
-  const LEFT = (p) => [-p[0], p[1], p[2]];
-  const RIGHT = (phi) => (p) => rotY(p, phi);
+  // a part's placement (mesh.rs Place): columns c, translation t; normals take the columns alone
+  function place(c, t) {
+    const n = (v) => add(add(scale(c[0], v[0]), scale(c[1], v[1])), scale(c[2], v[2]));
+    const P = { c, t, n, p: (v) => add(n(v), t) };
+    P.of = (q) => place([n(q.c[0]), n(q.c[1]), n(q.c[2])], P.p(q.t));
+    return P;
+  }
+  const LEFT = place([[-1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, 0]);
+  function RIGHT(phi) { const a = [0, 0, AXIS_Z]; return place([rotY([1, 0, 0], phi), [0, 1, 0], rotY([0, 0, 1], phi)], sub(a, rotY(a, phi))); }
 
   // a rounded rectangle's outline with outward normals, counter-clockwise; radii: bottom right, top right, top left, bottom left
   function outline(x0, x1, y0, y1, r, seg) {
@@ -61,7 +78,7 @@
     for (const [px, py, nx, ny] of line) {
       for (const [t, cz] of prof) {
         const ct = Math.cos(t), st = Math.sin(t), d = e * (ct - 1);
-        m.vert(at([px + nx * d, py + ny * d, cz + e * st]), at([nx * ct, ny * ct, st]), [0, 0], mats[0]);
+        m.vert(at.p([px + nx * d, py + ny * d, cz + e * st]), at.n([nx * ct, ny * ct, st]), [0, 0], mats[0]);
       }
     }
     const nl = line.length;
@@ -70,10 +87,10 @@
       for (let j = 0; j < np - 1; j++) m.quad(base + i * np + j, base + i2 * np + j, base + i2 * np + j + 1, base + i * np + j + 1);
     }
     for (const [z, nz, mat] of [[zf, 1, mats[1]], [zb, -1, mats[2]]]) {
-      const n = at([0, 0, nz]);
-      const c = m.vert(at([(x0 + x1) / 2, (y0 + y1) / 2, z]), n, [0, 0], mat);
+      const n = at.n([0, 0, nz]);
+      const c = m.vert(at.p([(x0 + x1) / 2, (y0 + y1) / 2, z]), n, [0, 0], mat);
       const first = m.n;
-      for (const [px, py, nx, ny] of line) m.vert(at([px - nx * e, py - ny * e, z]), n, [0, 0], mat);
+      for (const [px, py, nx, ny] of line) m.vert(at.p([px - nx * e, py - ny * e, z]), n, [0, 0], mat);
       for (let i = 0; i < nl; i++) m.i.push(c, first + i, first + (i + 1) % nl);
     }
   }
@@ -99,42 +116,66 @@
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) m.quad(a(i, j), a(i + 1, j), a(i + 1, j + 1), a(i, j + 1));
   }
 
-  function spine(m, phi) {
-    if (phi < rad(0.5)) return;
-    const r = THICK + 0.8, y1 = HALF_H / 2 - HINGE_CORNER;
-    const segs = Math.max(2, Math.ceil(phi * 180 / Math.PI / 6));
-    const ring = (r, ya, yb, mat) => {
-      const base = m.n;
-      for (let s = 0; s <= segs; s++) {
-        const t = -Math.PI / 2 + phi * s / segs, n = [Math.cos(t), 0, Math.sin(t)];
-        m.vert([r * Math.cos(t), ya, r * Math.sin(t)], n, [0, 0], mat);
-        m.vert([r * Math.cos(t), yb, r * Math.sin(t)], n, [0, 0], mat);
-      }
-      for (let s = 0; s < segs; s++) m.quad(base + 2 * s, base + 2 * s + 2, base + 2 * s + 3, base + 2 * s + 1);
-    };
-    ring(r, -y1, y1, HINGE);
-    for (const [y, ny] of [[-y1, -1], [y1, 1]]) {
-      const n = [0, ny, 0], c = m.vert([0, y, 0], n, [0, 0], HINGE), first = m.n;
-      for (let s = 0; s <= segs; s++) { const t = -Math.PI / 2 + phi * s / segs; m.vert([r * Math.cos(t), y, r * Math.sin(t)], n, [0, 0], HINGE); }
-      for (let s = 0; s < segs; s++) m.i.push(c, first + s, first + s + 1);
+  // a flat disc in a placement's local z = 0 plane, facing +z
+  function disc(m, at, [cx, cy, r], mat, seg) {
+    const n = at.n([0, 0, 1]), c = m.vert(at.p([cx, cy, 0]), n, [0, 0], mat), first = m.n;
+    for (let k = 0; k <= seg; k++) { const a = 2 * Math.PI * k / seg; m.vert(at.p([cx + r * Math.cos(a), cy + r * Math.sin(a), 0]), n, [0, 0], mat); }
+    for (let k = 0; k < seg; k++) m.i.push(c, first + k, first + k + 1);
+  }
+  // a round tower standing on a half's back (z0) out to z1: its side, a black glass cap and a darker lens
+  function tower(m, at, [cx, cy, r, lens], z0, z1, seg) {
+    const base = m.n;
+    for (let k = 0; k <= seg; k++) {
+      const a = 2 * Math.PI * k / seg, n = at.n([Math.cos(a), Math.sin(a), 0]);
+      for (const z of [z0, z1]) m.vert(at.p([cx + r * Math.cos(a), cy + r * Math.sin(a), z]), n, [0, 0], HINGE);
     }
-    for (const y of [-y1 + 70, y1 - 70]) ring(r + 0.6, y - 2, y + 2, DARK);
+    for (let k = 0; k < seg; k++) m.quad(base + 2 * k, base + 2 * k + 2, base + 2 * k + 3, base + 2 * k + 1);
+    disc(m, at.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, z1])), [cx, -cy, r - 10], FRONT, seg);
+    disc(m, at.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, z1 - 0.8])), [cx, -cy, lens], DARK, seg);
+  }
+  // the spine bar: a stadium turned by phi / 2, its middle on the measured path
+  function spine(m, phi) {
+    const deg = Math.min(180, Math.max(0, 180 - phi * 180 / Math.PI)), f = deg / 22.5;
+    const i = Math.min(7, Math.floor(f)), t = f - Math.min(7, Math.floor(f)), a = SPINE_AT[i], b = SPINE_AT[Math.min(i + 1, 8)];
+    const c = [a[0] + (b[0] - a[0]) * t, 0, a[1] + (b[1] - a[1]) * t];
+    const at = place([rotY([1, 0, 0], phi / 2), rotY([0, 0, 1], phi / 2), [0, -1, 0]], c);
+    const [w, h, len] = SPINE, rr = h / 2 - 0.01;
+    slab(m, at, [-w / 2, w / 2, -h / 2, h / 2], [rr, rr, rr, rr], [len, -len], 1.5, [HINGE, HINGE, HINGE], 6);
   }
 
   // the phone at hinge angle `deg` (0 closed .. 180 flat)
   function build(deg) {
     const phi = rad(180 - deg), w = HALF_W, hh = HALF_H, m = new Mesh();
-    const radii = [CORNER, CORNER, HINGE_CORNER, HINGE_CORNER];
-    for (const [at, back] of [[LEFT, FRONT], [RIGHT(phi), BACK]]) slab(m, at, [0, w, -hh / 2, hh / 2], radii, [0, -THICK], FILLET, [ALU, FRONT, back], 10);
+    const radii = [CORNER, CORNER, HINGE_CORNER, HINGE_CORNER], left = LEFT, right = RIGHT(phi);
+    slab(m, left, [0, w, -hh / 2, hh / 2], radii, [0, -THICK_L], FILLET, [ALU, FRONT, FRONT], 10);
+    slab(m, right, [0, w, -hh / 2, hh / 2], radii, [0, -THICK_R], FILLET, [ALU, FRONT, BACK], 10);
     spine(m, phi);
+    const [px0, px1, py0, py1, ptop] = PLATEAU, pr = (py1 - py0) / 2 - 0.01;
+    slab(m, right, [px0, px1, py0, py1], [pr, pr, pr, pr], [-THICK_R + 1, -ptop], 8, [BACK, BACK, BACK], 12);
+    for (const cam of CAMS) tower(m, right, cam, -ptop + 1, -CAM_TOP, 40);
+    const backR = right.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, -ptop - 0.6]));
+    disc(m, backR, [FLASH[0], -FLASH[1], FLASH[2]], ALU, 20);
+    disc(m, backR, [MIC[0], -MIC[1], MIC[2]], DARK, 12);
+    for (const [y0, y1] of BUTTONS) {
+      const at = right.of(place([[0, 1, 0], [0, 0, 1], [1, 0, 0]], [w - 2, 0, 0])), [zc, hz, out] = BUTTON_Z, rb = hz - 0.01;
+      slab(m, at, [y0, y1, zc - hz, zc + hz], [rb, rb, rb, rb], [out + 2, 0], 2, [ALU, ALU, ALU], 6);
+    }
+    const bottom = right.of(place([[1, 0, 0], [0, 0, 1], [0, -1, 0]], [0, -hh / 2 - 0.6, 0]));
+    for (const x of SPEAKER) disc(m, bottom, [x, -46, 11], DARK, 10);
+    const top = left.of(place([[1, 0, 0], [0, 0, -1], [0, 1, 0]], [0, hh / 2 + 0.6, 0]));
+    for (const x of MICS) disc(m, top, [x, 46, 9], DARK, 10);
+    const backL = left.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, -THICK_L - 1.2]));
+    disc(m, backL, [HOLE[0], -HOLE[1], HOLE[2]], DARK, 24);
     m.body = m.i.length;
-    const [sw, sh] = INNER, r = CORNER - BEZEL, z = [0, 0, 1], zr = rotY(z, phi);
+    const [sw, sh] = INNER, r = CORNER - BEZEL, z = [0, 0, 1], zr = right.n(z), zs = add(z, zr);
+    // closed, the two fronts face each other: the crease faces out of the fold
+    const creaseN = zs[0] * zs[0] + zs[1] * zs[1] + zs[2] * zs[2] < 1e-6 ? [1, 0, 0] : norm(zs);
     screen(m, [-sw / 2, sw / 2, -sh / 2, sh / 2], r, [40, 28], INNER_SCREEN, (x, y) =>
-      x < -0.01 ? [[x, y, 0], z] : x > 0.01 ? [rotY([x, y, 0], phi), zr] : [[0, y, 0], norm(add(z, zr))],
+      x < -0.01 ? [[x, y, 0], z] : x > 0.01 ? [right.p([x, y, 0]), zr] : [scale(add([0, y, 0], right.p([0, y, 0])), 0.5), creaseN],
     (x, y) => [(x + sw / 2) / sw, (sh / 2 - y) / sh]);
     // the outer screen on the left half's back (its own x runs out from the hinge: seen from behind, left to right)
-    const [ow, oh] = OUTER, cx = w / 2, ox0 = cx - ow / 2, ox1 = cx + ow / 2;
-    screen(m, [ox0, ox1, -oh / 2, oh / 2], r, [20, 28], OUTER_SCREEN, (x, y) => [[-x, y, -THICK], [0, 0, -1]], (x, y) => [(x - ox0) / ow, (oh / 2 - y) / oh]);
+    const [ow, oh] = OUTER, ox0 = w / 2 - ow / 2;
+    screen(m, [ox0, ox0 + ow, -oh / 2, oh / 2], r, [20, 28], OUTER_SCREEN, (x, y) => [left.p([x, y, -THICK_L]), [0, 0, -1]], (x, y) => [(x - ox0) / ow, (oh / 2 - y) / oh]);
     return { v: new Float32Array(m.v), i: new Uint32Array(m.i), body: m.body, n: m.n };
   }
   // its touch surfaces: the body hides, the screens are touched (uv: the picture point with y up, as a model's st)
@@ -273,6 +314,17 @@ vec3 studio(vec3 d) {
 vec3 lin(vec3 g) { return pow(g, vec3(2.2)); }
 vec3 srgb(vec3 l) { return pow(clamp(l, 0.0, 1.0), vec3(1.0 / 2.2)); }
 vec3 tone(vec3 c) { return c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14); }
+// the studio seen in a rough surface (Apple's model's shader): its lights spread and dimmed with the roughness
+vec3 studioR(vec3 d, float r) {
+  float s = r * r, k = 1.0 / (1.0 + 5.0 * s), e = 0.9 * s;
+  float up = d.y * 0.5 + 0.5;
+  vec3 c = mix(vec3(0.008, 0.008, 0.009), vec3(0.07, 0.071, 0.075), smoothstep(0.2 - e, 0.9 + e, up));
+  c += vec3(2.0) * k * smoothstep(0.6 - e, 0.8 + e * 0.5, d.y) * box(d.x, -0.55, 0.55, 0.12 + e) * box(d.z, -0.2, 0.9, 0.15 + e);
+  c += vec3(1.05, 1.03, 1.0) * k * smoothstep(0.78 - e, 0.9 + e * 0.2, -d.x) * box(d.y, -0.3, 0.65, 0.12 + e);
+  c += vec3(0.38, 0.40, 0.45) * k * smoothstep(0.8 - e, 0.92 + e * 0.2, d.x) * box(d.y, -0.2, 0.6, 0.15 + e);
+  c += vec3(0.05) * smoothstep(0.8 - e, 0.97, d.z);
+  return c + vec3(0.12) * s;
+}
 void main() {
   vec3 n = normalize(v_n);
   vec3 v = normalize(vec3(0.0, 0.0, u_dnf.x) - v_p);
@@ -287,14 +339,19 @@ void main() {
     frag = vec4(srgb(pic + refl * 0.3), 1.0);
     return;
   }
-  if (v_m < 0.5 || (v_m > 4.5 && v_m < 5.5)) {
-    vec3 f0 = v_m < 0.5 ? vec3(0.56, 0.54, 0.51) : vec3(0.30, 0.30, 0.29);
-    vec3 f = f0 + (vec3(1.0) - f0) * fres;
-    col = f * studio(r) + f0 * 0.05;
+  if (v_m < 0.5) {
+    // the frame: polished warm titanium (a metal: it shows its surroundings tinted by its colour)
+    vec3 f0 = vec3(0.89, 0.85, 0.78);
+    col = (f0 + (vec3(1.0) - f0) * fres) * studioR(r, 0.05);
+  } else if (v_m > 4.5 && v_m < 5.5) {
+    // the spine bar and the camera rings: brushed metal of the same colour
+    vec3 f0 = vec3(0.89, 0.86, 0.80);
+    col = (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
   } else if (v_m < 1.5) {
-    vec3 base = vec3(0.028, 0.029, 0.032);
-    vec3 rr = normalize(mix(r, n, 0.35));
-    col = base * (0.3 + 0.7 * max(dot(n, normalize(vec3(-0.4, 0.7, 0.6))), 0.0)) + studio(rr) * (0.04 + 0.96 * fres) * 0.45;
+    // the right half's back: frosted white glass
+    vec3 base = vec3(0.98, 0.975, 0.95);
+    vec3 f0 = mix(vec3(0.04), base, 0.1);
+    col = base * 0.9 * studioR(n, 1.0) * 1.6 + (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
   } else if (v_m < 2.5) {
     col = vec3(0.003) + studio(r) * (0.04 + 0.96 * fres) * 0.45;
   } else {
