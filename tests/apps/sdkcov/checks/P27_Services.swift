@@ -135,6 +135,7 @@ func p27sFirst(_ a: [String], _ n: Int = 6) -> String { a.isEmpty ? "" : " [" + 
 #if canImport(Intents)
 let p27sIntents = "INActivateCarSignalIntent INAddMediaIntent INAddTasksIntent INAnswerCallIntent INAppendToNoteIntent INBookRestaurantReservationIntent INCancelRideIntent INCancelWorkoutIntent INCreateNoteIntent INCreateTaskListIntent INDeleteTasksIntent INEditMessageIntent INEndWorkoutIntent INGetAvailableRestaurantReservationBookingDefaultsIntent INGetAvailableRestaurantReservationBookingsIntent INGetCarLockStatusIntent INGetCarPowerLevelStatusIntent INGetReservationDetailsIntent INGetRestaurantGuestIntent INGetRideStatusIntent INGetUserCurrentRestaurantReservationBookingsIntent INGetVisualCodeIntent INHangUpCallIntent INListCarsIntent INListRideOptionsIntent INPauseWorkoutIntent INPayBillIntent INRequestPaymentIntent INRequestRideIntent INResumeWorkoutIntent INSaveProfileInCarIntent INSearchCallHistoryIntent INSearchForAccountsIntent INSearchForBillsIntent INSearchForMediaIntent INSearchForMessagesIntent INSearchForNotebookItemsIntent INSearchForPhotosIntent INSendPaymentIntent INSendRideFeedbackIntent INSetAudioSourceInCarIntent INSetCarLockStatusIntent INSetClimateSettingsInCarIntent INSetDefrosterSettingsInCarIntent INSetMessageAttributeIntent INSetProfileInCarIntent INSetRadioStationIntent INSetSeatSettingsInCarIntent INSetTaskAttributeIntent INShareFocusStatusIntent INSnoozeTasksIntent INStartAudioCallIntent INStartCallIntent INStartPhotoPlaybackIntent INStartVideoCallIntent INStartWorkoutIntent INTransferMoneyIntent INUnsendMessagesIntent INUpdateMediaAffinityIntent".split(separator: " ").map(String.init)
 let p27sResolutionResults = "INAccountTypeResolutionResult INAddMediaMediaDestinationResolutionResult INAddMediaMediaItemResolutionResult INAddTasksTargetTaskListResolutionResult INAddTasksTemporalEventTriggerResolutionResult INBalanceTypeResolutionResult INBillPayeeResolutionResult INBillTypeResolutionResult INBooleanResolutionResult INCallCapabilityResolutionResult INCallDestinationTypeResolutionResult INCallRecordResolutionResult INCallRecordTypeOptionsResolutionResult INCallRecordTypeResolutionResult INCarAirCirculationModeResolutionResult INCarAudioSourceResolutionResult INCarDefrosterResolutionResult INCarSeatResolutionResult INCarSignalOptionsResolutionResult INCurrencyAmountResolutionResult INDateComponentsRangeResolutionResult INDateComponentsResolutionResult INDateSearchTypeResolutionResult INDeleteTasksTaskListResolutionResult INDeleteTasksTaskResolutionResult INDoubleResolutionResult INEnergyResolutionResult INEnumResolutionResult INFileResolutionResult INIntegerResolutionResult INIntentResolutionResult INLengthResolutionResult INLocationSearchTypeResolutionResult INMassResolutionResult INMediaAffinityTypeResolutionResult INMediaDestinationResolutionResult INMediaItemResolutionResult INMessageAttributeOptionsResolutionResult INMessageAttributeResolutionResult INNoteContentResolutionResult INNoteContentTypeResolutionResult INNoteResolutionResult INNotebookItemTypeResolutionResult INObjectResolutionResult INOutgoingMessageTypeResolutionResult INPaymentAccountResolutionResult INPaymentAmountResolutionResult INPaymentMethodResolutionResult INPaymentStatusResolutionResult INPersonResolutionResult INPlacemarkResolutionResult INPlayMediaMediaItemResolutionResult INPlayMediaPlaybackSpeedResolutionResult INPlaybackQueueLocationResolutionResult INPlaybackRepeatModeResolutionResult INRadioTypeResolutionResult INRelativeReferenceResolutionResult INRelativeSettingResolutionResult INRequestPaymentCurrencyAmountResolutionResult INRequestPaymentPayerResolutionResult INRestaurantGuestResolutionResult INRestaurantResolutionResult INSearchForMediaMediaItemResolutionResult INSendMessageRecipientResolutionResult INSendPaymentCurrencyAmountResolutionResult INSendPaymentPayeeResolutionResult INSetTaskAttributeTemporalEventTriggerResolutionResult INSnoozeTasksTaskResolutionResult INSpatialEventTriggerResolutionResult INSpeakableStringResolutionResult INSpeedResolutionResult INStartCallCallCapabilityResolutionResult INStartCallCallRecordToCallBackResolutionResult INStartCallContactResolutionResult INStringResolutionResult INTaskListResolutionResult INTaskPriorityResolutionResult INTaskResolutionResult INTaskStatusResolutionResult INTemperatureResolutionResult INTemporalEventTriggerResolutionResult INTemporalEventTriggerTypeOptionsResolutionResult INTimeIntervalResolutionResult INURLResolutionResult INUpdateMediaAffinityMediaItemResolutionResult INVisualCodeTypeResolutionResult INVolumeResolutionResult INWorkoutGoalUnitTypeResolutionResult INWorkoutLocationTypeResolutionResult".split(separator: " ").map(String.init)
+let p27sIntentResponses = "INActivateCarSignalIntentResponse INAddMediaIntentResponse INAddTasksIntentResponse INAnswerCallIntentResponse INAppendToNoteIntentResponse INBookRestaurantReservationIntentResponse INCancelRideIntentResponse INCancelWorkoutIntentResponse INCreateNoteIntentResponse INCreateTaskListIntentResponse INDeleteTasksIntentResponse INEditMessageIntentResponse INEndWorkoutIntentResponse INGetAvailableRestaurantReservationBookingDefaultsIntentResponse INGetAvailableRestaurantReservationBookingsIntentResponse INGetCarLockStatusIntentResponse INGetCarPowerLevelStatusIntentResponse INGetReservationDetailsIntentResponse INGetRestaurantGuestIntentResponse INGetRideStatusIntentResponse INGetUserCurrentRestaurantReservationBookingsIntentResponse INGetVisualCodeIntentResponse INHangUpCallIntentResponse INListCarsIntentResponse INListRideOptionsIntentResponse INPauseWorkoutIntentResponse INPayBillIntentResponse INRequestPaymentIntentResponse INRequestRideIntentResponse INResumeWorkoutIntentResponse INSaveProfileInCarIntentResponse INSearchCallHistoryIntentResponse INSearchForAccountsIntentResponse INSearchForBillsIntentResponse INSearchForMediaIntentResponse INSearchForMessagesIntentResponse INSearchForNotebookItemsIntentResponse INSearchForPhotosIntentResponse INSendPaymentIntentResponse INSendRideFeedbackIntentResponse INSetAudioSourceInCarIntentResponse INSetCarLockStatusIntentResponse INSetClimateSettingsInCarIntentResponse INSetDefrosterSettingsInCarIntentResponse INSetMessageAttributeIntentResponse INSetProfileInCarIntentResponse INSetRadioStationIntentResponse INSetSeatSettingsInCarIntentResponse INSetTaskAttributeIntentResponse INShareFocusStatusIntentResponse INSnoozeTasksIntentResponse INStartAudioCallIntentResponse INStartCallIntentResponse INStartPhotoPlaybackIntentResponse INStartVideoCallIntentResponse INStartWorkoutIntentResponse INTransferMoneyIntentResponse INUnsendMessagesIntentResponse INUpdateMediaAffinityIntentResponse".split(separator: " ").map(String.init)
 /// the NSSecureCoding data classes (and abstract bases) of Intents (not INParameter: its initWithCoder: faults on an empty
 /// archive; p27-values builds it with its initializer)
 let p27sIntentData = "INAirline INAirport INAirportGate INBalanceAmount INBillDetails INBillPayee INBoatReservation INBoatTrip INBusReservation INBusTrip INCallGroup INCallRecord INCallRecordFilter INCar INCarHeadUnit INCurrencyAmount INDailyRoutineRelevanceProvider INDateComponentsRange INDefaultCardTemplate INFile INFlight INFlightReservation INFocusStatus INImageNoteContent INIntentDonationMetadata INLocationRelevanceProvider INLodgingReservation INMediaDestination INMediaSearch INMediaUserContext INMessage INMessageLinkMetadata INMessageReaction INNote INNoteContent INObject INPaymentAccount INPaymentAmount INPaymentMethod INPaymentRecord INPriceRange INRecurrenceRule INRelevanceProvider INRentalCar INRentalCarReservation INReservation INReservationAction INRestaurant INRestaurantGuest INRestaurantGuestDisplayPreferences INRestaurantOffer INRestaurantReservation INRestaurantReservationBooking INRestaurantReservationUserBooking INRideCompletionStatus INRideDriver INRideFareLineItem INRideOption INRidePartySizeOption INRideStatus INRideVehicle INSeat INSendMessageIntentDonationMetadata INSpatialEventTrigger INSticker INTask INTaskList INTemporalEventTrigger INTermsAndConditions INTextNoteContent INTicketedEvent INTicketedEventReservation INTrainReservation INTrainTrip INUserContext".split(separator: " ").map(String.init)
@@ -174,8 +175,7 @@ extension Registry {
         // copy and secure-coding round trip
         c.append(check("Intents", "p27-intent-responses") {
             var have = 0, ok = 0, bad: [String] = [], absent: [String] = []
-            for i in p27sIntents {
-                let n = i + "Response"
+            for n in p27sIntentResponses {
                 guard let cls = NSClassFromString(n), cls is INIntentResponse.Type else { absent.append(n); continue }
                 have += 1
                 guard let r = p27sInitCode(cls, 1) as? INIntentResponse, type(of: r) == cls,
@@ -330,6 +330,14 @@ func p27sHK(_ body: () async throws -> String) async -> String {
 /// a typed async query run against the store: the count of what it returned or its error
 func p27sRun<Q: HKAsyncQuery>(_ q: Q, _ st: HKHealthStore, _ count: @escaping (Q.Output) -> Int) async -> String {
     await p27sHK { "\(count(try await q.result(for: st)))" }
+}
+extension HKSampleQuery {
+    /// samples matching any of `descs` (the multi-descriptor HKSampleQuery), counted
+    static func p27sCount(_ st: HKHealthStore, _ descs: [HKQueryDescriptor]) async throws -> Int {
+        try await withCheckedThrowingContinuation { k in
+            st.execute(HKSampleQuery(queryDescriptors: descs, limit: 1) { _, r, e in if let e { k.resume(throwing: e) } else { k.resume(returning: r?.count ?? 0) } })
+        }
+    }
 }
 /// HealthKit's result-only classes (no public initializer): built from an empty archive as the table checks do
 let p27sHKCoded = "HKElectrocardiogram HKHeartbeatSeriesSample HKWorkoutRoute HKDeletedObject HKCDADocumentSample HKClinicalRecord HKFHIRResource HKVerifiableClinicalRecord HKVerifiableClinicalRecordSubject HKMedicationConcept HKHealthConceptIdentifier HKUserAnnotatedMedication HKMedicationDoseEvent HKScoredAssessment HKWorkoutEffortRelationship HKAttachment HKSourceRevision HKQueryAnchor HKBiologicalSexObject HKBloodTypeObject HKFitzpatrickSkinTypeObject HKWheelchairUseObject HKActivityMoveModeObject HKElectrocardiogramVoltageMeasurement HKStatistics HKStatisticsCollection HKLiveWorkoutZoneUpdate HKObject HKSample HKSeriesSample".split(separator: " ").map(String.init)
@@ -508,6 +516,51 @@ extension Registry {
             try expect(answers.count == all.count + 1, "\(answers.count)/\(all.count + 1) queries answered: \(summary)")
             return summary
         })
+        // iOS 27 workout zones, attachments (to an unsaved sample: Apple's answer pinned), query descriptors, predicates
+        c.append(check("HealthKit", "p27-zones-attachments-descriptors", timeout: 60) {
+            let hr = HKQuantityType(.heartRate), bpm = HKUnit.count().unitDivided(by: .minute())
+            var zones = "n/a"
+            if #available(iOS 27.0, watchOS 27.0, visionOS 27.0, *) {
+                let cfg = try HKWorkoutZoneConfiguration(quantityType: hr, zoneBoundaries: [100, 120, 140, 160].map { HKQuantity(unit: bpm, doubleValue: $0) })
+                let zs: [HKWorkoutZone] = cfg.zones
+                let first = zs.first
+                try expect(cfg.quantityType == hr && cfg.source == .app && zs.count >= 3 && first?.index == 0, "zones \(zs.count) source \(cfg.source)")
+                let dur: HKWorkoutZoneDuration.Type = HKWorkoutZoneDuration.self, grp: HKWorkoutZoneGroup.Type = HKWorkoutZoneGroup.self
+                zones = "\(zs.count) zones, max of first \(first?.maximum?.doubleValue(for: bpm) ?? -1); \(dur) \(grp)"
+            }
+            let st = HKHealthStore()
+            let attStore = HKAttachmentStore(healthStore: st)
+            let sample = HKQuantitySample(type: hr, quantity: HKQuantity(unit: bpm, doubleValue: 70), start: .now, end: .now)
+            let atts = await p27sHK { let a: [HKAttachment] = try await attStore.attachments(for: sample); return "\(a.count)" }
+            let readerType = "\(HKAttachmentDataReader.self) \(BufferedAsyncByteIterator.self)"
+            // descriptors and predicates
+            let qd = HKQueryDescriptor(sampleType: hr, predicate: HKQuery.predicateForSamples(withStart: .now.addingTimeInterval(-60), end: .now))
+            let sp: HKSamplePredicate<HKQuantitySample> = .quantitySample(type: hr)
+            let sleepPred = HKCategoryValueSleepAnalysis.predicateForSamples(equalTo: [.asleepREM, .asleepDeep])
+            let multi = await p27sHK { "\(try await HKSampleQuery.p27sCount(st, [qd]))" }
+            let anyAsync: [Any] = [HKSampleQueryDescriptor(predicates: [sp], sortDescriptors: [])]
+            let seqTypes = "\((any HKAsyncSequenceQuery).self)"
+            #if os(iOS)
+            let clinical: HKClinicalType? = HKObjectType.clinicalType(forIdentifier: .allergyRecord)
+            let vcr = await p27sHK { "\(try await HKVerifiableClinicalRecordQueryDescriptor(recordTypes: [.immunization], sourceTypes: [.smartHealthCard], predicate: nil).result(for: st).count)" }
+            let cda = "\(clinical?.identifier ?? "nil") verifiable \(vcr) \(p27sIsSub(HKCDADocumentSample.self, HKDocumentSample.self)) \(HKCDADocument.self)"
+            #else
+            let cda = "n/a"
+            #endif
+            // the block queries of medications and effort relationships, executed and stopped
+            let medBox = P27sBox<String>(), effBox = P27sBox<String>()
+            let mq = HKUserAnnotatedMedicationQuery(predicate: nil, limit: 1) { _, _, done, e in if done || e != nil { medBox.l.withLock { if medBox.v == nil { medBox.v = e.map { "HK \(($0 as NSError).code)" } ?? "done" } } } }
+            let eq = HKWorkoutEffortRelationshipQuery(predicate: nil, anchor: nil, options: .default) { _, _, _, e in effBox.l.withLock { if effBox.v == nil { effBox.v = e.map { "HK \(($0 as NSError).code)" } ?? "ok" } } }
+            st.execute(mq); st.execute(eq)
+            let end = Date().addingTimeInterval(10)
+            while Date() < end, medBox.l.withLock({ medBox.v }) == nil || effBox.l.withLock({ effBox.v }) == nil { try await Task.sleep(for: .milliseconds(50)) }
+            st.stop(mq); st.stop(eq)
+            // queries that read an existing ECG / heartbeat series / route (none saved here): their classes and descriptors
+            let objQueries: [AnyClass] = [HKElectrocardiogramQuery.self, HKHeartbeatSeriesQuery.self, HKWorkoutRouteQuery.self, HKCumulativeQuantitySeriesSample.self]
+            let descTypes = "\(HKElectrocardiogramQueryDescriptor.self) \(HKHeartbeatSeriesQueryDescriptor.self) \(HKWorkoutRouteQueryDescriptor.self)"
+            try expect(objQueries.allSatisfy { p27sIsSub($0, NSObject.self) } && !sleepPred.predicateFormat.isEmpty && anyAsync.count == 1 && !atts.hasPrefix("ok 1"), "attachments \(atts)")
+            return "\(zones); attachments \(atts); multi-descriptor sample query \(multi); medications \(medBox.l.withLock { medBox.v } ?? "no answer"), effort \(effBox.l.withLock { effBox.v } ?? "no answer"); \(cda); \(readerType); \(seqTypes); \(descTypes)"
+        })
         // the result-only classes: built from an empty archive (every property unset), secure-coding round trip
         c.append(check("HealthKit", "p27-result-classes") {
             var have = 0, ok = 0, nilInit: [String] = [], bad: [String] = [], absent: [String] = []
@@ -589,6 +642,49 @@ extension Registry {
             let recent: [RecentlyPlayedMusicItem] = [.album(album), .playlist(playlist), .station(station)]
             try expect(recent.map(\.id.rawValue) == ["100", "pl.300", "ra.400"], "recently played items")
             return "10 item types decoded; JSON round trip not equal: \(notEqual); variants \(variants.map { "\($0)" }); \(conf.count) conformances"
+        })
+        // the filter / sort key paths each item type is requested by, the typed properties, the library and system
+        // player (account calls: Apple's simulator's answers pinned by ref-mac.sh)
+        c.append(check("MusicKit", "p27-filters-properties-library", timeout: 60) {
+            let fAlbum: KeyPath<AlbumFilter, String?> = \.upc, fSong: KeyPath<SongFilter, String?> = \.isrc, fVideo: KeyPath<MusicVideoFilter, String?> = \.isrc
+            let ids: [Any] = [\ArtistFilter.id, \CuratorFilter.id, \GenreFilter.id, \PlaylistFilter.id, \RadioShowFilter.id, \RecordLabelFilter.id, \StationFilter.id]
+            var req = MusicCatalogResourceRequest<Album>(matching: fAlbum, equalTo: "00602")
+            req.options = [MusicCatalogResourceRequestOption.findEquivalents]
+            let rel: MusicRelationshipProperty<Album, Track> = PartialMusicProperty<Album>.tracks
+            let ext: MusicExtendedAttributeProperty<Album, [AudioVariant]> = PartialMusicProperty<Album>.audioVariants
+            req.properties = [rel, ext]
+            _ = MusicCatalogResourceRequest<Song>(matching: fSong, equalTo: "x"); _ = MusicCatalogResourceRequest<MusicVideo>(matching: fVideo, equalTo: "x")
+            let attr: [PartialMusicProperty<Album>] = [rel, ext]
+            let sources: [MusicPropertySource] = MusicPropertySource.allCases
+            try expect(ids.count == 7 && req.options == [.findEquivalents] && attr.count == 2 && sources.contains(.catalog) && sources.contains(.library), "requests")
+            var r: [String: String] = [:]
+            #if os(iOS) || os(visionOS)
+            let libKeys: [Any] = [\LibraryAlbumFilter.title, \LibraryAlbumSortProperties.trackCount, \LibraryArtistFilter.name, \LibraryArtistSortProperties.albumCount,
+                                  \LibraryGenreFilter.name, \LibraryGenreSortProperties.name, \LibraryMusicVideoFilter.title, \LibraryMusicVideoSortProperties.playCount,
+                                  \LibraryPlaylistFilter.name, \LibraryPlaylistSortProperties.lastPlayedDate, \LibraryPlaylistEntryFilter.id, \LibrarySongFilter.composerName,
+                                  \LibrarySongSortProperties.discNumber, \LibraryTrackFilter.albumTitle, \LibraryTrackSortProperties.trackNumber]
+            var ls = MusicLibraryRequest<Song>(); ls.filter(matching: \LibrarySongFilter.id, memberOf: [MusicItemID("1"), MusicItemID("2")])
+            var sec = MusicLibrarySectionedRequest<TitledSection, Song>(); sec.limit = 1
+            _ = (ls, sec)
+            try expect(libKeys.count == 15, "library keys")
+            let conf: [Bool] = [Album.self is any MusicLibraryAddable.Type, Song.self is any MusicPlaylistAddable.Type, Album.self is any MusicLibraryRequestable.Type,
+                                Song.self is any MusicLibrarySearchable.Type, Artist.self is any MusicLibrarySectionRequestable.Type, Album.self is any MusicPropertyContainer.Type,
+                                String.self is any MusicLibraryRequestFilterValueEquatable.Type, MusicItemID.self is any MusicLibraryRequestFilterValueMembershipComparable.Type]
+            try expect(conf.allSatisfy { $0 }, "conformances \(conf)")
+            let album = try JSONDecoder().decode(Album.self, from: Data(#"{"id":"100","type":"albums","attributes":{"name":"P27"}}"#.utf8))
+            r["with tracks"] = await p27sAnswer(15) { let a = try await album.with([.tracks]); return "\(a.tracks?.count ?? -1)" }
+            r["library add"] = await p27sAnswer(15) { try await MusicLibrary.shared.add(album); return "added" }
+            r["library songs"] = await p27sAnswer(15) { let x: MusicLibraryResponse<Song> = try await MusicLibraryRequest<Song>().response(); return "\(x.items.count)" }
+            #endif
+            r["catalog search"] = await p27sAnswer(15) { let x: MusicCatalogSearchResponse = try await MusicCatalogSearchRequest(term: "p27", types: [Song.self]).response(); return "\(x.songs.count)" }
+            r["developer token provider"] = await p27sAnswer(15) { let p: any MusicDeveloperTokenProvider = DefaultMusicTokenProvider(); return "\(try await p.developerToken(options: []).count)" }
+            #if os(iOS)
+            let sys = SystemMusicPlayer.shared
+            r["system player"] = "\(sys.state.playbackStatus) current entry \(sys.queue.currentEntry == nil ? "none" : "some")"
+            #endif
+            let summary = r.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "; ")
+            try expect(!summary.contains("no answer"), summary)
+            return summary
         })
         // requests: every request type built with its filters / sort / properties; each asked once (the simulator has no
         // Apple Music account: the answers are pinned to Apple's simulator)
@@ -1177,17 +1273,22 @@ extension Registry {
         c.append(check("CoreMotion", "p27-managers", timeout: 60) {
             var r: [String: String] = [:]
             let mm = CMMotionManager()
+            NSLog("p27s motion motion")
             r["motion"] = "acc \(mm.isAccelerometerAvailable) gyro \(mm.isGyroAvailable) mag \(mm.isMagnetometerAvailable) dm \(mm.isDeviceMotionAvailable)"
             mm.deviceMotionUpdateInterval = 0.05
             mm.startDeviceMotionUpdates()
             try await Task.sleep(for: .milliseconds(300))
             let dm: CMDeviceMotion? = mm.deviceMotion, acc: CMAccelerometerData? = mm.accelerometerData, gyro: CMGyroData? = mm.gyroData, mag: CMMagnetometerData? = mm.magnetometerData
             let att: CMAttitude? = dm?.attitude
+            NSLog("p27s motion motion data")
             r["motion data"] = "dm \(dm != nil) att \(att != nil) acc \(acc != nil) gyro \(gyro != nil) mag \(mag != nil)"
             mm.stopDeviceMotionUpdates()
+            NSLog("p27s motion altimeter")
             r["altimeter"] = "relative \(CMAltimeter.isRelativeAltitudeAvailable()) absolute \(CMAltimeter.isAbsoluteAltitudeAvailable())"
+            NSLog("p27s motion pedometer")
             r["pedometer"] = "steps \(CMPedometer.isStepCountingAvailable()) distance \(CMPedometer.isDistanceAvailable()) floors \(CMPedometer.isFloorCountingAvailable()) pace \(CMPedometer.isPaceAvailable()) events \(CMPedometer.isPedometerEventTrackingAvailable())"
             let ped = CMPedometer()
+            NSLog("p27s motion pedometer query")
             r["pedometer query"] = await p27sAnswer(10) {
                 try await withCheckedThrowingContinuation { (k: CheckedContinuation<String, Error>) in
                     ped.queryPedometerData(from: Date().addingTimeInterval(-3600), to: Date()) { d, e in
@@ -1195,8 +1296,10 @@ extension Registry {
                     }
                 }
             }
+            NSLog("p27s motion activity")
             r["activity"] = "\(CMMotionActivityManager.isActivityAvailable())"
             let am = CMMotionActivityManager()
+            NSLog("p27s motion activity query")
             r["activity query"] = await p27sAnswer(10) {
                 try await withCheckedThrowingContinuation { (k: CheckedContinuation<String, Error>) in
                     am.queryActivityStarting(from: Date().addingTimeInterval(-3600), to: Date(), to: .main) { a, e in
@@ -1205,24 +1308,33 @@ extension Registry {
                 }
             }
             #if !os(tvOS) && !os(visionOS)
+            NSLog("p27s motion recorder")
             r["recorder"] = "\(CMSensorRecorder.isAccelerometerRecordingAvailable()) authorized \(CMSensorRecorder.isAuthorizedForRecording())"
             let list: CMSensorDataList? = CMSensorRecorder().accelerometerData(from: Date().addingTimeInterval(-60), to: Date())
+            NSLog("p27s motion recorder data")
             r["recorder data"] = "\(list != nil)"
             #endif
             #if os(iOS)
+            NSLog("p27s motion step counter")
             r["step counter"] = "\(CMStepCounter.isStepCountingAvailable())"
             #endif
             #if os(iOS) || os(watchOS)
+            NSLog("p27s motion batched")
             r["batched"] = "acc \(CMBatchedSensorManager.isAccelerometerSupported) dm \(CMBatchedSensorManager.isDeviceMotionSupported)"
             #endif
             #if os(iOS)
+            NSLog("p27s motion headphone activity")
             r["headphone activity"] = "\(CMHeadphoneActivityManager().isActivityAvailable)"
             #endif
             #if os(watchOS)
+            NSLog("p27s motion fall detection")
             r["fall detection"] = "\(CMFallDetectionManager.isAvailable)"
+            NSLog("p27s motion movement disorder")
             r["movement disorder"] = "\(CMMovementDisorderManager.isAvailable())"
+            NSLog("p27s motion water")
             r["water"] = "\(CMWaterSubmersionManager.waterSubmersionAvailable)"
             #endif
+            NSLog("p27s motion authorization")
             r["authorization"] = "\(CMMotionActivityManager.authorizationStatus().rawValue)"
             let summary = r.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "; ")
             try expect(!summary.contains("no answer"), summary)
