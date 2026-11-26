@@ -480,6 +480,5 @@ impl App {
             });
         }
         ui.add_space(S4);
-        ui.label(muted(format!("omarchy-apple-dev {}", st.fork_version))).on_hover_text(st.fork.display().to_string());
     }
 }
