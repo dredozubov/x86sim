@@ -16,7 +16,8 @@ Toolchain (omarchy-apple-dev: Swift, xtool, the iOS SDK; nothing needs root)
                        done on the first x86sim debug), xcode [VERSION] [--dir D] [--delete-xip] (download Xcode.xip
                        with the Apple Account sign-in, then the SDK from it: x86sim account download-xcode),
                        cocoapods (a pinned user-local Ruby and CocoaPods for React
-                       Native / Expo apps and Flutter plugins with a Podfile, about 70 MB).
+                       Native / Expo apps and Flutter plugins with a Podfile, about 70 MB), swiftbuild (Apple's Swift
+                       Build for Xcode projects and the fork's xcodebuild, about 220 MB).
                        --bg runs it in the background (the launcher's Develop page and MCP dev_status show it)
   job [--follow|--cancel]
                        the background setup job: its step and log
@@ -28,7 +29,8 @@ Projects (DIR defaults to the current directory)
   projects [--json]    recent projects
   build [DIR] [--phone P | --platform ios|tvos|watchos|xros] [--release]
                        simulator build (ship.sh --simulator; for a React Native / Expo app: npm install, expo
-                       prebuild, pod install and the CocoaPods workspace, built on Linux); the .app's path is the
+                       prebuild, pod install and the CocoaPods workspace, built on Linux; for an .xcodeproj /
+                       .xcworkspace: Swift Build, scheme $XCODE_SCHEME or the project's name); the .app's path is the
                        last line
   run [DIR] [--phone P] [--start] [--release] [--no-build] [-- APP ARGS]
                        build for the phone's platform, install and launch it (--start: boot the phone if off)
@@ -209,12 +211,13 @@ fn run(cmd: &str, mut args: Vec<String>) -> anyhow::Result<ExitCode> {
                 }
                 "lldb" => dev::setup_lldb(&mut say)?,
                 "cocoapods" => x86sim_core::devpods::install(&mut say)?,
+                "swiftbuild" => x86sim_core::devxcode::install(&mut say)?,
                 "verify" => {
                     let app = dev::verify(&mut say)?;
                     println!("== verified: {}", app.display());
                     0
                 }
-                k => anyhow::bail!("unknown step {k}: swift, toolchain, sdk, repair, verify, lldb, cocoapods, xcode or all"),
+                k => anyhow::bail!("unknown step {k}: swift, toolchain, sdk, repair, verify, lldb, cocoapods, swiftbuild, xcode or all"),
             };
             ExitCode::from(rc.clamp(0, 255) as u8)
         }
