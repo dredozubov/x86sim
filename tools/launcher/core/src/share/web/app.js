@@ -151,7 +151,7 @@ async function boot() {
   } catch (e) {
     main.replaceChildren(h("div", { class: "msg" },
       h("h2", { text: e.status === 401 ? "This link needs a valid token" : "Can't reach the server" }),
-      h("p", { text: e.status === 401 ? "Open the full link you were given (it ends in ?t=…). It may have expired or been revoked." : String(e.message) })));
+      h("p", { text: e.status === 401 ? "Expired or revoked" : String(e.message) })));
     return;
   }
   const role = $("#role");
@@ -302,8 +302,7 @@ function dashboard() {
     const on = phones.filter((p) => p.state === "running");
     total.textContent = phones.length ? `${phones.length} · ${on.length} running` + (on.length ? ` · ${fmtMem(on.reduce((a, p) => a + (p.memory_mb || 0), 0))}` : "") : "";
     empty.hidden = shown.length > 0;
-    empty.textContent = !phones.length ? "No devices yet. Make one in the x86Sim launcher or with `x86sim device create`."
-      : "No device matches the search or the device type.";
+    empty.textContent = !phones.length ? "No devices" : "Nothing matches";
   }
 
   async function tick() {
@@ -315,7 +314,7 @@ function dashboard() {
   }
   async function act(e, id, what) {
     e.target.disabled = true;
-    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting… the first boot can take a few minutes" : "Stopping…"); }
+    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting…" : "Stopping…"); }
     catch (err) { toast(err.message); e.target.disabled = false; }
     tick();
   }
@@ -617,7 +616,7 @@ function phoneView(id) {
       buildSide();
     } else if (m.t === "state") {
       lastState = m;
-      if (!m.running) { overlay.hidden = false; overlay.textContent = control ? "The device is off. Start it with Start above." : "The device is off."; }
+      if (!m.running) { overlay.hidden = false; overlay.textContent = "Off"; }
       updateSide();
     } else if (m.t === "expired") {
       alive = false;
@@ -691,7 +690,7 @@ function phoneView(id) {
             tool(I.shake, "Shake", () => send({ t: "shake" })));
           // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
           if (info.ipad) {
-            const ptr = tool(I.pointer, "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll). Again: back to touches", () => {
+            const ptr = tool(I.pointer, "Pointer capture: the mouse drives the iPad's pointer", () => {
               pointerMode = !pointerMode;
               if (!pointerMode) send({ t: "pointer", a: "remove" });
               for (const b of document.querySelectorAll(".tool.ptr")) b.classList.toggle("on", pointerMode);
@@ -707,10 +706,10 @@ function phoneView(id) {
       const rb = tool(I.record, "Record the screen to a video file", toggleRec);
       soundBtns.push(sb); recBtns.push(rb);
       t.push(gap(), sb, link(I.camera, "Screenshot (PNG)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`)),
-        link(I.marks, "Screenshot with every element outlined and its @ref beside it (the refs agents use)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)),
+        link(I.marks, "Screenshot with every element's @ref", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)),
         rb);
       // share this device: links are the server owner's to make (as the header's Share)
-      if (ME.owner) t.push(tool(I.share, "Share this device: a link to watch or drive it from another browser", () => openShare(id)));
+      if (ME.owner) t.push(tool(I.share, "Share this device", () => openShare(id)));
       return t;
     };
     tools.replaceChildren(...makeTools());
@@ -756,12 +755,12 @@ function phoneView(id) {
       // x86sim profile: 5 s CPU profile of the app in front, downloaded as speedscope JSON (control links only)
       if (control && !pan.perf.querySelector(".profile")) pan.perf.querySelector(".fbody").prepend(h("div", { class: "btns profile" },
         h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/profile.json?secs=5`), download: "",
-          title: "CPU profile of the app in front for 5 seconds (speedscope JSON: open it at speedscope.app)", text: "Profile 5 s" })));
+          title: "5 s CPU profile of the app in front (speedscope JSON)", text: "Profile 5 s" })));
       parts.push(pan.perf);
     }
     if (pan) parts.push(pan.simulate);
     const volIn = h("input", { type: "range", min: 0, max: 1, step: 0.05, value: volume, title: "Volume (this browser only)", class: "vol", oninput: (e) => setVolume(Number(e.target.value)) });
-    micBtn = control ? btn("", canMic ? "Your microphone into the device (asks the browser for it)" : "The microphone needs HTTPS (or localhost) and a browser with AudioWorklet", () => (mic ? micStop() : micStart())) : null;
+    micBtn = control ? btn("", canMic ? "Your microphone into the device" : "Needs HTTPS or localhost", () => (mic ? micStop() : micStart())) : null;
     if (micBtn && !canMic) micBtn.disabled = true;
     const qSel = h("select", { onchange: (e) => { quality = Number(e.target.value); save(); connect(); } }, ["Low", "Medium", "High"].map((l, i) => h("option", { value: i, selected: i === quality, text: l })));
     const cSel = h("select", { onchange: (e) => { codec = e.target.value; save(); connect(); } },
@@ -787,13 +786,13 @@ function phoneView(id) {
         if (!r.ok) throw new Error(j.error || r.status);
         const pages = j.apps.flatMap((a) => a.pages.map((pg) => ({ ...pg, app: a.name || a.bundle })));
         if (j.ui_error) list.append(h("div", { class: "muted", text: j.ui_error }));
-        if (!pages.length) { list.replaceChildren(h("div", { class: "muted", text: "No inspectable pages: open one in Safari, or an app whose WKWebView sets isInspectable." })); return; }
+        if (!pages.length) { list.replaceChildren(h("div", { class: "muted", text: "No inspectable pages", title: "Open one in Safari, or an app whose WKWebView sets isInspectable" })); return; }
         list.replaceChildren(...pages.map((pg) => h("div", { class: "webpage" },
           j.ui_error ? null : h("a", { class: "btn small", href: pg.href, target: "_blank", rel: "noopener", text: "Inspect" }),
           h("span", { text: ` ${pg.title || "(untitled)"} · ${pg.app}`, title: pg.url }))));
       } catch (e) { list.replaceChildren(h("div", { class: "muted", text: "Web Inspector: " + e.message })); }
     };
-    return h("div", {}, h("div", { class: "btns" }, btn("Find web pages", "Safari's pages and apps' inspectable web views, to open in WebKit's Web Inspector", find)), list);
+    return h("div", {}, h("div", { class: "btns" }, btn("Find web pages", "Safari pages and inspectable web views, in Web Inspector", find)), list);
   }
   function keyHelp(p) {
     if (p === "xros") return [h("h4", { text: "Keys" }), ...[["Mouse", "the system pointer: hover, click, drag"], ["Wheel", "scroll where it points"], ["Keys", "the keyboard (click the screen first)"], ["Ctrl+V", "paste"]].flatMap(([a, b]) => [h("b", { text: a }), h("span", { text: b })])];
@@ -822,7 +821,7 @@ function phoneView(id) {
   }
   async function power(e, what) {
     e.target.disabled = true;
-    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting… the first boot can take a few minutes" : "Stopping…"); }
+    try { await api(`/api/phones/${encodeURIComponent(id)}/${what}`, {}); toast(what === "start" ? "Starting…" : "Stopping…"); }
     catch (err) { toast(err.message); e.target.disabled = false; }
     poll();
   }
@@ -1165,8 +1164,8 @@ async function refreshTunnels(quiet) {
   const a = u.available;
   const rows = [
     ["tailscale", "Tailscale", "your tailnet only", a.tailscale_ready, a.tailscale ? a.tailscale_detail : "Not installed"],
-    ["funnel", "Funnel", "public", a.tailscale_ready, "A public address, through Tailscale"],
-    ["cloudflared", "Cloudflare", "public", a.cloudflared, a.cloudflared ? "A trycloudflare.com quick tunnel" : "cloudflared is not installed"],
+    ["funnel", "Funnel", "public", a.tailscale_ready, "Through Tailscale"],
+    ["cloudflared", "Cloudflare", "public", a.cloudflared, a.cloudflared ? "trycloudflare.com" : "Not installed"],
   ];
   box.replaceChildren(...rows.map(([kind, label, scope, ok, detail]) => {
     const t = u.tunnels.find((x) => x.kind === kind);
@@ -1205,7 +1204,7 @@ async function makeLink() {
             navigator.share ? h("button", { type: "button", class: "btn small ghost", text: "Send…", onclick: () => navigator.share({ title: "x86Sim: " + name, url: x.url }).catch(() => {}) }) : null,
             h("button", { type: "button", class: "btn small", text: "Copy", onclick: () => copy(x.url) })),
           h("code", { text: x.url }))),
-        r.urls.every((x) => x.kind === "local") ? h("p", { class: "hint", text: "Only this machine can open it: turn on a tunnel under Remote access for others." }) : null));
+        r.urls.every((x) => x.kind === "local") ? h("p", { class: "hint", text: "This machine only", title: "Turn on a tunnel under Remote access for others" }) : null));
     out.hidden = false;
     out.scrollIntoView({ block: "nearest" });
   } catch (e) {

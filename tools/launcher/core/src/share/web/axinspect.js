@@ -14,7 +14,7 @@ window.AXI = (() => {
     const props = h("div", { class: "axprops" });
     const list = h("div", { class: "axaudit" });
     const status = h("div", { class: "axstatus" });
-    const inspectBtn = h("button", { class: "btn small", type: "button", text: "Inspect", title: "Point at an element on the screen to see its accessibility properties (touches are off while inspecting)" });
+    const inspectBtn = h("button", { class: "btn small", type: "button", text: "Inspect", title: "Point at an element; touches pause meanwhile" });
     const allBox = h("input", { type: "checkbox" });
     const dynBox = h("input", { type: "checkbox" });
     const auditBtn = h("button", { class: "btn small", type: "button", text: "Run audit", title: "Accessibility audit of the app in front" });
@@ -23,7 +23,7 @@ window.AXI = (() => {
       h("div", { class: "btns" }, inspectBtn, auditBtn),
       h("div", { class: "axopts" },
         h("label", { title: "Draw every element's frame" }, allBox, " all frames"),
-        control ? h("label", { title: "Also re-check at the largest accessibility text size (the device's text size changes for a few seconds, then goes back)" }, dynBox, " Dynamic Type") : null),
+        control ? h("label", { title: "Also checks the largest text size; the device's changes for a few seconds" }, dynBox, " Dynamic Type") : null),
       status, props, list);
 
     const isXr = () => tree?.platform === "xros";
@@ -81,7 +81,7 @@ window.AXI = (() => {
         .catch((err) => { status.textContent = err.message; });
     }
     function showProps() {
-      if (!sel) { props.replaceChildren(on ? h("p", { class: "hint", text: isXr() ? "Vision Pro: windows float in the room, frames are each window's own points; pick an element from the list." : "Point at an element on the screen." }) : ""); return; }
+      if (!sel) { props.replaceChildren(on ? h("p", { class: "hint", text: "Nothing selected", title: isXr() ? "Pick one from the list; frames are in window points" : "Point at one on the screen" }) : ""); return; }
       const rows = sel.properties.map(([k, v]) => h("tr", {}, h("th", { text: k }), h("td", { text: v })));
       const acts = [];
       if (control) {
@@ -130,7 +130,7 @@ window.AXI = (() => {
     allBox.onchange = () => { showAll = allBox.checked; if (showAll && !on) setOn(true); draw(); };
     auditBtn.onclick = async () => {
       auditBtn.disabled = true;
-      list.replaceChildren(h("p", { class: "hint", text: dynBox.checked ? "Auditing (with the largest text size: about 10 s)…" : "Auditing…" }));
+      list.replaceChildren(h("p", { class: "hint", text: dynBox.checked ? "Auditing · about 10 s…" : "Auditing…" }));
       try {
         audit = await api(base + "audit" + (dynBox.checked ? "?dynamic_type=1" : ""));
         if (!tree) tree = await api(base + "tree");
@@ -153,7 +153,7 @@ window.AXI = (() => {
         h("div", {}, h("span", { class: "sev", text: SEV[f.severity] || f.severity }), " ", h("code", { text: f.rule }), f.ref ? h("code", { text: " @" + f.ref }) : null),
         h("div", { text: f.message }),
         h("div", { class: "fix", text: "Fix: " + f.fix })));
-      list.replaceChildren(head, ...(rows.length ? rows : [h("p", { class: "hint", text: "No issues found." })]), ...a.notes.map((n) => h("p", { class: "hint", text: n })));
+      list.replaceChildren(head, ...(rows.length ? rows : [h("p", { class: "hint", text: "No issues" })]), ...a.notes.map((n) => h("p", { class: "hint", text: n })));
     }
     showProps();
     return {

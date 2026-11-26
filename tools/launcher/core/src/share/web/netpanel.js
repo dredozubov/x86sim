@@ -30,15 +30,14 @@ window.NETPANEL = (() => {
     const sum = h("span", { class: "sum" });
     const caps = h("div", { class: "netcaps" });
     const capIn = h("input", { type: "text", placeholder: "Bundle id to capture", "aria-label": "Bundle id to capture" });
-    const capBtn = h("button", { type: "button", class: "btn small", text: "Capture + relaunch", title: "Record this app's requests from a fresh launch" });
-    const filterIn = h("input", { type: "search", placeholder: "Filter (words, status:4xx, method:POST, error)", "aria-label": "Filter requests" });
+    const capBtn = h("button", { type: "button", class: "btn small", text: "Capture + relaunch", title: "Its requests from a fresh launch, HTTPS in the clear (URLSession; other stacks as connections)" });
+    const filterIn = h("input", { type: "search", placeholder: "Filter", title: "Words, status:4xx, method:POST, error", "aria-label": "Filter requests" });
     const appSel = h("select", { "aria-label": "Which app" }, h("option", { value: "", text: "All apps" }));
     const clearBtn = h("button", { type: "button", class: "btn small ghost", text: "Clear", title: "Empty the recorded requests" });
     const list = h("div", { class: "netlist", role: "list" });
     const detail = h("div", { class: "netdetail", hidden: true });
     const mocks = h("div", { class: "muted" });
     const body = h("div", { class: "fbody" },
-      h("div", { class: "muted", text: "Requests of apps with capture on, HTTPS in the clear (URLSession; other stacks as connections)." }),
       caps, h("div", { class: "netbar" }, capIn, capBtn),
       h("div", { class: "netbar" }, filterIn, appSel, clearBtn), list, detail, mocks);
     const d = h("details", { class: "fold" }, h("summary", {}, h("span", { class: "ft", text: "Network" }), sum), body);
@@ -56,7 +55,7 @@ window.NETPANEL = (() => {
       if (!bundle) return toast("Give a bundle id");
       try {
         const r = await api(base + "capture", { app: bundle, on, relaunch });
-        toast(on ? (r.hooked === false ? "Capture on, but the hook did not start" : `Capturing ${bundle}`) : `Capture off for ${bundle}`);
+        toast(on ? (r.hooked === false ? "Capture on · Hook not started" : `Capturing ${bundle}`) : `Capture off for ${bundle}`);
         poll();
       } catch (e) { toast(e.message); }
     }

@@ -49,7 +49,7 @@ window.PANELS = (() => {
       const g = on && d.gpu;
       gpuLine.hidden = !g;
       if (g) {
-        gpuLine.textContent = `+ ${fmtMem(g.memory_mb)} for the GPU helper` + (g.users > 1 ? `, shared by ${g.users} devices` : "");
+        gpuLine.textContent = `+ ${fmtMem(g.memory_mb)} GPU helper` + (g.users > 1 ? ` · ${g.users} devices` : "");
         gpuLine.title = "mtlvk runs every Metal call on Vulkan. It is not in this device's memory.";
       }
       facts.replaceChildren(...[d.screen ? kv("Screen", `${d.screen[0]} × ${d.screen[1]} pixels`) : null, on && d.processes != null ? kv("Processes", String(d.processes)) : null].filter(Boolean));
@@ -61,7 +61,7 @@ window.PANELS = (() => {
     function drawPerf() {
       if (!perf.open) return;
       const d = detail || {};
-      if (!d.phase || d.phase === "Off") { perfBody.replaceChildren(h("div", { class: "muted", text: "Start the device to see what it uses." })); return; }
+      if (!d.phase || d.phase === "Off") { perfBody.replaceChildren(h("div", { class: "muted", text: "Off" })); return; }
       const f = o.fps();
       const max = Math.max(1, ...(d.procs || []).map((p) => p.memory_mb));
       const rows = (d.procs || []).map((p) => h("div", { class: "pr", title: `${p.name} · pid ${p.pid}` },
@@ -70,7 +70,7 @@ window.PANELS = (() => {
         h("span", { class: "pm", text: Math.round(p.memory_mb) + " MB" }),
         h("span", { class: "pc" + (p.cpu_pct > 50 ? " hot" : ""), text: Math.round(p.cpu_pct) + "%" })));
       const more = d.processes > rows.length ? h("div", { class: "muted pmore", text: `and ${d.processes - rows.length} smaller ones` }) : null;
-      const g = d.gpu ? h("div", { class: "pr gpu", title: `Runs every Metal call on Vulkan for the devices that share it (pid ${d.gpu.pid}). Not part of this device's memory.` },
+      const g = d.gpu ? h("div", { class: "pr gpu", title: `Metal on Vulkan, outside this device's memory · pid ${d.gpu.pid}` },
         h("span", { class: "pn", text: "GPU helper (mtlvk)" + (d.gpu.users > 1 ? ` · shared by ${d.gpu.users}` : "") }), h("span"),
         h("span", { class: "pm", text: Math.round(d.gpu.memory_mb) + " MB" }), h("span", { class: "pc", text: Math.round(d.gpu.cpu_pct) + "%" })) : null;
       perfBody.replaceChildren(kv("Screen updates", f > 0 ? f + " fps" : "Idle"),
@@ -109,19 +109,19 @@ window.PANELS = (() => {
       const f = features;
       const saving = f.features.filter((x) => !x.enabled && x.default).reduce((a, x) => a + x.cost_mb, 0);
       featBody.replaceChildren(...[
-        h("div", { class: "muted", text: "Turn off what you don't use to save memory." }),
         seg([["full", "Full"], ["lean", "Lean"], ["minimal", "Minimal"]], f.preset, true, (v) => setFeature({ preset: v })),
         h("div", { class: "frows" }, ...f.features.map((x) => {
           // "What it is. Off: what you lose." -> what it is while on, what you lose while off
           const i = x.desc.indexOf("Off:");
           const what = i >= 0 ? x.desc.slice(0, i).trim() : x.desc, lose = i >= 0 ? x.desc.slice(i + 4).trim() : "";
-          const text = !x.enabled && lose ? "Off: " + lose : what || (lose ? "When off: " + lose : "");
-          return h("div", { class: "frow", title: x.tech || "" },
-            h("div", { class: "txt" }, h("div", { class: "t1", text: x.title }), h("div", { class: "t2", text: text })),
+          // what it is and what turning it off loses: the row's tooltip
+          const tip = [what, lose ? "Off: " + lose : "", x.tech ? "\n" + x.tech : ""].filter(Boolean).join("\n");
+          return h("div", { class: "frow", title: tip },
+            h("div", { class: "txt" }, h("div", { class: "t1", text: x.title })),
             x.cost_mb > 0 ? h("span", { class: "muted", text: x.cost_mb + " MB" }) : null,
             sw(x.enabled, true, x.title, (on) => setFeature({ id: x.id, on })));
         })),
-        saving > 0 ? h("div", { class: "state muted" }, h("span", { class: "dot running" }), `Saving about ${saving} MB`) : null,
+        saving > 0 ? h("div", { class: "state muted" }, h("span", { class: "dot running" }), `Saving ${saving} MB`) : null,
         f.needs_restart && f.running ? restartBanner() : null].filter(Boolean));
       drawFeatSummary();
     }
@@ -206,15 +206,15 @@ window.PANELS = (() => {
       const idle = !simBusy && (running || off);
       const sizeSel = SIZES.some(([v]) => v === s.content_size);
       simBody.replaceChildren(
-        h("div", { class: "muted", text: simBusy ? "Working…" : running ? "Changes apply at once." : off ? "The device is off: changes apply at its next start." : "Wait until it has started or stopped." }),
-        field("Appearance", "Light or Dark (Features > Toggle Appearance)", seg([["light", "Light"], ["dark", "Dark"]], s.appearance, idle, (v) => setSim({ appearance: v }, `${v === "dark" ? "Dark" : "Light"} appearance`))),
-        field("Text size", "Dynamic Type (Settings > Display & Brightness > Text Size)", h("div", { class: "segscroll" }, seg(SIZES, s.content_size, idle, (v) => setSim({ content_size: v }, "Text size " + SIZES.find((x) => x[0] === v)[1]))),
+        ...(running && !simBusy ? [] : [h("div", { class: "muted", text: simBusy ? "Working…" : off ? "Applies at next start" : "Starting or stopping" })]),
+        field("Appearance", "Features > Toggle Appearance", seg([["light", "Light"], ["dark", "Dark"]], s.appearance, idle, (v) => setSim({ appearance: v }, `${v === "dark" ? "Dark" : "Light"} appearance`))),
+        field("Text size", "Dynamic Type", h("div", { class: "segscroll" }, seg(SIZES, s.content_size, idle, (v) => setSim({ content_size: v }, "Text size " + SIZES.find((x) => x[0] === v)[1]))),
           !sizeSel && s.content_size.startsWith("accessibility") ? h("div", { class: "muted", text: "Now " + s.content_size }) : null),
         swrow("Increase Contrast", "Settings > Accessibility > Display & Text Size", sw(s.increase_contrast, idle, "Increase Contrast", (on) => setSim({ increase_contrast: on }, "Increase Contrast " + (on ? "on" : "off")))),
-        field("Fidelity", "Fast: a 3x iPhone drawn at 2x with Reduce Transparency and Reduce Motion on: smoother. High: the model's own scale and every effect. The scale changes at the next start.",
+        field("Fidelity", "Fast: 2x scale, Reduce Transparency and Motion on. High: the model's own scale and every effect. Scale changes at next start",
           seg([["fast", "Fast"], ["high", "High"]], s.fidelity, idle, (v) => setSim({ fidelity: v }, `Fidelity ${v} (the scale at the next start)`))),
-        swrow("Connect Hardware Keyboard", "I/O > Keyboard > Connect Hardware Keyboard. Off: the software keyboard comes up on every text field.", sw(s.hw_keyboard, idle, "Connect Hardware Keyboard", (on) => setSim({ hw_keyboard: on }, "Hardware keyboard " + (on ? "connected" : "disconnected")))),
-        h("div", { class: "btns" }, h("button", { type: "button", class: "btn small", text: "Toggle Software Keyboard", disabled: !running, title: "I/O > Keyboard > Toggle Software Keyboard (Cmd-K): while a text field is focused", onclick: () => o.send({ t: "sys", a: "soft_keyboard" }) })));
+        swrow("Connect Hardware Keyboard", "Off: the on-screen keyboard shows on every text field", sw(s.hw_keyboard, idle, "Connect Hardware Keyboard", (on) => setSim({ hw_keyboard: on }, "Hardware keyboard " + (on ? "connected" : "disconnected")))),
+        h("div", { class: "btns" }, h("button", { type: "button", class: "btn small", text: "Toggle Software Keyboard", disabled: !running, title: "Needs a focused text field", onclick: () => o.send({ t: "sys", a: "soft_keyboard" }) })));
     }
 
     pollDetail();
