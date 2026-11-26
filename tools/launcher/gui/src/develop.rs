@@ -1,38 +1,21 @@
 //! The Develop page: build apps on Linux with omarchy-apple-dev (external/omarchy-apple-dev) and run them on a device.
 //! The toolchain's pieces (Swift, xtool, the iOS SDK, device tools) with install / update / repair buttons and the
-//! background setup job's progress; recent projects with Build and Run on a chosen device; the last task's output.
+//! background setup job's progress.
 //! The logic is x86sim_core::dev (shared with `x86sim dev` and the MCP server's dev_* tools).
 use crate::global::list_row;
 use crate::theme::*;
 use crate::App;
 use eframe::egui;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use x86sim_core::dev;
 
-/// A build / run / new-project task the page started
-#[derive(Default, Clone)]
-pub struct Task {
-    pub title: String,
-    pub lines: Vec<String>,
-    pub running: bool,
-    /// Ok(summary) / Err(message) once finished
-    pub result: Option<Result<String, String>>,
-}
-
 #[derive(Default)]
 pub struct Develop {
     pub status: Arc<Mutex<Option<dev::Status>>>,
-    pub recent: Arc<Mutex<Vec<dev::Project>>>,
     checking: Arc<Mutex<bool>>,
     last_poll: Option<Instant>,
     pub xip: String,
-    pub new_name: String,
-    pub add_path: String,
-    /// the device builds run on (its folder id)
-    pub phone: String,
-    pub task: Arc<Mutex<Task>>,
     pub show_job_log: bool,
     /// Download Xcode: keep the .xip afterwards
     pub keep_xip: bool,
@@ -46,41 +29,11 @@ impl Develop {
             return;
         }
         *c = true;
-        let (st, rec, chk, ctx) = (self.status.clone(), self.recent.clone(), self.checking.clone(), ctx.clone());
+        let (st, chk, ctx) = (self.status.clone(), self.checking.clone(), ctx.clone());
         std::thread::spawn(move || {
             let s = dev::status();
-            let r = dev::recent();
             *st.lock().unwrap() = Some(s);
-            *rec.lock().unwrap() = r;
             *chk.lock().unwrap() = false;
-            ctx.request_repaint();
-        });
-    }
-
-    fn start_task(&self, ctx: &egui::Context, title: String, f: impl FnOnce(&mut dyn FnMut(&str)) -> anyhow::Result<String> + Send + 'static) {
-        let t = self.task.clone();
-        *t.lock().unwrap() = Task { title, running: true, ..Default::default() };
-        let ctx = ctx.clone();
-        let (st, rec) = (self.status.clone(), self.recent.clone());
-        std::thread::spawn(move || {
-            let t2 = t.clone();
-            let c2 = ctx.clone();
-            let mut say = move |l: &str| {
-                let mut g = t2.lock().unwrap();
-                g.lines.push(l.to_string());
-                if g.lines.len() > 2000 {
-                    g.lines.drain(..500);
-                }
-                c2.request_repaint_after(Duration::from_millis(100));
-            };
-            let r = f(&mut say).map_err(|e| format!("{e:#}"));
-            {
-                let mut g = t.lock().unwrap();
-                g.running = false;
-                g.result = Some(r);
-            }
-            *rec.lock().unwrap() = dev::recent();
-            let _ = st;
             ctx.request_repaint();
         });
     }
@@ -159,7 +112,6 @@ impl App {
             self.develop.loaded = true;
             let s = dev::load_settings();
             self.develop.xip = s.xip;
-            self.develop.phone = s.phone;
             self.develop.keep_xip = true;
         }
         // status: at once, then every 1.5 s while a setup job runs (else every 20 s)
@@ -348,137 +300,6 @@ impl App {
             }
         }
 
-        // ---- the device to run on
-        ui.add_space(S4);
-        if self.develop.phone.is_empty() || !self.insts.iter().any(|i| i.id == self.develop.phone) {
-            // the running one, else the first
-            let running = self.insts.iter().find(|i| self.phase(&i.id) != x86sim_core::instance::Phase::Off).or(self.insts.first());
-            self.develop.phone = running.map(|i| i.id.clone()).unwrap_or_default();
-        }
-        section(ui, "Run on", |_| {});
-        list_card(ui, |ui| {
-            let cur = self.insts.iter().find(|i| i.id == self.develop.phone).cloned();
-            let detail = match &cur {
-                Some(i) => format!("{} · {} · {}", i.model, i.ios, format!("{:?}", self.phase(&i.id)).to_lowercase()),
-                None => "No devices".into(),
-            };
-            list_row(ui, icon::DEVICE_MOBILE, cur.as_ref().map(|i| i.name.as_str()).unwrap_or("Device"), &detail, |ui| {
-                egui::ComboBox::from_id_salt("dev-phone").selected_text(cur.as_ref().map(|i| i.name.clone()).unwrap_or_default()).width(200.0).show_ui(ui, |ui| {
-                    for i in &self.insts {
-                        ui.selectable_value(&mut self.develop.phone, i.id.clone(), format!("{} · {}", i.name, i.ios));
-                    }
-                });
-            });
-        });
-
-        // ---- projects
-        ui.add_space(S4);
-        section(ui, "Projects", |_| {});
-        let recent = self.develop.recent.lock().unwrap().clone();
-        let task_running = self.develop.task.lock().unwrap().running;
-        let mut act: Option<(String, PathBuf)> = None;
-        list_card(ui, |ui| {
-            for (k, p) in recent.iter().enumerate() {
-                if k > 0 {
-                    hline(ui);
-                }
-                let detail = format!("{} · {} · {}", p.kind, if p.bundle_id.is_empty() { "-" } else { &p.bundle_id }, p.dir.display());
-                list_row(ui, icon::FILE_CODE, &p.name, &detail, |ui| {
-                    let can = ((st.ready_sim && p.kind == "xtool") || p.kind == "rust") && !task_running;
-                    if ui.add_enabled(can && !self.develop.phone.is_empty(), Btn::primary("Run").icon(icon::PLAY)).on_hover_text("Build, install and open on the device above; starts it if off").clicked() {
-                        act = Some(("run".into(), p.dir.clone()));
-                    }
-                    if ui.add_enabled(can, Btn::secondary("Build").icon(icon::HAMMER)).clicked() {
-                        act = Some(("build".into(), p.dir.clone()));
-                    }
-                });
-            }
-            if !recent.is_empty() {
-                hline(ui);
-            }
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.develop.new_name).hint_text("NewApp").desired_width(180.0));
-                    let ok = !self.develop.new_name.trim().is_empty() && st.pieces.iter().any(|p| p.id == "xtool" && p.state != "missing");
-                    if ui.add_enabled(ok && !task_running, Btn::secondary("New SwiftUI app").icon(icon::FOLDER_PLUS)).on_hover_text("In ~/x86sim-apps").clicked() {
-                        act = Some(("new".into(), PathBuf::from(self.develop.new_name.trim())));
-                    }
-                    ui.add_space(S4);
-                    ui.add(egui::TextEdit::singleline(&mut self.develop.add_path).hint_text("/path/to/project").desired_width(260.0));
-                    if ui.add_enabled(!self.develop.add_path.trim().is_empty(), Btn::secondary("Add folder").icon(icon::FOLDER_OPEN)).clicked() {
-                        act = Some(("add".into(), PathBuf::from(self.develop.add_path.trim())));
-                    }
-                });
-            });
-        });
-        if let Some((what, path)) = act {
-            let phone = self.develop.phone.clone();
-            match what.as_str() {
-                "add" => match dev::project(&path) {
-                    Ok(p) => {
-                        dev::remember(&p.dir, None);
-                        self.develop.add_path.clear();
-                        *self.develop.recent.lock().unwrap() = dev::recent();
-                    }
-                    Err(e) => self.say(format!("{e:#}")),
-                },
-                "new" => {
-                    let name = path.to_string_lossy().into_owned();
-                    self.develop.new_name.clear();
-                    self.develop.start_task(&ctx, format!("New app {name}"), move |say| {
-                        let parent = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("x86sim-apps");
-                        let d = dev::new_project(&name, &parent, say)?;
-                        dev::remember(&d, None);
-                        Ok(format!("{}", d.display()))
-                    });
-                }
-                "build" => {
-                    let platform = self.insts.iter().find(|i| i.id == phone).map(|i| i.platform.clone()).unwrap_or_else(|| "ios".into());
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.develop.start_task(&ctx, format!("Build {name} ({})", x86sim_core::sim::platform_name(&platform)), move |say| {
-                        let app = dev::build(&path, &dev::BuildOpts { platform, release: false }, say)?;
-                        Ok(format!("{}", app.display()))
-                    });
-                }
-                _ => {
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let pname = self.insts.iter().find(|i| i.id == phone).map(|i| i.name.clone()).unwrap_or_default();
-                    self.develop.start_task(&ctx, format!("Run {name} on {pname}"), move |say| {
-                        let inst = dev::pick_phone(Some(&phone))?;
-                        let r = dev::run(&path, &inst, &dev::RunOpts { release: false, start: true, no_build: false, args: vec![] }, say)?;
-                        Ok(format!("{} running on {} ({:.0} s)", r.bundle_id, r.phone, r.secs))
-                    });
-                }
-            }
-        }
-
-        // ---- the last task's output
-        let task = self.develop.task.lock().unwrap().clone();
-        if !task.title.is_empty() {
-            ui.add_space(S4);
-            section(ui, "Output", |_| {});
-            card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(strong(&task.title));
-                    ui.add_space(S2);
-                    match &task.result {
-                        None => busy(ui, "working…"),
-                        Some(Ok(s)) => {
-                            badge(ui, "Done", pal().good);
-                            ui.label(muted(s));
-                        }
-                        Some(Err(_)) => {
-                            badge(ui, "Failed", pal().crit);
-                        }
-                    }
-                });
-                if let Some(Err(e)) = &task.result {
-                    ui.add(egui::Label::new(egui::RichText::new(e).color(pal().crit)).wrap());
-                }
-                ui.add_space(S2);
-                log_box(ui, "dev-task-log", &task.lines, 260.0);
-            });
-        }
         ui.add_space(S4);
     }
 }
