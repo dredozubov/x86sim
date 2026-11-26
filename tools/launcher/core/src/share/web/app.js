@@ -171,6 +171,8 @@ async function boot() {
 
 // ---------- dashboard ----------
 let currentPhone = null;
+// the side a device type's corner radius is a fraction of: the upright width (a TV's and a Vision Pro's is the long side)
+const cornerSide = (platform, w, h) => platform === "tvos" || platform === "xros" ? Math.max(w, h) : Math.min(w, h);
 function dashboard() {
   currentPhone = null;
   $("#crumb").replaceChildren();
@@ -247,7 +249,11 @@ function dashboard() {
     c.title.title = p.name;
     c.meta.textContent = `${p.model} · ${p.os}`;
     c.meta.title = c.meta.textContent;
-    if (Array.isArray(p.screen) && p.screen[0] > 0 && p.screen[1] > 0) c.scr.style.setProperty("--arn", String(p.screen[0] / p.screen[1]));
+    if (Array.isArray(p.screen) && p.screen[0] > 0 && p.screen[1] > 0) {
+      c.scr.style.setProperty("--arn", String(p.screen[0] / p.screen[1]));
+      // the device type's corner radius (a fraction of the upright width) as a fraction of the drawn width
+      if (typeof p.corner === "number") c.scr.style.setProperty("--rr", String(p.corner * cornerSide(p.platform, p.screen[0], p.screen[1]) / p.screen[0]));
+    }
     c.scr.className = "scr k-" + kindOf(p);
     const running = p.state === "running" || p.state === "starting";
     c.dot.className = "dot " + p.state;
@@ -406,8 +412,11 @@ function phoneView(id) {
     // the tool column beside the screen takes its width and the gap
     const tw = tools.offsetWidth ? tools.offsetWidth + 14 : 0;
     const s = Math.min((r.width - m - tw) / w, (r.height - m) / hh);
-    canvas.style.width = Math.max(50, Math.floor(w * s)) + "px";
-    canvas.style.height = Math.max(50, Math.floor(hh * s)) + "px";
+    const cw = Math.max(50, Math.floor(w * s)), ch = Math.max(50, Math.floor(hh * s));
+    canvas.style.width = cw + "px";
+    canvas.style.height = ch + "px";
+    // the device type's corners (app.css's by platform without one)
+    canvas.style.borderRadius = typeof info?.corner === "number" ? Math.max(2, info.corner * cornerSide(info.platform, cw, ch)) + "px" : "";
   }
   const ro = new ResizeObserver(fit);
   ro.observe(stage);

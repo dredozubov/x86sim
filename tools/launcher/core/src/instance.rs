@@ -35,6 +35,8 @@ pub struct Instance {
     pub build: String,
     pub screen: (u32, u32),
     pub scale: f32,
+    /// the main screen's corner radius as a fraction of its width (`corner_of`)
+    pub corner: f32,
     pub ring: PathBuf,
     /// Models 2: a second integrated screen (iPhone Duo's inner one), else None
     pub inner: Option<InnerDisplay>,
@@ -66,6 +68,27 @@ impl InnerDisplay {
     pub fn upright(&self) -> (u32, u32) {
         if self.rotation % 180 == 90 { (self.size.1, self.size.0) } else { self.size }
     }
+}
+
+/// The main screen's corner radius as a fraction of its width, as the device type gives it (DeviceCornerRadius in
+/// points of cli/lib/devicetype-<model>.json's first display: an iPad's 18..30 pt are 0.02..0.04 of its width, an
+/// iPhone's 47..62 pt 0.12..0.15, a TV's and an iPhone SE's 0); without the file, a guess by platform
+pub fn corner_of(model_id: &str, platform: &str) -> f32 {
+    let from_json = || -> Option<f32> {
+        let txt = std::fs::read_to_string(repo_root().join("cli/lib").join(format!("devicetype-{}.json", model_id.to_lowercase()))).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+        let d = &v["capabilities"]["displays"][0];
+        let r = d["cornerRadiusUL"].as_f64().or_else(|| v["capabilities"]["DeviceCornerRadius"].as_f64())?;
+        let (w, h, k) = (d["width"].as_f64()?, d["height"].as_f64()?, d["scale"].as_f64().unwrap_or(1.0));
+        // the width as drawn upright: a TV's or a Vision Pro's landscape panel is its own width
+        let w = if platform == "tvos" || platform == "xros" { w.max(h) } else { w.min(h) };
+        (w > 0.0).then(|| (r * k / w) as f32)
+    };
+    from_json().unwrap_or(match platform {
+        "tvos" | "xros" => 0.0,
+        "watchos" => 0.22,
+        _ => 0.12,
+    })
 }
 
 /// The second "integrated" display of the model's device type (cli/lib/devicetype-<model>.json), if any
@@ -189,6 +212,7 @@ pub fn load(dir: &Path) -> Instance {
     // drawing into the other one's ring)
     let ring = crate::rundir::ring_from_env(&id, &env, ring_for(&id));
     let inner = inner_display(&model_id, &ring);
+    let corner = corner_of(&model_id, &platform);
     let prefix_sfx = if is_default { String::new() } else if sfx.starts_with('-') { sfx.to_string() } else { format!("-{sfx}") };
     Instance {
         sock: dir.join("data/simhid.sock"),
@@ -210,6 +234,7 @@ pub fn load(dir: &Path) -> Instance {
         platform,
         screen: (w, h),
         scale,
+        corner,
         ring,
         inner,
         is_default,
