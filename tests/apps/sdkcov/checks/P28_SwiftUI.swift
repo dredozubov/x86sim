@@ -55,6 +55,7 @@ private func p28WH(_ s: String?) -> (Double, Double)? {
 }
 #endif
 
+#if os(iOS) || os(visionOS)
 // MARK: generic style users: each takes any style of its protocol (PickerStyle, TextFieldStyle, ... cannot be
 // implemented outside SwiftUI; apps pass them through generics like these)
 
@@ -171,6 +172,9 @@ private struct P28StylesRoot: View {
 }
 private struct P28Row: Identifiable { let id: Int; let name: String }
 
+#endif
+
+#if os(iOS) || os(visionOS)
 // MARK: navigation: zoom / automatic transitions from a matched source, split view visibility + compact column
 
 private struct P28NavRoot: View {
@@ -279,6 +283,9 @@ private struct P28PresentDriver: ViewModifier {
     }
 }
 
+#endif
+
+#if os(iOS)
 // MARK: gestures: a UIKit recognizer through UIGestureRecognizerRepresentable, SwiftUI gestures with state + masks
 
 #if os(iOS) || os(visionOS)
@@ -323,6 +330,8 @@ private struct P28GestureRoot: View {
 }
 /// a type-erased gesture of any kind (the Gesture protocol as an app's helper takes it)
 private func p28GestureName<G: Gesture>(_ g: G) -> String { String(describing: G.self).components(separatedBy: "<").first ?? "" }
+
+#endif
 
 // MARK: focus: focused values / bindings / objects read by a sibling; focus interactions and default focus priority
 
@@ -404,12 +413,15 @@ private struct P28ScrollRoot: View {
         .scrollTargetBehavior(behavior)
         .frame(width: 200, height: 300)
         .contentMargins(.top, 17, for: ContentMarginPlacement.scrollContent)
+        #if !os(visionOS)
         .scrollEdgeEffectStyle(ScrollEdgeEffectStyle.hard, for: .top)
+        #endif
         .defaultScrollAnchor(.top, for: ScrollAnchorRole.initialOffset)
         .p28Size("scroll", log)
     }
 }
 
+#if os(iOS)
 // MARK: tabs: sections, customization, placements, custom TabContent; toolbars + search
 
 private struct P28MoreTabs: TabContent {
@@ -515,6 +527,8 @@ private struct P28ToolbarRoot: View {
     }
 }
 
+#endif
+
 // MARK: Core Data through @FetchRequest / @SectionedFetchRequest
 
 #if canImport(CoreData)
@@ -575,11 +589,17 @@ private struct P28TextRoot: View {
             Text(d0, style: .relative).textVariant(SizeDependentTextVariant.sizeDependent).frame(width: 60).p28Size("variant-size", log)
             Text(d0, style: .relative).textVariant(FixedTextVariant.fixed).p28Size("variant-fixed", log)
             Text("ภาษาไทย").typesettingLanguage(TypesettingLanguage.explicit(Locale.Language(identifier: "th"))).fixedSize().p28Size("thai", log)
+            #if os(iOS) || os(visionOS)
             Text("select me").textSelection(EnabledTextSelectability.enabled).accessibilityTextContentType(AccessibilityTextContentType.sourceCode).p28Size("selectable", log)
+            #else
+            Text("select me").accessibilityTextContentType(AccessibilityTextContentType.sourceCode).p28Size("selectable", log)
+            #endif
         }
     }
 }
+#if os(iOS) || os(visionOS)
 private func p28Selectable<S: TextSelectability>(_ s: S) -> Bool { S.allowsSelection }
+#endif
 
 // MARK: keyframes: a custom Keyframes, a custom KeyframeTrackContent, builders; animation state in a custom animation
 
@@ -632,6 +652,7 @@ private struct P28AnimRoot: View {
     }
 }
 
+#if os(iOS)
 // MARK: hover effects, glass, shape styles, symbol rendering, materials, prominence (rendered)
 
 private struct P28Hover: CustomHoverEffect {
@@ -655,6 +676,9 @@ private struct P28StyleSwatches: View {
     }
 }
 
+#endif
+
+#if os(iOS) || os(visionOS)
 // MARK: drag and drop: a DropDelegate, drop proposals, drag / drop configurations; the interactions UIKit gets
 
 private struct P28Drop: DropDelegate {
@@ -769,6 +793,8 @@ private final class P28Doc: Document {
     @MainActor func snapshot(contentType: UTType) async throws -> String { text }
 }
 
+#endif
+
 // MARK: Charts: custom plottable, symbol shape, axis content, scroll target behavior; every mark / plot type
 
 #if canImport(Charts)
@@ -846,6 +872,7 @@ private struct P28ChartRoot: View {
 }
 #endif
 
+#if os(iOS) || os(visionOS)
 // MARK: scenes, commands, previews (built as values: the app runs UIKit's scene lifecycle)
 
 private struct P28Commands: Commands {
@@ -1045,6 +1072,249 @@ private func p28Sym3D<S: Chart3DSymbolShape>(_ s: S) -> String { "\(S.self)" }
 private func p28Surf3D<S: Chart3DSurfaceStyle>(_ s: S) -> String { "\(S.self)" }
 #endif
 
+#endif
+
+// MARK: round 2 (resume): the iOS types still unreferenced after the first batches
+
+#if os(iOS) || os(visionOS)
+/// toolbar values (customization options, visibility priority, a fixed spacer), the environment's sidebar row size /
+/// find context / document configuration, scene storage, a container background for the navigation stack
+private struct P28ToolbarValues: View {
+    let log: P6Log
+    @Environment(\.sidebarRowSize) private var rowSize
+    @Environment(\.findContext) private var find: FindContext?
+    @Environment(\.documentConfiguration) private var docCfg: DocumentConfiguration?
+    @SceneStorage("p28.scene.count") private var stored = 0
+    var body: some View {
+        NavigationStack {
+            VStack { Text("top").frame(height: 30); Spacer() }
+                .navigationTitle("T")
+                .toolbar(id: "p28bar") {
+                    ToolbarItem(id: "a", placement: .primaryAction) { Button("A") {} }
+                        .defaultCustomization(.visible, options: ToolbarCustomizationOptions.alwaysAvailable)
+                }
+                .toolbar { p28BottomItems() }
+                #if os(iOS)
+                .containerBackground(Color(red: 1, green: 0, blue: 0), for: ContainerBackgroundPlacement.navigation)
+                #endif
+                .onPencilSqueeze { (phase: PencilSqueezeGesturePhase) in
+                    if case .active(let v) = phase { let pv: PencilSqueezeGestureValue = v; let pose: PencilHoverPose? = pv.hoverPose; log.add("squeeze \(pose.map { "\($0.zDistance)" } ?? "nil")") }
+                }
+                .task { stored += 1; try? await Task.sleep(for: .milliseconds(300)); log.add("stored \(stored)") }
+                .onAppear {
+                    log.add("env row \(rowSize) find \(find.map { "\($0.supportsReplace)" } ?? "nil") doc \(docCfg.map { "\($0.isEditable)" } ?? "nil")")
+                }
+                .environment(\.sidebarRowSize, SidebarRowSize.large)
+                .background { P28RowSizeProbe(log: log).environment(\.sidebarRowSize, .large) }
+        }
+    }
+}
+private struct P28RowSizeProbe: View {
+    let log: P6Log
+    @Environment(\.sidebarRowSize) private var rowSize
+    var body: some View { Color.clear.onAppear { log.add("probe row \(rowSize == SidebarRowSize.large ? "large" : "\(rowSize)")") } }
+}
+@ToolbarContentBuilder private func p28BottomItems() -> some ToolbarContent {
+    #if os(iOS)
+    ToolbarItem(placement: .bottomBar) { Button("B") {} }.visibilityPriority(ToolbarItemVisibilityPriority.high)
+    ToolbarSpacer(SpacerSizing.fixed, placement: .bottomBar)
+    ToolbarItem(placement: .bottomBar) { Button("C") {} }.visibilityPriority(ToolbarItemVisibilityPriority(lowerThan: .low))
+    #else
+    ToolbarItem(placement: .bottomOrnament) { Button("B") {} }
+    #endif
+}
+
+/// split view styles, a navigation-link picker, a bordered text field, a new-document button, slider ticks from the
+/// tick builder, a search field's dictation behavior and file dialog options, a hand gesture shortcut, a scene accessory
+private struct P28StyledSplit<S: NavigationSplitViewStyle>: View {
+    let style: S; let name: String; let log: P6Log
+    var body: some View {
+        NavigationSplitView { Text("side") } detail: { Text("detail") }.navigationSplitViewStyle(style).frame(width: 300, height: 200).p28Size(name, log)
+    }
+}
+private struct P28MoreStyles: View {
+    let log: P6Log
+    @State var v = 0.5
+    @State var q = ""
+    var body: some View {
+        VStack(spacing: 4) {
+            P28StyledSplit(style: AutomaticNavigationSplitViewStyle.automatic, name: "split-auto", log: log)
+            P28StyledSplit(style: ProminentDetailNavigationSplitViewStyle.prominentDetail, name: "split-prominent", log: log)
+            NavigationStack { Form { P28StyledPicker(style: NavigationLinkPickerStyle.navigationLink, name: "picker-navlink", log: log) } }.frame(height: 120)
+            P28StyledField(style: BorderedTextFieldStyle(), name: "field-bordered", log: log)
+            NewDocumentButton("New").fixedSize().p28Size("new-doc", log)
+            Slider(value: $v, in: 0...1) { Text("s") } ticks: { SliderTick(0.0); SliderTick(0.5); SliderTick(1.0) }
+                .frame(width: 200).fixedSize(horizontal: false, vertical: true).p28Size("slider-built-ticks", log)
+            NavigationStack { Text("s").searchable(text: $q).searchDictationBehavior(p28Dictation()) }
+                .fileDialogBrowserOptions([FileDialogBrowserOptions.displayFileExtensions, .includeHiddenFiles])
+                .frame(height: 100)
+            Button("hand") { log.add("hand tapped") }
+                #if os(iOS)
+                .handGestureShortcut(HandGestureShortcut.primaryAction)
+                #endif
+                .fixedSize().p28Size("hand", log)
+        }
+        #if !os(iOS)
+        .scrollInputBehavior(ScrollInputBehavior.enabled, for: p28ScrollKind())
+        #endif
+        #if os(iOS)
+        .sceneAccessory { p28Accessory(ExternalNonInteractiveAccessory { Text("external") }.onAvailabilityChange { log.add("accessory available \($0)") }) }
+        #endif
+    }
+}
+/// slider ticks from the builder (two ticks make a TupleSliderTickContent)
+@SliderTickBuilder<Double> private func p28Ticks() -> some SliderTickContent<Double> { SliderTick(0.0); SliderTick(1.0) }
+#if os(iOS)
+/// any scene accessory, as an app passes one through a generic
+private func p28Accessory<C: SceneAccessoryContent>(_ c: C) -> C { c }
+#endif
+private func p28Dictation() -> TextInputDictationBehavior {
+    #if os(visionOS)
+    return .preventDictation
+    #else
+    return .inline(activation: TextInputDictationActivation.onSelect)
+    #endif
+}
+#if !os(iOS)
+/// the scroll input kinds that exist per platform (iOS has none: ScrollInputKind's members are watchOS / visionOS only)
+private func p28ScrollKind() -> ScrollInputKind {
+    #if os(visionOS)
+    return .look(axes: .vertical)
+    #else
+    return .handGestureShortcut
+    #endif
+}
+#endif
+
+/// a table whose rows are a DynamicTableRowContent with an item provider and an insert handler
+private struct P28RowTable: View {
+    let log: P6Log
+    let items = [P28Item(id: 1, name: "r1"), P28Item(id: 2, name: "r2"), P28Item(id: 3, name: "r3")]
+    var body: some View {
+        Table(of: P28Item.self) {
+            TableColumn("Name") { (i: P28Item) in Text(i.name).onAppear { log.add("row \(i.name)") } }
+        } rows: {
+            p28Rows(items, log)
+        }.frame(width: 300, height: 200)
+    }
+}
+@TableRowBuilder<P28Item> private func p28Rows(_ items: [P28Item], _ log: P6Log) -> some TableRowContent<P28Item> {
+    let rows: ModifiedContent<ModifiedContent<ForEach<[P28Item], Int, TableRow<P28Item>>, ItemProviderTableRowModifier>, OnInsertTableRowModifier> =
+        ForEach(items) { TableRow($0) }
+            .itemProvider { NSItemProvider(object: "p28" as NSString) }
+            .onInsert(of: [.plainText]) { i, p in log.add("insert \(i) \(p.count)") }
+    rows
+}
+private func p28DynCount<R: DynamicTableRowContent>(_ r: R) -> Int { r.data.count }
+
+/// iOS 27 documents through FileWrapper readers / writers, opened by a DocumentGroup's viewer / editor scenes
+@MainActor private final class P28WrapDoc: Document, Observable {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    var text = ""
+    nonisolated func reader(configuration: ReadConfiguration) -> FileWrapperDocumentReader<String> {
+        FileWrapperDocumentReader(configuration) { w in String(decoding: w.regularFileContents ?? Data(), as: UTF8.self) }
+    }
+    nonisolated func writer(configuration: WriteConfiguration) -> FileWrapperDocumentWriter<String> {
+        FileWrapperDocumentWriter(configuration) { s, _ in FileWrapper(regularFileWithContents: Data(s.utf8)) }
+    }
+    func apply(snapshot: String, previous: String?) async throws { text = snapshot }
+    func snapshot(contentType: UTType) async throws -> String { text }
+}
+private func p28Readable<D: ReadableDocument>(_ d: D.Type) -> [String] { D.readableContentTypes.map(\.identifier) }
+private func p28Writable<D: WritableDocument>(_ d: D.Type) -> [String] { D.writableContentTypes.map(\.identifier) }
+/// a box holding a document (DocumentBaseBox is how an app hands a document to code that owns it weakly)
+private final class P28DocBox: DocumentBaseBox {
+    var base: P28WrapDoc?
+    init(_ d: P28WrapDoc) { base = d }
+}
+private func p28Unbox<B: DocumentBaseBox>(_ b: B) -> B.Document? { b.base }
+@MainActor @SceneBuilder private func p28DocScenes(_ log: P6Log) -> some Scene {
+    DocumentGroup(editor: { (d: P28WrapDoc) in Text(d.text) }, makeDocument: { (cfg: URLDocumentConfiguration, ctx: DocumentCreationContext) in
+        log.add("make \(ctx.creationSource.map { "\($0)" } ?? "nil")"); return P28WrapDoc()
+    })
+    DocumentGroupLaunchScene("P28 Docs") { NewDocumentButton("New") } background: { Color.orange } overlayAccessoryView: { (g: DocumentLaunchGeometryProxy) in
+        Text("title at \(Int(g.titleViewFrame.minY))").position(x: g.frame.midX, y: g.frame.maxY)
+    }
+}
+#endif
+
+#if os(iOS)
+/// widgets and controls made by the app's widget builders (rendered only by a widget extension; built here)
+private struct P28EmptyControl: ControlWidget {
+    var body: some ControlWidgetConfiguration { EmptyControlWidgetConfiguration() }
+}
+private struct P28EmptyWidget: Widget {
+    var body: some WidgetConfiguration { EmptyWidgetConfiguration() }
+}
+private struct P28Bundle: WidgetBundle {
+    var body: some Widget {
+        P28EmptyWidget()
+        if #available(iOS 27.1, *) { P28EmptyWidget() }
+        P28EmptyControl()
+    }
+}
+@ControlWidgetConfigurationBuilder private func p28ControlConfig() -> some ControlWidgetConfiguration { EmptyControlWidgetConfiguration() }
+@ControlWidgetTemplateBuilder private func p28ControlTemplate() -> some ControlWidgetTemplate { EmptyControlWidgetTemplate() }
+@WidgetBundleBuilder private func p28Widgets() -> some Widget { P28EmptyWidget(); P28EmptyControl() }
+private func p28TemplateName<T: ControlWidgetTemplate>(_ t: T) -> String { "\(T.self)" }
+#endif
+
+// SwiftUICore: attributed text formatting definitions (a value constraint + a custom constraint), text variants
+// through the protocol, hierarchical shape styles, hinge status
+#if os(iOS) || os(visionOS)
+private struct P28ColorConstraint: AttributedTextFormattingDefinition {
+    typealias Scope = AttributeScopes.SwiftUIAttributes
+    var body: some AttributedTextFormattingDefinition<Scope> {
+        AttributedTextFormatting.ValueConstraint(for: \.foregroundColor, values: [Color(red: 1, green: 0, blue: 0), Color(red: 0, green: 0, blue: 1)], default: Color(red: 1, green: 0, blue: 0))
+        P28NoStrike()
+    }
+}
+/// removes strikethrough everywhere
+private struct P28NoStrike: AttributedTextValueConstraint {
+    typealias Scope = AttributeScopes.SwiftUIAttributes
+    typealias AttributeKey = AttributeScopes.SwiftUIAttributes.StrikethroughStyleAttribute
+    func constrain(_ container: inout Attributes) { container.strikethroughStyle = nil }
+}
+private func p28Def<D: AttributedTextFormattingDefinition>(_ d: D) -> String { "\(D.Scope.self)" }
+private struct P28FormattedEditor: View {
+    let log: P6Log
+    @State var text: AttributedString = {
+        var s = AttributedString("green struck")
+        s.foregroundColor = Color(red: 0, green: 1, blue: 0)
+        s.strikethroughStyle = .single
+        return s
+    }()
+    var body: some View {
+        TextEditor(text: $text)
+            .attributedTextFormattingDefinition(P28ColorConstraint())
+            .frame(width: 200, height: 60)
+            .onChange(of: text, initial: true) { _, t in
+                let runs = t.runs.map { r -> String in
+                    let c = r.foregroundColor.map { "\($0)" } ?? "nil"
+                    return "\(c)/\(r.strikethroughStyle == nil ? "-" : "s")"
+                }
+                log.add("formatted \(runs)")
+            }
+    }
+}
+#endif
+private func p28Variant<V: TextVariantPreference>(_ t: Text, _ v: V) -> some View { t.textVariant(v) }
+
+#if canImport(Charts)
+/// a chart conditional named by type, and a foreground style scale over any ScaleRange
+@ChartContentBuilder private func p28Cond(_ bar: Bool) -> BuilderConditional<BarMark, LineMark> {
+    if bar { BarMark(x: .value("x", "a"), y: .value("y", 1)) } else { LineMark(x: .value("x", "a"), y: .value("y", 1)) }
+}
+private func p28Scaled<R: ScaleRange>(_ range: R) -> some View where R.VisualValue: ShapeStyle {
+    Chart {
+        BarMark(x: .value("x", "a"), y: .value("y", 1)).foregroundStyle(by: .value("k", "one"))
+        BarMark(x: .value("x", "b"), y: .value("y", 1)).foregroundStyle(by: .value("k", "two"))
+    }
+    .chartForegroundStyleScale(domain: ["one", "two"], range: range)
+    .chartXAxis(.hidden).chartYAxis(.hidden).chartLegend(.hidden).background(Color.white)
+}
+#endif
+
 // MARK: checks
 
 extension Registry {
@@ -1054,6 +1324,7 @@ extension Registry {
         // MARK: SwiftUI styles: gauge / picker / text field / date picker / text editor / table / split view /
         // disclosure / navigation view / index view styles applied through generics, custom styles whose bodies
         // replace the control (sizes read back), button border shape, repeat behavior and sizing
+        #if os(iOS) || os(visionOS)
         c.append(check("SwiftUI", "p28-styles-configurations", timeout: 25) {
             let log = P6Log()
             let close = try await onMain { try p6HostSwiftUI(P28StylesRoot(log: log)) }
@@ -1082,6 +1353,7 @@ extension Registry {
             #endif
             return "\(got); \(date)"
         })
+        #endif
 
         // MARK: SwiftUI navigation: push onto a NavigationStack path with a zoom transition from a matched source
         // (custom source configuration), then an automatic one; inline title mode; split view visibility + compact column
@@ -1165,7 +1437,7 @@ extension Registry {
 
         // MARK: SwiftUI gestures: a UIKit recognizer through UIGestureRecognizerRepresentable (coordinator, converter
         // in local / named spaces when it fires: made only once a touch arrives), SwiftUI gestures with @GestureState + masks
-        #if os(iOS) || os(visionOS)
+        #if os(iOS)
         c.append(check("SwiftUI", "p28-gesture-representable", timeout: 20) {
             let log = P6Log()
             let close = try await onMain { try p6HostSwiftUI(P28GestureRoot(log: log)) }
@@ -1326,7 +1598,9 @@ extension Registry {
             try expect(plain != nil && wide != nil && abs(wide!.0 - plain!.0 - 20) < 1.5 && wide!.1 == plain!.1, d)
             try expect(log.all.contains("marks [1, 1, 1, 2, 2, 2]") || log.all.contains("marks [1, 2]"), d)
             try expect(keys.allSatisfy { (p28WH(p28Last(log, $0))?.0 ?? 0) > 0 }, d)
+            #if os(iOS) || os(visionOS)
             try expect(p28Selectable(EnabledTextSelectability.enabled) && !p28Selectable(DisabledTextSelectability.disabled), "selectability")
+            #endif
             return d
         })
 
@@ -1356,6 +1630,7 @@ extension Registry {
 
         // MARK: SwiftUICore styles by pixels: link / placeholder / selection / window background / hierarchical /
         // material / drawing group color mode swatches; glass in a container; hover effects and prominence values
+        #if os(iOS)
         c.append(check("SwiftUICore", "p28-shape-styles-glass", timeout: 20) {
             let log = P6Log()
             let px = await onMain { () -> [[Int]] in
@@ -1390,6 +1665,7 @@ extension Registry {
                        && ContentShapeKinds.interaction.contains(.interaction) && !ContentShapeKinds.dragPreview.contains(.contextMenuPreview), "values")
             return "\(d); glass rendered \(glass); hovers \(hovers)"
         })
+        #endif
 
         // MARK: SwiftUICore symbol effect transitions + preferred color scheme preference: a child asking for dark
         // reaches the parent through PreferredColorSchemeKey
@@ -1511,12 +1787,16 @@ extension Registry {
             defer { Task { @MainActor in close() } }
             _ = await p6Wait(5) { log.all.contains { $0.hasPrefix("annotation target") } && log.all.contains { $0.hasPrefix("x axis") } }
             try await Task.sleep(for: .milliseconds(400))
+            #if os(watchOS)
+            let r = "no UIKit scroll view on watchOS"
+            #else
             let r = await onMain { () -> String in
                 guard let w = p6LastWindow, let sv = p6Find(w, UIScrollView.self).first(where: { $0.contentSize.width > 250 }) else { return "no chart scroll view" }
                 var t = CGPoint(x: 37, y: 0)
                 sv.delegate?.scrollViewWillEndDragging?(sv, withVelocity: .zero, targetContentOffset: &t)
                 return "target x \(Int(t.x)) content \(Int(sv.contentSize.width))"
             }
+            #endif
             let d = "red area px \(red); \(log.all.filter { !$0.hasPrefix("x axis") }.prefix(4)); \(log.all.last { $0.hasPrefix("x axis") } ?? ""); \(r)"
             // area under y = 1..3 over 100 x 60: about half the plot
             try expect(red > 1500 && red < 5500, d)
@@ -1588,6 +1868,7 @@ extension Registry {
         // MARK: SwiftUI accessibility: rotors from custom rotor content and the builder, system rotors, labeled pairs,
         // a chart descriptor, zoom / direct touch / categorized actions, focus for one technology (as UIKit exposes
         // them with no assistive technology running)
+        #if os(iOS) || os(visionOS)
         c.append(check("SwiftUI", "p28-accessibility-rotors", timeout: 20) {
             let log = P6Log()
             let close = try await onMain { try p6HostSwiftUI(P28AXRoot(log: log)) }
@@ -1609,6 +1890,7 @@ extension Registry {
             try expect(log.has("ax appear vo false"), d)
             return d
         })
+        #endif
 
         // MARK: SwiftUI + SwiftUICore values and small views: slider ticks, context menus, search unavailable content,
         // share previews, scene padding, writing tools as UITextView sees them, attributed text selection, text input
@@ -1691,15 +1973,189 @@ extension Registry {
             let log = P6Log()
             let v = Chart3D { P28Surface(); p28Points3D(true) }
                 .chart3DPose(Chart3DPose(azimuth: .degrees(30), inclination: .degrees(20)))
+                #if os(visionOS)
+                .chart3DRenderingStyle(Chart3DRenderingStyle.flat)
+                #else
                 .chart3DCameraProjection(Chart3DCameraProjection.orthographic)
+                #endif
                 .frame(width: 200, height: 200).p28Size("chart3d", log)
             let close = try await onMain { try p6HostSwiftUI(v) }
             defer { Task { @MainActor in close() } }
             _ = await p6Wait(5) { p28Last(log, "chart3d") != nil }
             try await Task.sleep(for: .milliseconds(800))
             let d = "chart3d \(p28Last(log, "chart3d") ?? "-"); \(p28Sym3D(BasicChart3DSymbolShape.sphere)) \(p28Surf3D(BasicChart3DSurfaceStyle.normalBased)); poses front != top \(Chart3DPose.front != Chart3DPose.top)"
-            try expect(p28Last(log, "chart3d") == "200x200" && Chart3DPose.front != Chart3DPose.top && Chart3DCameraProjection.perspective != .orthographic, d)
+            #if os(visionOS)
+            try expect(Chart3DRenderingStyle.flat != .volumetric && Chart3DRenderingStyle.automatic != .flat, d)
+            #else
+            try expect(Chart3DCameraProjection.perspective != .orthographic, d)
+            #endif
+            try expect(p28Last(log, "chart3d") == "200x200" && Chart3DPose.front != Chart3DPose.top, d)
             return d
+        })
+        #endif
+
+
+        // MARK: round 2: SwiftUI toolbar values (bottom bar items with visibility priorities and a fixed spacer, as
+        // UIKit's toolbar holds them), a navigation container background by pixels, environment values (sidebar row
+        // size, find context, document configuration), scene storage
+        #if os(iOS) || os(visionOS)
+        c.append(check("SwiftUI", "p28-toolbar-environment-values", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28ToolbarValues(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(5) { log.all.contains { $0.hasPrefix("env row") } && p28Last(log, "stored") != nil }
+            try await Task.sleep(for: .milliseconds(800))
+            let ui = await onMain { () -> String in
+                guard let w = p6LastWindow else { return "no window" }
+                let bars = p6Find(w, UIToolbar.self).filter { !$0.isHidden }
+                let items = bars.flatMap { $0.items ?? [] }.map { $0.title ?? ($0.customView != nil ? "custom" : "space") }
+                var labels: [String] = []
+                func walk(_ v: UIView) { if let l = v.accessibilityLabel, ["A", "B", "C"].contains(l), !v.isHidden { labels.append(l) }; v.subviews.forEach(walk) }
+                walk(w)
+                var red = "-"
+                if let img = p2Snapshot(w) {
+                    let p = p2Pixel(img, img.width / 2, img.height * 2 / 3)
+                    red = p2Near(p, 255, 0, 0, 60) ? "red" : "\(p.prefix(3))"
+                }
+                return "toolbar items \(items) labels \(labels.sorted()); background \(red)"
+            }
+            #if os(iOS)
+            let prio = ToolbarItemVisibilityPriority(lowerThan: .low) < .low && ToolbarItemVisibilityPriority.high > .automatic && ToolbarItemVisibilityPriority(higherThan: .high) > .high
+            var axis = "n/a"
+            if #available(iOS 27.1, *) { axis = "\(ToolbarItemAxisBehavior.automatic != .horizontalOnly && ToolbarItemAxisBehavior.verticalPreferred != .horizontalOnly)" }
+            #else
+            let prio = true; let axis = "n/a"
+            #endif
+            let opts: ToolbarCustomizationOptions = [.alwaysAvailable]
+            let d = "\(log.all); \(ui); priorities ordered \(prio); axis \(axis); options \(opts.rawValue); label \(ToolbarLabelStyle.automatic == .automatic)"
+            // (Apple: the default row size on iPhone is medium, a find context is present, no document configuration
+            // outside a DocumentGroup; the bar items' views carry no accessibility labels of their own)
+            try expect(log.has("env row medium find true doc nil") && log.has("probe row large") && p28Last(log, "stored") == "1" && prio, d)
+            #if os(iOS)
+            try expect(ui.contains("background red"), d)
+            try expect(ContainerBackgroundPlacement.navigation != .navigationSplitView && ContentToolbarPlacement.tabViewSidebar == .tabViewSidebar, d)
+            #endif
+            return d
+        })
+
+        // MARK: SwiftUI split view / navigation-link picker / bordered text field styles, a new-document button's
+        // default label, slider ticks from the builder, search dictation, file dialog options, hand gesture shortcut,
+        // a scene accessory (sizes read back)
+        c.append(check("SwiftUI", "p28-more-styles-ticks", timeout: 25) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(ScrollView { P28MoreStyles(log: log) }) }
+            defer { Task { @MainActor in close() } }
+            let keys = ["split-auto", "split-prominent", "picker-navlink", "field-bordered", "new-doc", "slider-built-ticks", "hand"]
+            _ = await p6Wait(6) { keys.allSatisfy { p28Last(log, $0) != nil } }
+            try await Task.sleep(for: .milliseconds(400))
+            let label = await onMain { "\(type(of: NewDocumentButton<DefaultNewDocumentButtonLabel>.self))" }
+            let ticks = "\(type(of: p28Ticks()))"
+            let opts: FileDialogBrowserOptions = [.displayFileExtensions, .includeHiddenFiles]
+            let d = keys.map { "\($0) \(p28Last(log, $0) ?? "-")" }.joined(separator: ", ") + "; \(log.all.filter { !keys.contains(String($0.split(separator: " ").first ?? "")) }); \(label); ticks \(ticks); options \(opts.rawValue) \(opts.contains(.enumeratePackages))"
+            try expect(keys.allSatisfy { p28Last(log, $0) != nil } && ticks.hasPrefix("TupleSliderTickContent"), d)
+            try expect(p28Last(log, "split-auto") == "300x200" && p28Last(log, "split-prominent") == "300x200", d)
+            #if os(iOS)
+            try expect(TextInputDictationBehavior.inline(activation: .onSelect) != .automatic && TextInputDictationActivation.onSelect != .onLook && HandGestureShortcut.primaryAction == .primaryAction, d)
+            #endif
+            try expect(ScrollInputBehavior.enabled != .disabled && ScrollInputBehavior.automatic != .enabled && !opts.contains(.enumeratePackages), d)
+            return d
+        })
+
+        // MARK: SwiftUI table rows: a DynamicTableRowContent (ForEach of rows) with an item provider and insert handler
+        c.append(check("SwiftUI", "p28-table-row-modifiers", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28RowTable(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(4) { log.all.filter { $0.hasPrefix("row ") }.count >= 3 }
+            let dyn = await onMain { p28DynCount(ForEach([P28Item(id: 1, name: "a"), P28Item(id: 2, name: "b")]) { TableRow($0) }) }
+            let d = "\(log.all.sorted()); dynamic data \(dyn)"
+            try expect(log.all.filter { $0.hasPrefix("row ") }.count >= 3 && dyn == 2, d)
+            return d
+        })
+
+        // MARK: SwiftUI iOS 27 documents: FileWrapper reader / writer documents in DocumentGroup viewer / editor scenes,
+        // a launch scene with accessory views over its geometry proxy, a document box
+        c.append(check("SwiftUI", "p28-document-scenes", timeout: 20) {
+            let log = P6Log()
+            let (scenes, types, boxed) = await onMain { () -> (String, String, Bool) in
+                let s = String(describing: type(of: p28DocScenes(log)))
+                let doc = P28WrapDoc(); doc.text = "x"
+                let box = P28DocBox(doc)
+                return (s, "\(p28Readable(P28WrapDoc.self)) \(p28Writable(P28WrapDoc.self))", p28Unbox(box) === doc)
+            }
+            let d = "scenes \(scenes.contains("DocumentGroup")) \(scenes.contains("DocumentGroupLaunchScene")); types \(types); boxed \(boxed)"
+            try expect(scenes.contains("DocumentGroupLaunchScene") && types == "[\"public.plain-text\"] [\"public.plain-text\"]" && boxed, d)
+            return d
+        })
+        #endif
+
+        #if os(iOS)
+        // MARK: SwiftUI widget / control builders as an app writes them (a widget extension renders them; here their
+        // configuration types are built)
+        c.append(check("SwiftUI", "p28-widget-control-builders") {
+            let r = await onMain { () -> String in
+                let bundle = String(describing: type(of: P28Bundle().body))
+                let control = String(describing: type(of: P28EmptyControl().body))
+                let cfg = String(describing: type(of: p28ControlConfig()))
+                let tpl = p28TemplateName(p28ControlTemplate())
+                let ws = String(describing: type(of: p28Widgets()))
+                return "bundle \(bundle); control \(control); config \(cfg); template \(tpl); widgets \(ws)"
+            }
+            let lim = String(describing: LimitedAvailabilityConfiguration.self)
+            try expect(r.contains("EmptyControlWidgetConfiguration") && r.contains("EmptyControlWidgetTemplate") && lim == "LimitedAvailabilityConfiguration", r)
+            return r
+        })
+        #endif
+
+        // MARK: SwiftUICore: an attributed text formatting definition (value constraint + custom constraint) applied by
+        // a TextEditor to its text, text variants through the protocol, hierarchical shape styles by pixels, hinge status
+        #if os(iOS) || os(visionOS)
+        c.append(check("SwiftUICore", "p28-text-formatting-hierarchy", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(VStack { P28FormattedEditor(log: log); p28Variant(Text(Date(timeIntervalSince1970: 0), style: .date), FixedTextVariant.fixed).p28Size("variant", log) }) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(4) { log.all.contains { $0.hasPrefix("formatted") } && p28Last(log, "variant") != nil }
+            try await Task.sleep(for: .milliseconds(500))
+            let px = await onMain { () -> String in
+                let s2 = Color(red: 0, green: 0, blue: 1).secondary
+                let isMod = type(of: s2) == HierarchicalShapeStyleModifier<Color>.self
+                let v = HStack(spacing: 0) { Rectangle().fill(Color(red: 0, green: 0, blue: 1)); Rectangle().fill(s2) }.background(Color.white)
+                guard let img = p28Render(v, 40, 10) else { return "no image" }
+                return "\(p2Pixel(img, 10, 5).prefix(3)) \(p2Pixel(img, 30, 5).prefix(3)) modifier \(isMod)"
+            }
+            let def = p28Def(P28ColorConstraint())
+            var hinge = [0, 1, 2]
+            if #available(iOS 27.1, visionOS 27.1, *) { hinge = [DeviceHinge.Status.closed, .partiallyOpen, .fullyOpen].map { $0.hashValue } }
+            let d = "\(log.all); scope \(def); primary/secondary \(px); hinge statuses \(Set(hinge).count)"
+            try expect(log.all.contains { $0.hasPrefix("formatted") } && p28Last(log, "variant") != nil && Set(hinge).count == 3, d)
+            try expect(px.hasPrefix("[0, 0, 255]") && !px.contains("] [0, 0, 255]") && px.hasSuffix("modifier true"), d)
+            return d
+        })
+        #endif
+
+        #if canImport(Charts)
+        // MARK: Charts: a builder conditional by type; a foreground style scale over a [Color] and a Gradient range
+        c.append(check("Charts", "p28-scale-range-conditional", timeout: 20) {
+            let (r, ok) = await onMain { () -> (String, Bool) in
+                @MainActor func count(_ v: some View) -> (Int, Int, Int) {
+                    guard let img = p28Render(v, 80, 40) else { return (-1, -1, -1) }
+                    let ctx = bitmap(img.width, img.height); ctx.draw(img, in: CGRect(x: 0, y: 0, width: img.width, height: img.height))
+                    var r = 0, b = 0, other = 0
+                    for y in 0..<img.height { for x in 0..<img.width {
+                        let p = pixel(ctx, x, y)
+                        if p[0] > 200 && p[1] < 60 && p[2] < 60 { r += 1 } else if p[2] > 200 && p[0] < 60 && p[1] < 60 { b += 1 } else if p[1] < 200 { other += 1 }
+                    } }
+                    return (r, b, other)
+                }
+                let a = count(p28Scaled([Color(red: 1, green: 0, blue: 0), Color(red: 0, green: 0, blue: 1)]))
+                let g = count(p28Scaled(Gradient(colors: [Color(red: 1, green: 0, blue: 0), Color(red: 0, green: 0, blue: 1)])))
+                let cond = "\(type(of: p28Cond(true)))"
+                return ("array red \(a.0) blue \(a.1) other \(a.2); gradient red \(g.0) blue \(g.1) other \(g.2); \(cond)", a.0 > 0 && a.1 > 0 && g.2 > 0 && cond == "BuilderConditional<BarMark, LineMark>")
+            }
+            // (Apple: the [Color] range paints the two bars pure red and blue; a Gradient range samples it, so neither
+            // bar is a pure end color)
+            try expect(ok, r)
+            return r
         })
         #endif
 
