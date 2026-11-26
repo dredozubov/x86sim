@@ -1,20 +1,18 @@
-//! Draws the mesh with OpenGL inside egui (an egui_glow paint callback): into a framebuffer of its own at twice the
-//! area's pixels with a depth buffer, then that image shrunk into the area (2x2 supersampling: smooth edges and
-//! steady screen pictures), over egui's own drawing with premultiplied alpha.
-//!
-//! Two models: Apple's (x86sim_core::devicemodel, Xcode's own when this machine has it: skinned on the GPU, its
-//! UsdPreviewSurface materials and textures) or the procedural one (mesh.rs), both lit by the same photo studio.
-use super::mesh::{Mesh, Vtx};
+//! Draws Apple's iPhone Duo model (x86sim_core::devicemodel, from the user's own Xcode.xip) with OpenGL inside egui
+//! (an egui_glow paint callback): into a framebuffer of its own at twice the area's pixels with a depth buffer, then
+//! that image shrunk into the area (2x2 supersampling: smooth edges and steady screen pictures), over egui's own
+//! drawing with premultiplied alpha. It is skinned on the GPU along its hinge, its UsdPreviewSurface materials and
+//! textures lit by a photo studio.
 use x86sim_core::devicemodel::{self, Model};
 use eframe::{egui, egui_glow};
 use eframe::glow::{self, HasContext};
 use std::sync::{Arc, Mutex};
 
-/// What a frame draws: the mesh, the camera (view rotation, centre, projection fit) and the screens' textures
+/// What a frame draws: the model and its joint matrices at the drawn angle, the camera (view rotation, centre,
+/// projection fit) and the screens' textures
 pub struct Frame {
-    pub mesh: Mesh,
-    /// Apple's model and its joint matrices at the drawn angle (then `mesh` is not drawn)
-    pub apple: Option<(Arc<Model>, Vec<[f32; 16]>)>,
+    pub model: Arc<Model>,
+    pub bones: Vec<[f32; 16]>,
     /// column-major view rotation
     pub rot: [f32; 9],
     pub centre: [f32; 3],
@@ -27,11 +25,7 @@ pub struct Frame {
 }
 
 struct Gl {
-    prog: glow::Program,
     quad: glow::Program,
-    vao: glow::VertexArray,
-    vbo: glow::Buffer,
-    ibo: glow::Buffer,
     quad_vao: glow::VertexArray,
     quad_vbo: glow::Buffer,
     fbo: glow::Framebuffer,
@@ -39,12 +33,12 @@ struct Gl {
     depth: glow::Renderbuffer,
     size: (i32, i32),
     black: glow::Texture,
-    /// Apple's model's GL objects, made on its first frame (None: not made, Some(Err): failed)
-    apple: Option<Result<AppleGl, ()>>,
+    /// the model's GL objects, made on its first frame (None: not made, Some(Err): failed)
+    model: Option<Result<ModelGl, ()>>,
 }
 
-/// Apple's model on the GPU: its program, static vertex and index buffers, and its images as textures
-struct AppleGl {
+/// The model on the GPU: its program, static vertex and index buffers, and its images as textures
+struct ModelGl {
     prog: glow::Program,
     vao: glow::VertexArray,
     textures: Vec<glow::Texture>,
@@ -56,95 +50,7 @@ struct AppleGl {
 #[derive(Default, Clone)]
 pub struct Target(Arc<Mutex<Option<Result<Gl, ()>>>>);
 
-const VS: &str = r#"
-uniform mat3 u_rot; uniform vec3 u_c; uniform vec4 u_fit; uniform vec3 u_dnf;
-IN vec3 a_p; IN vec3 a_n; IN vec2 a_uv; IN float a_m;
-OUT vec3 v_n; OUT vec3 v_p; OUT vec2 v_uv; OUT float v_m;
-void main() {
-    vec3 p = u_rot * a_p - u_c;
-    float w = u_dnf.x - p.z;
-    gl_Position = vec4(p.x * u_dnf.x * u_fit.x + u_fit.z * w, p.y * u_dnf.x * u_fit.y + u_fit.w * w,
-        ((w - u_dnf.y) / (u_dnf.z - u_dnf.y) * 2.0 - 1.0) * w, w);
-    v_n = u_rot * a_n; v_p = p; v_uv = a_uv; v_m = a_m;
-}
-"#;
-
-const FS: &str = r#"
-uniform sampler2D u_inner; uniform sampler2D u_outer; uniform vec3 u_dnf;
-IN vec3 v_n; IN vec3 v_p; IN vec2 v_uv; IN float v_m;
-
-// A photo studio around the camera, in view space (it stays put while the phone turns, as a product shot's lights
-// do): a dark floor, a large softbox overhead, a tall strip light at each side and a faint card behind the camera.
-// Reflections of it are what make metal and glass read as metal and glass.
-float box(float x, float a, float b, float soft) { return smoothstep(a - soft, a + soft, x) * (1.0 - smoothstep(b - soft, b + soft, x)); }
-vec3 studio(vec3 d) {
-    float up = d.y * 0.5 + 0.5;
-    vec3 c = mix(vec3(0.008, 0.008, 0.009), vec3(0.07, 0.071, 0.075), smoothstep(0.2, 0.9, up));
-    // overhead softbox, a little in front
-    c += vec3(2.0) * smoothstep(0.6, 0.8, d.y) * box(d.x, -0.55, 0.55, 0.12) * box(d.z, -0.2, 0.9, 0.15);
-    // left strip, tall
-    c += vec3(1.05, 1.03, 1.0) * smoothstep(0.78, 0.9, -d.x) * box(d.y, -0.3, 0.65, 0.12);
-    // right strip, softer and cooler
-    c += vec3(0.38, 0.40, 0.45) * smoothstep(0.8, 0.92, d.x) * box(d.y, -0.2, 0.6, 0.15);
-    // a card behind the camera
-    c += vec3(0.05) * smoothstep(0.8, 0.97, d.z);
-    return c;
-}
-vec3 lin(vec3 g) { return pow(g, vec3(2.2)); }
-vec3 srgb(vec3 l) { return pow(clamp(l, 0.0, 1.0), vec3(1.0 / 2.2)); }
-vec3 tone(vec3 c) { return c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14); }
-// the studio seen in a rough surface (Apple's model's shader): its lights spread and dimmed with the roughness
-vec3 studioR(vec3 d, float r) {
-    float s = r * r, k = 1.0 / (1.0 + 5.0 * s), e = 0.9 * s;
-    float up = d.y * 0.5 + 0.5;
-    vec3 c = mix(vec3(0.008, 0.008, 0.009), vec3(0.07, 0.071, 0.075), smoothstep(0.2 - e, 0.9 + e, up));
-    c += vec3(2.0) * k * smoothstep(0.6 - e, 0.8 + e * 0.5, d.y) * box(d.x, -0.55, 0.55, 0.12 + e) * box(d.z, -0.2, 0.9, 0.15 + e);
-    c += vec3(1.05, 1.03, 1.0) * k * smoothstep(0.78 - e, 0.9 + e * 0.2, -d.x) * box(d.y, -0.3, 0.65, 0.12 + e);
-    c += vec3(0.38, 0.40, 0.45) * k * smoothstep(0.8 - e, 0.92 + e * 0.2, d.x) * box(d.y, -0.2, 0.6, 0.15 + e);
-    c += vec3(0.05) * smoothstep(0.8 - e, 0.97, d.z);
-    return c + vec3(0.12) * s;
-}
-
-void main() {
-    vec3 n = normalize(v_n);
-    vec3 v = normalize(vec3(0.0, 0.0, u_dnf.x) - v_p);
-    if (dot(n, v) < 0.0) n = -n;
-    vec3 r = reflect(-v, n);
-    float cosv = max(dot(n, v), 0.0);
-    float fres = pow(1.0 - cosv, 5.0);
-    vec3 col;
-    if (v_m > 2.5 && v_m < 4.5) {
-        // a screen: its picture as emitted light under cover glass
-        vec3 pic = lin(v_m < 3.5 ? TEX(u_inner, v_uv).rgb : TEX(u_outer, v_uv).rgb);
-        vec3 refl = studio(r) * (0.04 + 0.96 * fres);
-        FRAG = vec4(srgb(pic + refl * 0.3), 1.0);
-        return;
-    }
-    if (v_m < 0.5) {
-        // the frame: polished warm titanium (a metal: it shows its surroundings tinted by its colour)
-        vec3 f0 = vec3(0.89, 0.85, 0.78);
-        col = (f0 + (vec3(1.0) - f0) * fres) * studioR(r, 0.05);
-    } else if (v_m > 4.5 && v_m < 5.5) {
-        // the spine bar and the camera rings: brushed metal of the same colour
-        vec3 f0 = vec3(0.89, 0.86, 0.80);
-        col = (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
-    } else if (v_m < 1.5) {
-        // the right half's back: frosted white glass
-        vec3 base = vec3(0.98, 0.975, 0.95);
-        vec3 f0 = mix(vec3(0.04), base, 0.1);
-        col = base * 0.9 * studioR(n, 1.0) * 1.6 + (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
-    } else if (v_m < 2.5) {
-        // the front's black glass around the screen
-        col = vec3(0.003) + studio(r) * (0.04 + 0.96 * fres) * 0.45;
-    } else {
-        // the spine's dark grooves
-        col = vec3(0.01) + studio(r) * 0.02;
-    }
-    FRAG = vec4(srgb(tone(col)), 1.0);
-}
-"#;
-
-/// Apple's model: skinned in the vertex shader (four joints a vertex)
+/// Skinned in the vertex shader (four joints a vertex)
 const AVS: &str = r#"
 uniform mat3 u_rot; uniform vec3 u_c; uniform vec4 u_fit; uniform vec3 u_dnf;
 uniform mat4 u_bones[32];
@@ -160,9 +66,9 @@ void main() {
 }
 "#;
 
-/// Apple's model: UsdPreviewSurface (base colour, metallic, roughness, occlusion, a normal map, opacity, clearcoat)
-/// lit by the procedural model's photo studio, its reflections blurred with the roughness; the screens show the
-/// phone's pictures
+/// UsdPreviewSurface (base colour, metallic, roughness, occlusion, a normal map, opacity, clearcoat) lit by a photo
+/// studio around the camera, in view space (a dark floor, a softbox overhead, a strip light at each side, a faint card
+/// behind the camera), its reflections blurred with the roughness; the screens show the phone's pictures
 const AFS: &str = r#"
 uniform sampler2D u_t0; uniform sampler2D u_t1; uniform sampler2D u_t2; uniform sampler2D u_t3; uniform sampler2D u_t4;
 uniform sampler2D u_t5; uniform sampler2D u_pic;
@@ -173,7 +79,7 @@ uniform vec3 u_base; uniform vec4 u_mat; uniform vec2 u_coat; uniform vec3 u_dnf
 IN vec3 v_n; IN vec3 v_p; IN vec2 v_uv; IN vec2 v_uv1;
 
 float box(float x, float a, float b, float soft) { return smoothstep(a - soft, a + soft, x) * (1.0 - smoothstep(b - soft, b + soft, x)); }
-// the photo studio (gpu.rs FS), its lights spread and dimmed as the surface gets rougher (r 0 sharp .. 1 diffuse)
+// the photo studio, its lights spread and dimmed as the surface gets rougher (r 0 sharp .. 1 diffuse)
 vec3 studio(vec3 d, float r) {
     float s = r * r, k = 1.0 / (1.0 + 5.0 * s), e = 0.9 * s;
     float up = d.y * 0.5 + 0.5;
@@ -286,20 +192,7 @@ unsafe fn program(gl: &glow::Context, vs: &str, fs: &str, attrs: &[&str]) -> Res
 
 unsafe fn make(gl: &glow::Context) -> Result<Gl, String> {
     unsafe {
-        let prog = program(gl, VS, FS, &["a_p", "a_n", "a_uv", "a_m"])?;
         let quad = program(gl, QVS, QFS, &["a_p"])?;
-        let vao = gl.create_vertex_array()?;
-        let vbo = gl.create_buffer()?;
-        let ibo = gl.create_buffer()?;
-        gl.bind_vertex_array(Some(vao));
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-        let stride = std::mem::size_of::<Vtx>() as i32;
-        for (i, (n, off)) in [(3, 0), (3, 12), (2, 24), (1, 32)].into_iter().enumerate() {
-            gl.enable_vertex_attrib_array(i as u32);
-            gl.vertex_attrib_pointer_f32(i as u32, n, glow::FLOAT, false, stride, off);
-        }
-        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
-        gl.bind_vertex_array(None);
         let quad_vao = gl.create_vertex_array()?;
         let quad_vbo = gl.create_buffer()?;
         gl.bind_vertex_array(Some(quad_vao));
@@ -317,12 +210,12 @@ unsafe fn make(gl: &glow::Context) -> Result<Gl, String> {
         gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA as i32, 1, 1, 0, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&[0, 0, 0, 255])));
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-        Ok(Gl { prog, quad, vao, vbo, ibo, quad_vao, quad_vbo, fbo, color, depth, size: (0, 0), black, apple: None })
+        Ok(Gl { quad, quad_vao, quad_vbo, fbo, color, depth, size: (0, 0), black, model: None })
     }
 }
 
-/// Apple's model's program, buffers and textures
-unsafe fn make_apple(gl: &glow::Context, m: &Model) -> Result<AppleGl, String> {
+/// The model's program, buffers and textures
+unsafe fn make_model(gl: &glow::Context, m: &Model) -> Result<ModelGl, String> {
     unsafe {
         let prog = program(gl, AVS, AFS, &["a_p", "a_n", "a_uv", "a_uv1", "a_j", "a_w"])?;
         let vao = gl.create_vertex_array()?;
@@ -363,14 +256,14 @@ unsafe fn make_apple(gl: &glow::Context, m: &Model) -> Result<AppleGl, String> {
             textures.push(t);
         }
         gl.bind_texture(glow::TEXTURE_2D, None);
-        Ok(AppleGl { prog, vao, textures, of: m as *const Model as usize })
+        Ok(ModelGl { prog, vao, textures, of: m as *const Model as usize })
     }
 }
 
-/// Draws Apple's model: the opaque groups, the screens a little nearer (their glass lies on the frame's), then the
+/// Draws the model: the opaque groups, the screens a little nearer (their glass lies on the frame's), then the
 /// see-through ones blended without depth writes
 #[allow(clippy::too_many_arguments)]
-unsafe fn draw_apple(gl: &glow::Context, a: &AppleGl, m: &Model, bones: &[[f32; 16]], f: &Frame, black: glow::Texture, inner: glow::Texture, outer: glow::Texture) {
+unsafe fn draw(gl: &glow::Context, a: &ModelGl, m: &Model, bones: &[[f32; 16]], f: &Frame, black: glow::Texture, inner: glow::Texture, outer: glow::Texture) {
     unsafe {
         gl.use_program(Some(a.prog));
         let u = |n: &str| gl.get_uniform_location(a.prog, n);
@@ -487,48 +380,12 @@ impl Target {
                 gl.clear_color(0.0, 0.0, 0.0, 0.0);
                 gl.clear_depth_f32(1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-                if let Some((m, _)) = &f.apple {
-                    let ptr = Arc::as_ptr(m) as usize;
-                    if !matches!(&g.apple, Some(Ok(a)) if a.of == ptr) && !matches!(&g.apple, Some(Err(()))) {
-                        g.apple = Some(make_apple(gl, m).map_err(|e| eprintln!("duo3d: OpenGL setup for Apple's model failed: {e}")));
-                    }
+                let ptr = Arc::as_ptr(&f.model) as usize;
+                if !matches!(&g.model, Some(Ok(a)) if a.of == ptr) && !matches!(&g.model, Some(Err(()))) {
+                    g.model = Some(make_model(gl, &f.model).map_err(|e| eprintln!("duo3d: OpenGL setup for the model failed: {e}")));
                 }
-                let apple = f.apple.as_ref().and_then(|(m, b)| match &g.apple {
-                    Some(Ok(a)) => Some((a, m, b)),
-                    _ => None,
-                });
-                if let Some((a, m, bones)) = apple {
-                    draw_apple(gl, a, m, bones, f, black, tex(f.inner), tex(f.outer));
-                } else {
-                gl.use_program(Some(g.prog));
-                let u = |n: &str| gl.get_uniform_location(g.prog, n);
-                gl.uniform_matrix_3_f32_slice(u("u_rot").as_ref(), false, &f.rot);
-                gl.uniform_3_f32(u("u_c").as_ref(), f.centre[0], f.centre[1], f.centre[2]);
-                gl.uniform_4_f32(u("u_fit").as_ref(), f.fit[0], f.fit[1], f.fit[2], f.fit[3]);
-                gl.uniform_3_f32(u("u_dnf").as_ref(), f.dnf[0], f.dnf[1], f.dnf[2]);
-                gl.uniform_1_i32(u("u_inner").as_ref(), 0);
-                gl.uniform_1_i32(u("u_outer").as_ref(), 1);
-                gl.active_texture(glow::TEXTURE0);
-                gl.bind_texture(glow::TEXTURE_2D, Some(tex(f.inner)));
-                gl.active_texture(glow::TEXTURE1);
-                gl.bind_texture(glow::TEXTURE_2D, Some(tex(f.outer)));
-                gl.bind_vertex_array(Some(g.vao));
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(g.vbo));
-                let vb = std::slice::from_raw_parts(f.mesh.v.as_ptr() as *const u8, f.mesh.v.len() * std::mem::size_of::<Vtx>());
-                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vb, glow::STREAM_DRAW);
-                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(g.ibo));
-                let ib = std::slice::from_raw_parts(f.mesh.i.as_ptr() as *const u8, f.mesh.i.len() * 4);
-                gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, ib, glow::STREAM_DRAW);
-                gl.draw_elements(glow::TRIANGLES, f.mesh.body as i32, glow::UNSIGNED_INT, 0);
-                // the screens lie on the glass: drawn nearer by a depth offset
-                gl.enable(glow::POLYGON_OFFSET_FILL);
-                gl.polygon_offset(-1.0, -4.0);
-                gl.draw_elements(glow::TRIANGLES, (f.mesh.i.len() - f.mesh.body) as i32, glow::UNSIGNED_INT, (f.mesh.body * 4) as i32);
-                gl.disable(glow::POLYGON_OFFSET_FILL);
-                gl.bind_vertex_array(None);
-                gl.active_texture(glow::TEXTURE1);
-                gl.bind_texture(glow::TEXTURE_2D, None);
-                gl.active_texture(glow::TEXTURE0);
+                if let Some(Ok(a)) = &g.model {
+                    draw(gl, a, &f.model, &f.bones, f, black, tex(f.inner), tex(f.outer));
                 }
                 // the picture, shrunk into the area over egui's drawing
                 let prev = (prev_fbo > 0).then(|| glow::NativeFramebuffer(std::num::NonZeroU32::new(prev_fbo as u32).unwrap()));

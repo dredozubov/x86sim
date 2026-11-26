@@ -340,10 +340,12 @@ impl App {
         Some(v)
     }
 
-    /// Models 2: the 3D model of a two-screen phone, its hinge moved on to this frame; None for a one-screen phone
+    /// Models 2: the 3D model of a two-screen phone, its hinge moved on to this frame; None for a one-screen phone, or
+    /// while this machine has no model (Apple's, from the user's Xcode.xip: the phone is shown flat)
     pub fn duo(&mut self, id: &str, ctx: &egui::Context) -> Option<(&mut duo3d::Duo3d, instance::Instance)> {
         let inst = self.inst(id)?.clone();
         inst.inner.as_ref()?;
+        x86sim_core::devicemodel::duo()?;
         if !self.duo3d.contains_key(id) {
             self.duo3d.insert(id.to_string(), duo3d::Duo3d::new(&inst, ctx.clone())?);
         }
