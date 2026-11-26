@@ -1448,11 +1448,16 @@ void retake_host_signal(int dsig) {
     default: return;
     }
     struct sigaction cur{};
-    if (sigaction(sig, nullptr, &cur) != 0 || cur.sa_sigaction == mine || !(cur.sa_flags & SA_SIGINFO) ||
-        (void *)cur.sa_handler == SIG_DFL || (void *)cur.sa_handler == SIG_IGN)
-        return;  // ours still, or not Darling's handler: left alone
-    if (sig == SIGUSR1) g_darling_usr1 = cur.sa_sigaction;
-    else g_darling_sig = cur.sa_sigaction;
+    if (sigaction(sig, nullptr, &cur) != 0 || cur.sa_sigaction == mine) return;  // ours still
+    const bool darling = (cur.sa_flags & SA_SIGINFO) && (void *)cur.sa_handler != SIG_DFL && (void *)cur.sa_handler != SIG_IGN;
+    // The guest's SIG_DFL / SIG_IGN of SIGSEGV / SIGBUS (a runtime that declines a fault restores the previous action:
+    // .NET NativeAOT) became the Linux action: the refault killed the process without a report, and so would the
+    // translator's own faults (fastmem, remaps). on_fault stays; with no guest handler it dies by the signal, as XNU.
+    if (!darling && sig != SIGSEGV && sig != SIGBUS) return;  // not Darling's handler: left alone
+    if (darling) {
+        if (sig == SIGUSR1) g_darling_usr1 = cur.sa_sigaction;
+        else g_darling_sig = cur.sa_sigaction;
+    }
     struct sigaction sa{};
     if (sig == SIGUSR1) sa = cur;  // as start_memlog: Darling's mask
     sa.sa_sigaction = mine;
