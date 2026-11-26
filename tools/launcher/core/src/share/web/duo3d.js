@@ -372,6 +372,9 @@ void main() {
     // once; face up / down keep the last); placeOff: how far the drawn placement still is from it (eases to nothing)
     let hinge = 180, reported = "", orient = "", commanded = null, commandedOrient = null, placeOff = [0, 0];
     let shown = NaN, lastT = NaN, cam = null, fit = null, fitT = NaN;
+    // the hinge angle the camera's default view is aimed for: set by a pose, a reset, or a move from elsewhere (the
+    // MCP, the CLI) once done, never while the slider is dragged, so the view holds still under a sliding hinge
+    let viewDeg = NaN;
     // zoom: the wheel's (1: the phone fits); zoomShown: the one drawn (the wheel moves both, a reset only the first)
     let orbit = [0, 0], zoom = 1, zoomShown = 1, proj = null;
     let cssW = 300, cssH = 300, mesh = null, meshDeg = NaN;
@@ -387,6 +390,7 @@ void main() {
     // pose's default (a turn or zoom by hand is dropped)
     function pose(deg, o) {
       command(deg);
+      viewDeg = Number(deg);
       if (o) commandedOrient = [o, performance.now() / 1000];
       resetView();
     }
@@ -435,7 +439,10 @@ void main() {
         if (Math.abs(placeOff[0]) + Math.abs(placeOff[1]) < 0.001) placeOff = [0, 0];
         moving = true;
       }
-      const want = defaultView(orient, shown, phi);
+      // quiet: nothing sent from here for 3 s, and the hinge is not where this page last sent it (moved elsewhere)
+      const quiet = !commanded || (now - commanded[1] > 3 && Math.abs(hinge - commanded[0]) > 1.5);
+      if (isNaN(viewDeg) || (quiet && Math.abs(hinge - viewDeg) > 1 && Math.abs(shown - hinge) < 0.5)) viewDeg = shown;
+      const want = defaultView(orient, viewDeg, rad(180 - viewDeg));
       if (cam && dt > 0) {
         const k = 1 - Math.exp(-dt * SETTLE);
         const dy = wrap(want[0] - cam[0]), dp = want[1] - cam[1];
@@ -609,6 +616,9 @@ void main() {
     function resetView() {
       if (cam) cam = [wrap(cam[0] + orbit[0]), Math.max(-1.5, Math.min(1.5, cam[1] + orbit[1]))];
       orbit = [0, 0]; zoom = 1; dirty = true;
+      // aimed for the angle just sent from here (a pose moving there), else where the hinge is drawn
+      const recent = commanded && performance.now() / 1000 - commanded[1] < 3;
+      if (recent) viewDeg = commanded[0]; else if (!isNaN(shown)) viewDeg = shown;
     }
     function touchAt(h, p, px, py) {
       const [x, y] = follow(px, py, h);

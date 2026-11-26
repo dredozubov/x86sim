@@ -131,6 +131,9 @@ pub struct Duo3d {
     last_t: f64,
     /// the angle the hinge panel last sent and when (the hinge file only changes at a move's start and end)
     pub commanded: Option<(f64, f64)>,
+    /// the hinge angle the camera's default view is aimed for: set by a pose, a reset, or a move from elsewhere (the
+    /// MCP, the CLI), never while the slider is dragged, so the view holds still under a sliding hinge
+    view_deg: f64,
     /// the orientation a pose chosen here holds the phone in, and when: drawn at once, before simhid reports it
     commanded_orient: Option<(String, f64)>,
     /// the device orientation the phone is placed in (portrait / landscape / upside down; a face up or down report
@@ -190,6 +193,7 @@ impl Duo3d {
             shown: inst.hinge().unwrap_or(0.0),
             last_t: f64::NAN,
             commanded: None,
+            view_deg: f64::NAN,
             commanded_orient: None,
             orient: String::new(),
             place_off: (0.0, 0.0),
@@ -249,8 +253,14 @@ impl Duo3d {
             }
             ctx.request_repaint();
         }
-        // the camera eases to the pose's view (the screen swap turns it from the inner to the outer screen)
-        let want = Self::default_view(&self.orient, self.shown, phi);
+        // the camera eases to the view of the angle it is aimed for: a pose's, a reset's, or a move from elsewhere
+        // once it is done (the hinge panel sent nothing for 3 s); not the sliding angle itself
+        // quiet: nothing sent from here for 3 s, and the hinge is not where the panel last sent it (moved elsewhere)
+        let quiet = self.commanded.is_none_or(|(v, t)| now - t > 3.0 && (file - v).abs() > 1.5);
+        if self.view_deg.is_nan() || (quiet && (file - self.view_deg).abs() > 1.0 && (self.shown - file).abs() < 0.5) {
+            self.view_deg = self.shown;
+        }
+        let want = Self::default_view(&self.orient, self.view_deg, ((180.0 - self.view_deg) as f32).to_radians());
         let cam = match self.cam {
             Some((y, p)) if dt > 0.0 => {
                 let k = 1.0 - (-(dt as f32) * SETTLE).exp();
@@ -279,6 +289,7 @@ impl Duo3d {
     /// view settles on the pose's default (a turn or zoom by hand is dropped)
     pub fn pose(&mut self, angle: f64, orientation: Option<&str>, now: f64) {
         self.commanded = Some((angle, now));
+        self.view_deg = angle;
         if let Some(o) = orientation {
             self.commanded_orient = Some((o.to_string(), now));
         }
@@ -293,6 +304,12 @@ impl Duo3d {
         }
         self.orbit = (0.0, 0.0);
         self.zoom = 1.0;
+        // aimed for the angle just sent from here (a pose moving there), else where the hinge is drawn
+        if let Some((v, _)) = self.commanded.filter(|c| self.last_t.is_nan() || self.last_t - c.1 < 3.0) {
+            self.view_deg = v;
+        } else if !self.shown.is_nan() {
+            self.view_deg = self.shown;
+        }
     }
 
     pub fn bent(&self) -> bool {
