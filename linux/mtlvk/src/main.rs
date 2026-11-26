@@ -11,6 +11,7 @@
 //!        mtlvk selftest-compute [metallib]  (stage 4: kernels of tests/metal/shaders/probe.metallib)
 
 mod conn;
+mod hang;
 mod memstat;
 mod proto;
 
@@ -270,6 +271,7 @@ fn main() {
             }
         });
     }
+    hang::start(device.clone());
     memstat::start(device.clone());
     start_trim(device.clone());
     let path = arg.unwrap_or_else(|| DEFAULT_SOCKET.to_string());
