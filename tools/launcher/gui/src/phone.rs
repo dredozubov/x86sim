@@ -12,6 +12,20 @@ fn ui_enter(ctx: &egui::Context) -> bool {
     !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
 }
 
+/// The inspector's folds and their keys (the device page; main.rs shortcuts acts on them, the `?` list shows them).
+/// Letters the page leaves free: not s r o n q (start/stop, restart, own window, add, quit) nor the digits.
+pub const FOLD_KEYS: [(&str, egui::Key, &str, &str); 9] = [
+    ("features", egui::Key::F, "f", "Features"),
+    ("logs", egui::Key::L, "l", "Logs"),
+    ("share", egui::Key::H, "h", "Share"),
+    ("ax", egui::Key::X, "x", "Accessibility"),
+    ("web", egui::Key::W, "w", "Web Inspector"),
+    ("net", egui::Key::T, "t", "Network"),
+    ("perf", egui::Key::P, "p", "Performance"),
+    ("sim", egui::Key::M, "m", "Simulate"),
+    ("adv", egui::Key::A, "a", "Advanced"),
+];
+
 /// Room right of a watch's case for its crown, which stands off the case's edge
 const WATCH_EDGE: f32 = 22.0;
 /// Width of the tool bar right of the screen (Platforms 1: an Apple TV's holds the remote)
@@ -834,7 +848,7 @@ impl App {
 
     fn fold_section(&mut self, ui: &mut egui::Ui, key: &'static str, title_text: &str, summary: &str, tip: &str) -> bool {
         let open = self.open.contains(key);
-        let hint = match key { "features" => "f", "logs" => "l", "perf" => "p", "share" | "ax" | "web" | "net" => "", _ => "a" };
+        let hint = FOLD_KEYS.iter().find(|f| f.0 == key).map(|f| f.2).unwrap_or("");
         if fold(ui, title_text, summary, tip, hint, open) != open {
             if open {
                 self.open.remove(key);
