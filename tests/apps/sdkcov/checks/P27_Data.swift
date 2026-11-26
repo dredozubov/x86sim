@@ -1473,9 +1473,17 @@ extension Registry {
             try objc(refresh, "SKReceiptRefreshRequest"); try expect((refresh.receiptProperties?[SKReceiptPropertyIsExpired] as? Int) == 0, "receipt properties")
             let product = SKProduct()
             try objc(product, "SKProduct")
-            let made: [(String, String)] = [("SKPaymentTransaction", "NSObject"), ("SKProductDiscount", "NSObject"), ("SKProductSubscriptionPeriod", "NSObject"), ("SKStorefront", "NSObject"),
+            let allMade: [(String, String)] = [("SKPaymentTransaction", "NSObject"), ("SKProductDiscount", "NSObject"), ("SKProductSubscriptionPeriod", "NSObject"), ("SKStorefront", "NSObject"),
                                             ("SKStoreReviewController", "NSObject"), ("SKOverlayTransitionContext", "NSObject"), ("SKCloudServiceSetupViewController", "UIViewController"),
                                             ("SKOverlayConfiguration", "NSObject")]
+            #if os(watchOS)
+            // watchOS's StoreKit has no review controller, overlays or cloud service setup view controller
+            let notOnWatch: Set<String> = ["SKStoreReviewController", "SKOverlayTransitionContext", "SKCloudServiceSetupViewController", "SKOverlayConfiguration"]
+            let made = allMade.filter { !notOnWatch.contains($0.0) }
+            try expect(notOnWatch.allSatisfy { NSClassFromString($0) == nil }, "watchOS StoreKit classes")
+            #else
+            let made = allMade
+            #endif
             #if os(iOS)
             let ov = SKOverlay.AppConfiguration(appIdentifier: "1234567890", position: .bottomRaised); ov.userDismissible = false; ov.campaignToken = "c"
             let clip = SKOverlay.AppClipConfiguration(position: .bottom)
