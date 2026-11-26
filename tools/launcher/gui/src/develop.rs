@@ -2,7 +2,7 @@
 //! The toolchain's pieces (Swift, xtool, the iOS SDK, device tools) with install / update / repair buttons and the
 //! background setup job's progress; recent projects with Build and Run on a chosen device; the last task's output.
 //! The logic is x86sim_core::dev (shared with `x86sim dev` and the MCP server's dev_* tools).
-use crate::global::{list_row, note};
+use crate::global::list_row;
 use crate::theme::*;
 use crate::App;
 use eframe::egui;
@@ -99,6 +99,35 @@ fn piece_icon(id: &str) -> &'static str {
     }
 }
 
+/// A toolchain piece's status line, terse: the detail up to its first explanation, a size kept as a fact ("not
+/// installed (… about 70 MB, no root)" -> "Not installed · 70 MB"). The whole detail is the row's tooltip.
+fn terse(d: &str) -> String {
+    let d = d.trim();
+    let mut head = match d.find("missing ") {
+        Some(i) if d[..i].contains(": ") => d[i..].to_string(),
+        _ => {
+            let cut = [" (", "; ", ": "].iter().filter_map(|sep| d.find(sep)).min().unwrap_or(d.len());
+            d[..cut].trim().to_string()
+        }
+    };
+    if let Some(i) = d.find("about ") {
+        let size = d[i + 6..].split([',', ')', ';']).next().unwrap_or("").trim();
+        if (size.ends_with(" MB") || size.ends_with(" GB")) && !head.contains(size) {
+            head = format!("{head} · {size}");
+        }
+    }
+    // a status word starts with a capital; a tool's name ("pymobiledevice3 …", "cargo …") stays as it is spelt
+    let word = head.split(' ').next().unwrap_or("");
+    if !["not", "missing", "installed", "built", "only", "no", "commit"].contains(&word) {
+        return head;
+    }
+    let mut c = head.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => head,
+    }
+}
+
 fn state_badge(ui: &mut egui::Ui, s: &str) {
     let (t, c) = match s {
         "ok" => ("Ready", pal().good),
@@ -155,7 +184,7 @@ impl App {
             return;
         };
         if st.pieces.iter().any(|p| p.id == "fork" && p.state != "ok") {
-            empty_state(ui, icon::PACKAGE, "omarchy-apple-dev is missing", &format!("Expected in {}. In a checkout: git submodule update --init external/omarchy-apple-dev", st.fork.display()), |_| {});
+            empty_state(ui, icon::PACKAGE, "omarchy-apple-dev is missing", &st.fork.display().to_string(), |_| {});
             return;
         }
 
@@ -163,13 +192,14 @@ impl App {
         let job = st.job.clone();
         let busy_job = job.as_ref().is_some_and(|j| j.running);
         let mut start: Option<(&'static str, Vec<String>)> = None;
+        let mut go_settings = false;
         // Download Xcode with the Apple Account (Settings > Apple Account): the .xip, then the SDK from it
         let signed_in = x86sim_core::account::load_meta().is_some();
         section(ui, "Toolchain", |ui| {
             let tip = if signed_in {
-                format!("Xcode {} (its newest release) from developer.apple.com with your Apple Account: Apple's signature checked, then the SDK built from it", x86sim_core::account::pinned_xcode_major())
+                format!("Xcode {} from Apple, then its SDK", x86sim_core::account::pinned_xcode_major())
             } else {
-                "Sign in first: Settings > Apple Account".to_string()
+                "Needs a sign-in: Settings > Apple Account".to_string()
             };
             if ui.add_enabled(!busy_job && signed_in, Btn::ghost("Download Xcode").icon(icon::DOWNLOAD_SIMPLE).small()).on_hover_text(&tip).on_disabled_hover_text(&tip).clicked() {
                 let mut a = vec![];
@@ -192,56 +222,71 @@ impl App {
                 if k > 0 {
                     hline(ui);
                 }
-                list_row(ui, piece_icon(p.id), p.title, &p.detail, |ui| {
+                let line = terse(&p.detail);
+                let tip = if line == p.detail { String::new() } else { p.detail.clone() };
+                let row = list_row(ui, piece_icon(p.id), p.title, &line, |ui| {
                     state_badge(ui, p.state);
                     if busy_job {
                         return;
                     }
                     match (p.id, p.state) {
                         ("swift", "missing" | "stale") => {
-                            if ui.add(Btn::primary("Install").icon(icon::DOWNLOAD_SIMPLE)).on_hover_text(format!("Swift {} from swift.org, into your home folder (1.1 GB download)", dev::SWIFT_VERSION)).clicked() {
+                            if ui.add(Btn::primary("Install").icon(icon::DOWNLOAD_SIMPLE)).on_hover_text(format!("Swift {} from swift.org · 1.1 GB", dev::SWIFT_VERSION)).clicked() {
                                 start = Some(("swift", vec![]));
                             }
                         }
                         ("xtool", s) if s != "ok" => {
-                            if ui.add(Btn::primary(if s == "missing" { "Install" } else { "Update" }).icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("xtool (built from source, about 7 minutes), rcodesign, ipsw, pymobiledevice3").clicked() {
+                            if ui.add(Btn::primary(if s == "missing" { "Install" } else { "Update" }).icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("xtool, rcodesign, ipsw, pymobiledevice3 · about 7 min").clicked() {
                                 start = Some(("toolchain", vec![]));
                             }
                         }
                         ("cocoapods", s) if s != "ok" => {
-                            if ui.add(Btn::primary(if s == "stale" { "Update" } else { "Install" }).icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Ruby and CocoaPods, pinned, into your home folder (about 70 MB): for React Native, Expo and Flutter plugins with a Podfile").clicked() {
+                            if ui.add(Btn::primary(if s == "stale" { "Update" } else { "Install" }).icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Ruby and CocoaPods · 70 MB").clicked() {
                                 start = Some(("cocoapods", vec![]));
                             }
                         }
                         ("swiftbuild", s) if s != "ok" => {
-                            if ui.add(Btn::primary("Install").icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Apple's open-source Swift Build with sweetpad's Linux front end, into your home folder (about 220 MB): builds Xcode projects and workspaces").clicked() {
+                            if ui.add(Btn::primary("Install").icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Swift Build for Xcode projects · 220 MB").clicked() {
                                 start = Some(("swiftbuild", vec![]));
                             }
                         }
+                        (id, s) if s != "ok" && (id == "lldb" || x86sim_core::devgen::is_tool(id)) => {
+                            if ui.add(Btn::primary("Install").icon(icon::DOWNLOAD_SIMPLE)).clicked() {
+                                start = Some((id, vec![]));
+                            }
+                        }
+                        ("device", s) if s != "ok" && p.fix.contains("account login") => {
+                            if ui.add(Btn::secondary("Sign in").icon(icon::SIGN_IN)).on_hover_text("Settings > Apple Account").clicked() {
+                                go_settings = true;
+                            }
+                        }
                         ("packages", "missing") => {
-                            if ui.add(Btn::secondary("Copy command").icon(icon::COPY)).clicked() {
+                            if ui.add(Btn::secondary("Copy command").icon(icon::COPY)).on_hover_text(&p.fix).clicked() {
                                 ui.ctx().copy_text(p.fix.clone());
                             }
                         }
                         _ => {}
                     }
                 });
+                if !tip.is_empty() {
+                    row.on_hover_text(&tip);
+                }
                 if p.id == "sdk" && p.state != "ok" {
                     egui::Frame::new().inner_margin(egui::Margin { left: 60, right: 16, top: 0, bottom: 12 }).show(ui, |ui| {
-                        ui.label(muted("Download Xcode 27 (.xip) from developer.apple.com/download/all with a free Apple ID (or sign in under Settings > Apple Account and press Download Xcode above), then build the SDK from it (about 3 GB used):"));
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut self.develop.xip).hint_text("/path/to/Xcode_27.xip").desired_width(420.0));
                             let ok = std::path::Path::new(self.develop.xip.trim()).is_file();
-                            if ui.add_enabled(ok && !busy_job, Btn::primary("Build SDK")).clicked() {
+                            if ui.add_enabled(ok && !busy_job, Btn::primary("Build SDK")).on_hover_text("From Xcode 27's .xip · about 3 GB").clicked() {
                                 start = Some(("sdk", vec!["--xip".into(), self.develop.xip.trim().into()]));
                             }
                         });
                     });
-                } else if !p.fix.is_empty() && p.state != "ok" {
-                    note(ui, &p.fix);
                 }
             }
         });
+        if go_settings {
+            self.view = crate::View::Settings;
+        }
         if let Some((kind, args)) = start {
             match dev::start_job(kind, &args) {
                 Ok(_) => {
@@ -261,7 +306,7 @@ impl App {
                 let title = match (j.running, j.rc) {
                     (true, _) => format!("Installing: {}", j.kind),
                     (false, Some(0)) => format!("Finished: {}", j.kind),
-                    (false, rc) => format!("Stopped: {} (exit {})", j.kind, rc.unwrap_or(-1)),
+                    (false, rc) => format!("Stopped: {} · exit {}", j.kind, rc.unwrap_or(-1)),
                 };
                 let last = j.last.trim_matches(|c| c == '=' || c == ' ').to_string();
                 let detail = if j.step.is_empty() || j.step == last { last } else { format!("{} · {last}", j.step) };
@@ -315,7 +360,7 @@ impl App {
             let cur = self.insts.iter().find(|i| i.id == self.develop.phone).cloned();
             let detail = match &cur {
                 Some(i) => format!("{} · {} · {}", i.model, i.ios, format!("{:?}", self.phase(&i.id)).to_lowercase()),
-                None => "No device yet: add one on the Devices page".into(),
+                None => "No devices".into(),
             };
             list_row(ui, icon::DEVICE_MOBILE, cur.as_ref().map(|i| i.name.as_str()).unwrap_or("Device"), &detail, |ui| {
                 egui::ComboBox::from_id_salt("dev-phone").selected_text(cur.as_ref().map(|i| i.name.clone()).unwrap_or_default()).width(200.0).show_ui(ui, |ui| {
@@ -324,7 +369,6 @@ impl App {
                     }
                 });
             });
-            note(ui, "Run builds the app for this device's platform, starts the device if it is off, then installs and opens the app.");
         });
 
         // ---- projects
@@ -341,7 +385,7 @@ impl App {
                 let detail = format!("{} · {} · {}", p.kind, if p.bundle_id.is_empty() { "-" } else { &p.bundle_id }, p.dir.display());
                 list_row(ui, icon::FILE_CODE, &p.name, &detail, |ui| {
                     let can = ((st.ready_sim && p.kind == "xtool") || p.kind == "rust") && !task_running;
-                    if ui.add_enabled(can && !self.develop.phone.is_empty(), Btn::primary("Run").icon(icon::PLAY)).on_hover_text("Build, install and open it on the device above").clicked() {
+                    if ui.add_enabled(can && !self.develop.phone.is_empty(), Btn::primary("Run").icon(icon::PLAY)).on_hover_text("Build, install and open on the device above; starts it if off").clicked() {
                         act = Some(("run".into(), p.dir.clone()));
                     }
                     if ui.add_enabled(can, Btn::secondary("Build").icon(icon::HAMMER)).clicked() {
@@ -356,7 +400,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.develop.new_name).hint_text("NewApp").desired_width(180.0));
                     let ok = !self.develop.new_name.trim().is_empty() && st.pieces.iter().any(|p| p.id == "xtool" && p.state != "missing");
-                    if ui.add_enabled(ok && !task_running, Btn::secondary("New SwiftUI app").icon(icon::FOLDER_PLUS)).on_hover_text("xtool new, in ~/x86sim-apps").clicked() {
+                    if ui.add_enabled(ok && !task_running, Btn::secondary("New SwiftUI app").icon(icon::FOLDER_PLUS)).on_hover_text("In ~/x86sim-apps").clicked() {
                         act = Some(("new".into(), PathBuf::from(self.develop.new_name.trim())));
                     }
                     ui.add_space(S4);
@@ -436,6 +480,6 @@ impl App {
             });
         }
         ui.add_space(S4);
-        ui.label(muted(format!("omarchy-apple-dev {} · {} · also: x86sim dev, MCP dev_* tools", st.fork_version, st.fork.display())));
+        ui.label(muted(format!("omarchy-apple-dev {}", st.fork_version))).on_hover_text(st.fork.display().to_string());
     }
 }
