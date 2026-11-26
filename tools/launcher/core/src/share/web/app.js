@@ -669,6 +669,25 @@ function phoneView(id) {
     if (pan) parts.push(pan.features, pan.logs);
     // the Network section (netpanel.js): an app's requests, control links only
     if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast }); parts.push(netp.panel); }
+    // Share, as the launcher's section: this device's links and the tunnels that make them reach other machines
+    if (ME.owner) {
+      const info2 = h("div", { class: "kvs" });
+      const shareFold = fold("share", "Share", [info2, h("div", { class: "btns" }, h("button", { class: "btn small primary", type: "button", text: "Make a link…", onclick: () => openShare(id) }))]);
+      const fill = async () => {
+        try {
+          const [u, l] = await Promise.all([api("/api/urls"), api("/api/links")]);
+          const up = u.tunnels.filter((t) => t.state === "up").map((t) => ({ tailscale: "Tailscale", funnel: "Funnel", cloudflared: "Cloudflare" })[t.kind] || t.kind);
+          const mine = l.filter((x) => !x.phone || x.phone === id).length;
+          info2.replaceChildren(h("div", { class: "kv" }, h("span", { text: "Reachable" }), h("span", { text: up.length ? up.join(", ") : "this machine only" })),
+            h("div", { class: "kv" }, h("span", { text: "Links" }), h("span", { text: mine ? `${mine} for this device` : "none yet" })));
+          shareFold.sum.textContent = up.length ? up.join(", ") : "";
+        } catch {}
+      };
+      fill();
+      shareFold.addEventListener("toggle", () => shareFold.open && fill());
+      $("#shareDlg").addEventListener("close", fill);
+      parts.push(shareFold);
+    }
     if (axi) {
       const ax = axi.panel();
       const h4 = ax.querySelector(":scope > h4");
