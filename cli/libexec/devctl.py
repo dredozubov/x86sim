@@ -541,6 +541,9 @@ def clone(a):
         die("usage: x86sim clone NEWNAME", 2)
     name = " ".join(a)
     own_phone("clone")
+    # as simctl clone: not a device its runtime refuses (device-a64.py check: CoreSimulator's "unavailable")
+    if subprocess.run([sys.executable, os.path.join(ROOT, "cli/libexec/arm64/device-a64.py"), "check", DEV]).returncode:
+        sys.exit(1)
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24].strip("-")
     if not slug:
         die("x86sim clone: give the new device a name", 2)
