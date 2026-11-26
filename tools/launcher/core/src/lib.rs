@@ -17,6 +17,7 @@ pub mod devapp;
 pub mod devdelete;
 pub mod devpods;
 pub mod devdotnet;
+pub mod devgen;
 pub mod devkmp;
 pub mod devxcode;
 pub mod discover;
