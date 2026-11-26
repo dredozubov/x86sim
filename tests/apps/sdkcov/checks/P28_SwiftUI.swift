@@ -545,6 +545,229 @@ extension NSManagedObject {
 }
 #endif
 
+// MARK: text: a TextRenderer sizing through TextProxy and reading a custom TextAttribute; variants, formats, languages
+
+private struct P28Mark: TextAttribute { let tag: Int }
+private struct P28Wide: TextRenderer {
+    let log: P6Log
+    func sizeThatFits(proposal: ProposedViewSize, text: TextProxy) -> CGSize {
+        let p: TextProxy = text
+        let s = p.sizeThatFits(proposal)
+        return CGSize(width: s.width + 20, height: s.height)
+    }
+    func draw(layout: Text.Layout, in ctx: inout GraphicsContext) {
+        var tags: [Int] = []
+        for line in layout { for run in line { if let m = run[P28Mark.self] { tags.append(m.tag) }; ctx.draw(run) } }
+        log.add("marks \(tags.sorted())")
+    }
+}
+private struct P28TextRoot: View {
+    let log: P6Log
+    let d0 = Date(timeIntervalSince1970: 1_700_000_000)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("render").fixedSize().p28Size("plain", log)
+            (Text("ren").customAttribute(P28Mark(tag: 1)) + Text("der").customAttribute(P28Mark(tag: 2))).textRenderer(P28Wide(log: log)).fixedSize().p28Size("wide", log)
+            Text(TimeDataSource<Date>.currentDate, format: SystemFormatStyle.DateReference.reference(to: d0)).p28Size("reference", log)
+            Text(TimeDataSource<Date>.currentDate, format: .timer(countingDownIn: Date()..<Date().addingTimeInterval(3600))).p28Size("timer", log)
+            Text(TimeDataSource<Date>.currentDate, format: .stopwatch(startingAt: Date())).p28Size("stopwatch", log)
+            Text(d0, style: .relative).textVariant(SizeDependentTextVariant.sizeDependent).frame(width: 60).p28Size("variant-size", log)
+            Text(d0, style: .relative).textVariant(FixedTextVariant.fixed).p28Size("variant-fixed", log)
+            Text("ภาษาไทย").typesettingLanguage(TypesettingLanguage.explicit(Locale.Language(identifier: "th"))).fixedSize().p28Size("thai", log)
+            Text("select me").textSelection(EnabledTextSelectability.enabled).accessibilityTextContentType(AccessibilityTextContentType.sourceCode).p28Size("selectable", log)
+        }
+    }
+}
+private func p28Selectable<S: TextSelectability>(_ s: S) -> Bool { S.allowsSelection }
+
+// MARK: keyframes: a custom Keyframes, a custom KeyframeTrackContent, builders; animation state in a custom animation
+
+private struct P28KFV { var x = 0.0; var y = 0.0 }
+private struct P28XTrack: KeyframeTrackContent {
+    var body: some KeyframeTrackContent<Double> { LinearKeyframe(10.0, duration: 1); LinearKeyframe(20.0, duration: 1) }
+}
+private struct P28Frames: Keyframes {
+    var body: some Keyframes<P28KFV> {
+        KeyframeTrack(\P28KFV.x) { P28XTrack() }
+        KeyframeTrack(\P28KFV.y) { CubicKeyframe(4.0, duration: 2) }
+    }
+}
+@KeyframesBuilder<P28KFV> private func p28BuiltFrames() -> some Keyframes<P28KFV> {
+    KeyframeTrack(\P28KFV.x) { LinearKeyframe(1.0, duration: 0.5) }
+}
+@KeyframeTrackContentBuilder<Double> private func p28BuiltTrack() -> some KeyframeTrackContent<Double> {
+    LinearKeyframe(5.0, duration: 1)
+}
+private struct P28Calls: AnimationStateKey { static let defaultValue = 0 }
+/// a linear 0.5 s animation counting its calls in its animation state
+private struct P28Counting: CustomAnimation {
+    let log: P6Log
+    static func == (a: P28Counting, b: P28Counting) -> Bool { a.log === b.log }
+    func hash(into h: inout Hasher) { h.combine(ObjectIdentifier(log)) }
+    func animate<V: VectorArithmetic>(value: V, time: TimeInterval, context: inout AnimationContext<V>) -> V? {
+        var st: AnimationState<V> = context.state
+        st[P28Calls.self] += 1
+        context.state = st
+        if time >= 0.5 { log.add("calls \(context.state[P28Calls.self])"); return nil }
+        var v = value; v.scale(by: time / 0.5); return v
+    }
+}
+private struct P28AnimProbe: ViewModifier, Animatable {
+    var x: Double
+    var animatableData: Double { get { x } set { x = newValue } }
+    func body(content: Content) -> some View { content.opacity(x) }
+}
+/// a deprecated AnimatableModifier, driven like an Animatable ViewModifier
+private struct P28OldProbe: AnimatableModifier {
+    var x: Double; let log: P6Log
+    var animatableData: Double { get { x } set { x = newValue; if newValue > 0 && newValue < 1 { log.add("old mid") } } }
+    func body(content: Content) -> some View { content.opacity(x) }
+}
+@Observable private final class P28AnimM { var on = false }
+private struct P28AnimRoot: View {
+    @Bindable var m: P28AnimM; let log: P6Log
+    var body: some View {
+        Color.red.frame(width: 10, height: 10).modifier(P28AnimProbe(x: m.on ? 1 : 0)).modifier(P28OldProbe(x: m.on ? 1 : 0, log: log))
+    }
+}
+
+// MARK: hover effects, glass, shape styles, symbol rendering, materials, prominence (rendered)
+
+private struct P28Hover: CustomHoverEffect {
+    func body(content: EmptyHoverEffect) -> some CustomHoverEffect { content.hoverEffectDisabled(false) }
+}
+private func p28HoverName(_ h: HoverEffect) -> String { "\(h)".components(separatedBy: "(").first ?? "" }
+private struct P28StyleSwatches: View {
+    let log: P6Log
+    @Environment(\.backgroundProminence) var prominence
+    var body: some View {
+        let _ = log.add("prominence \(prominence == BackgroundProminence.standard ? "standard" : "increased")")
+        HStack(spacing: 0) {
+            Rectangle().fill(LinkShapeStyle.link).frame(width: 10, height: 10)
+            Rectangle().fill(PlaceholderTextShapeStyle.placeholder).frame(width: 10, height: 10)
+            Rectangle().fill(SelectionShapeStyle.selection).frame(width: 10, height: 10)
+            Rectangle().fill(WindowBackgroundShapeStyle.windowBackground).frame(width: 10, height: 10)
+            Rectangle().fill(Color.red.secondary).frame(width: 10, height: 10)
+            Rectangle().fill(Material.regular.materialActiveAppearance(MaterialActiveAppearance.active)).frame(width: 10, height: 10)
+            Color.red.frame(width: 10, height: 10).drawingGroup(opaque: true, colorMode: ColorRenderingMode.extendedLinear)
+        }.background(Color.white)
+    }
+}
+
+// MARK: drag and drop: a DropDelegate, drop proposals, drag / drop configurations; the interactions UIKit gets
+
+private struct P28Drop: DropDelegate {
+    let log: P6Log
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.text]) }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: DropOperation.move) }
+    func performDrop(info: DropInfo) -> Bool { log.add("drop \(info.location)"); return true }
+}
+#if os(iOS) || os(visionOS)
+private struct P28DragRoot: View {
+    let log: P6Log
+    var body: some View {
+        VStack {
+            Text("drag me").draggable("p28 text").p28Size("draggable", log)
+            Color.blue.frame(width: 60, height: 60).onDrop(of: [.text], delegate: P28Drop(log: log))
+            Color.green.frame(width: 60, height: 60).dropDestination(for: String.self) { items, _ in log.add("dropped \(items)"); return true }
+                .springLoadingBehavior(SpringLoadingBehavior.enabled)
+            Text("cfg").onDragSessionUpdated { (s: DragSession) in log.add("drag session \(s.phase)") }
+                .dragConfiguration(DragConfiguration(allowMove: true))
+                .dropConfiguration { (s: DropSession) in DropConfiguration(operation: .copy) }
+        }
+    }
+}
+#endif
+
+// MARK: tables, outlines, editable collections
+
+private struct P28Item: Identifiable, Hashable { let id: Int; var name: String; var children: [P28Item]? = nil }
+#if os(iOS) || os(visionOS)
+private struct P28NameColumn: TableColumnContent {
+    var tableColumnBody: some TableColumnContent<P28Item, KeyPathComparator<P28Item>> {
+        TableColumn("Name", value: \P28Item.name).alignment(TableColumnAlignment.leading).customizationID("name")
+    }
+}
+@TableColumnBuilder<P28Item, KeyPathComparator<P28Item>> private func p28Columns() -> some TableColumnContent<P28Item, KeyPathComparator<P28Item>> {
+    P28NameColumn()
+    TableColumn("Id") { (i: P28Item) in Text("\(i.id)") }.customizationID("id").defaultVisibility(.visible)
+}
+private struct P28Rows: TableRowContent {
+    let items: [P28Item]
+    var tableRowBody: some TableRowContent<P28Item> {
+        ForEach(items) { TableRow($0) }
+    }
+}
+@TableRowBuilder<P28Item> private func p28ExtraRow() -> some TableRowContent<P28Item> {
+    TableRow(P28Item(id: 99, name: "extra")).itemProvider { NSItemProvider(object: "extra" as NSString) }
+}
+private struct P28TableRoot: View {
+    let log: P6Log
+    @State var order = [KeyPathComparator(\P28Item.name)]
+    @State var cust = TableColumnCustomization<P28Item>()
+    @State var items = [P28Item(id: 1, name: "b"), P28Item(id: 2, name: "a")]
+    var body: some View {
+        VStack {
+            Table(of: P28Item.self, sortOrder: $order, columnCustomization: $cust) { p28Columns() } rows: {
+                P28Rows(items: items)
+                p28ExtraRow()
+            }
+            .onAppear { cust[visibility: "id"] = .hidden; log.add("table cust id \(cust[visibility: "id"] == .hidden ? "hidden" : "visible") behavior \(TableColumnCustomizationBehavior.all.contains(.reorder))") }
+            .frame(height: 200)
+            List {
+                OutlineGroup([P28Item(id: 10, name: "root", children: [P28Item(id: 11, name: "leaf")])], children: \.children) { i in
+                    Text(i.name).onAppear { log.add("outline \(i.name)") }
+                }
+                ForEach($items, editActions: EditActions.all) { $i in Text(i.name) }
+                ForEach(items) { Text("dyn \($0.name)") }.onDelete { _ in }.onMove { _, _ in }
+            }
+            .frame(height: 300)
+        }
+    }
+}
+#endif
+/// the editable ForEach's data and content types, named
+private func p28EditableTypes() -> String {
+    let items = [P28Item(id: 1, name: "a")]
+    let b = Binding.constant(items)
+    let fe: ForEach<IndexedIdentifierCollection<[P28Item], Int>, Int, EditableCollectionContent<Text, [P28Item]>> = ForEach(b, editActions: .all) { $i in Text(i.name) }
+    return "\(fe.data.count) \(type(of: fe.data.first!))"
+}
+
+// MARK: documents: ReferenceFileDocument snapshots, the iOS 27 Document protocols' readers and writers
+
+private final class P28RefDoc: ReferenceFileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    var text: String
+    init(text: String) { self.text = text }
+    required init(configuration: ReadConfiguration) throws {
+        let c: FileDocumentReadConfiguration = configuration
+        text = String(decoding: c.file.regularFileContents ?? Data(), as: UTF8.self)
+    }
+    func snapshot(contentType: UTType) throws -> String { text }
+    func fileWrapper(snapshot: String, configuration: WriteConfiguration) throws -> FileWrapper {
+        let _: FileDocumentWriteConfiguration = configuration
+        return FileWrapper(regularFileWithContents: Data(snapshot.utf8))
+    }
+}
+private struct P28TextReader: DocumentReader {
+    func read(from source: URL, progress: consuming Subprogress) async throws -> String { try String(contentsOf: source, encoding: .utf8) }
+}
+private struct P28TextWriter: DocumentWriter {
+    func write(snapshot: String, to destination: URL, previous: String?, progress: consuming Subprogress) async throws {
+        try (snapshot + (previous.map { " (was \($0))" } ?? "")).write(to: destination, atomically: true, encoding: .utf8)
+    }
+}
+private final class P28Doc: Document {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    static var writableContentTypes: [UTType] { [.plainText] }
+    var text = ""
+    func reader(configuration: ReadConfiguration) -> P28TextReader { let _: DocumentReadConfiguration = configuration; return P28TextReader() }
+    func writer(configuration: WriteConfiguration) -> P28TextWriter { let _: DocumentWriteConfiguration = configuration; return P28TextWriter() }
+    @MainActor func apply(snapshot: String, previous: String?) async throws { text = snapshot }
+    @MainActor func snapshot(contentType: UTType) async throws -> String { text }
+}
+
 // MARK: checks
 
 extension Registry {
@@ -809,6 +1032,186 @@ extension Registry {
             let d = Array(Set(log.all)).sorted().joined(separator: "; ")
             try expect(log.has("fetch a,b,c sections x:2,y:1") && log.has("fetch a,b,c,d sections x:2,y:1,z:1"), d)
             return d
+        })
+        #endif
+
+        // MARK: SwiftUICore text: a TextRenderer widens text through TextProxy and reads custom TextAttributes per run;
+        // system format styles over time data sources, text variants, typesetting language, selectability
+        c.append(check("SwiftUICore", "p28-text-renderer-proxy", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28TextRoot(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(5) { log.all.contains { $0.hasPrefix("marks ") } && p28Last(log, "selectable") != nil }
+            try await Task.sleep(for: .milliseconds(300))
+            let keys = ["plain", "wide", "reference", "timer", "stopwatch", "variant-size", "variant-fixed", "thai", "selectable"]
+            let d = keys.map { "\($0) \(p28Last(log, $0) ?? "-")" }.joined(separator: ", ") + "; \(log.all.last { $0.hasPrefix("marks") } ?? "no marks")"
+            let plain = p28WH(p28Last(log, "plain")), wide = p28WH(p28Last(log, "wide"))
+            try expect(plain != nil && wide != nil && abs(wide!.0 - plain!.0 - 20) < 1.5 && wide!.1 == plain!.1, d)
+            try expect(log.all.contains("marks [1, 1, 1, 2, 2, 2]") || log.all.contains("marks [1, 2]"), d)
+            try expect(keys.allSatisfy { (p28WH(p28Last(log, $0))?.0 ?? 0) > 0 }, d)
+            try expect(p28Selectable(EnabledTextSelectability.enabled) && !p28Selectable(DisabledTextSelectability.disabled), "selectability")
+            return d
+        })
+
+        // MARK: SwiftUICore keyframes: custom Keyframes and KeyframeTrackContent, KeyframesBuilder / track builder
+        // results evaluated on a timeline; a custom animation keeps its call count in AnimationState; an
+        // AnimatableModifier sees the intermediate values
+        c.append(check("SwiftUICore", "p28-keyframes-animation-state", timeout: 20) {
+            let tl = KeyframeTimeline(initialValue: P28KFV()) { P28Frames() }
+            let v1 = tl.value(time: 1), v2 = tl.value(time: 2)
+            let built = KeyframeTimeline(initialValue: P28KFV()) { p28BuiltFrames() }.value(time: 0.25)
+            let track = KeyframeTimeline(initialValue: 0.0) { KeyframeTrack { p28BuiltTrack() } }.value(time: 0.5)
+            let d0 = "timeline \(tl.duration) s: 1 s x \(v1.x) y \(String(format: "%.2f", v1.y)); 2 s x \(v2.x) y \(v2.y); built 0.25 s x \(built.x); track 0.5 s \(track)"
+            try expect(tl.duration == 2 && abs(v1.x - 10) < 0.01 && abs(v2.x - 20) < 0.01 && abs(v2.y - 4) < 0.01 && abs(built.x - 0.5) < 0.01 && abs(track - 2.5) < 0.01, d0)
+            var st = AnimationState<Double>(); st[P28Calls.self] = 4
+            try expect(st[P28Calls.self] == 4 && AnimationState<Double>()[P28Calls.self] == 0, "animation state")
+            let m = await onMain { P28AnimM() }, log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28AnimRoot(m: m, log: log)) }
+            defer { Task { @MainActor in close() } }
+            try await Task.sleep(for: .milliseconds(400))
+            await onMain { withAnimation(Animation(P28Counting(log: log))) { m.on = true } }
+            _ = await p6Wait(4) { log.all.contains { $0.hasPrefix("calls ") } }
+            let calls = Int(log.all.last { $0.hasPrefix("calls ") }?.dropFirst(6) ?? "") ?? 0
+            let d = "\(d0); custom animation calls \(calls); old modifier mids \(log.all.filter { $0 == "old mid" }.count)"
+            try expect(calls >= 5 && log.has("old mid"), d)
+            return d
+        })
+
+        // MARK: SwiftUICore styles by pixels: link / placeholder / selection / window background / hierarchical /
+        // material / drawing group color mode swatches; glass in a container; hover effects and prominence values
+        c.append(check("SwiftUICore", "p28-shape-styles-glass", timeout: 20) {
+            let log = P6Log()
+            let px = await onMain { () -> [[Int]] in
+                guard let img = p28Render(P28StyleSwatches(log: log), 70, 10) else { return [] }
+                return (0..<7).map { p6Px(img, $0 * 10 + 5, 5) }
+            }
+            let d = "swatches \(px.map { $0.prefix(3).map(String.init).joined(separator: ",") }); \(log.all.first ?? "")"
+            try expect(px.count == 7, d)
+            // link: blue; placeholder: grey; window background: white; secondary red: lighter red; drawing group: red
+            try expect(px[0][2] > 200 && px[0][0] < 80, "link \(d)")
+            try expect(abs(px[1][0] - px[1][2]) < 20 && px[1][0] > 120 && px[1][0] < 235, "placeholder \(d)")
+            try expect(px[3][0] > 240 && px[3][1] > 240 && px[3][2] > 240, "window background \(d)")
+            try expect(px[4][0] > 240 && px[4][1] > 80 && px[4][1] < 230, "secondary \(d)")
+            try expect(px[6][0] > 240 && px[6][1] < 80 && px[6][2] < 80, "drawing group \(d)")   // system red 255,56,60
+            try expect(log.has("prominence standard"), d)
+            // glass + hover effects + values
+            let glass = await onMain { () -> Int in
+                let v = GlassEffectContainer(spacing: 4) {
+                    Color.red.frame(width: 20, height: 20).glassEffect(Glass.regular.tint(.blue).interactive(), in: DefaultGlassEffectShape())
+                        .glassEffectTransition(GlassEffectTransition.matchedGeometry)
+                }
+                return p28Render(v.background(Color.white), 30, 30) != nil ? 1 : 0
+            }
+            #if !os(watchOS)
+            let hovers = [p28HoverName(HoverEffect.highlight), p28HoverName(HoverEffect.lift), p28HoverName(HoverEffect.automatic), p28HoverName(HoverEffect(P28Hover()))]
+            _ = [AutomaticHoverEffect.self, HighlightHoverEffect.self, LiftHoverEffect.self] as [Any.Type]
+            #else
+            let hovers: [String] = []
+            #endif
+            try expect(Glass.regular != Glass.clear && Glass.identity == Glass.identity && Prominence.increased != Prominence.standard
+                       && SymbolColorRenderingMode.gradient != SymbolColorRenderingMode.flat && SymbolVariableValueMode.draw != SymbolVariableValueMode.color
+                       && ContentShapeKinds.interaction.contains(.interaction) && !ContentShapeKinds.dragPreview.contains(.contextMenuPreview), "values")
+            return "\(d); glass rendered \(glass); hovers \(hovers)"
+        })
+
+        // MARK: SwiftUICore symbol effect transitions + preferred color scheme preference: a child asking for dark
+        // reaches the parent through PreferredColorSchemeKey
+        c.append(check("SwiftUICore", "p28-preferred-scheme-transitions", timeout: 20) {
+            let log = P6Log()
+            let v = VStack {
+                Image(systemName: "star").transition(SymbolEffectTransition.symbolEffect).symbolColorRenderingMode(.gradient).symbolVariableValueMode(.draw)
+                Text("dark please").preferredColorScheme(.dark)
+            }
+            .onPreferenceChange(PreferredColorSchemeKey.self) { s in log.add("preferred \(s.map { $0 == .dark ? "dark" : "light" } ?? "nil")") }
+            .layoutDirectionBehavior(LayoutDirectionBehavior.mirrors(in: .rightToLeft))
+            let close = try await onMain { try p6HostSwiftUI(v) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(4) { log.has("preferred dark") }
+            let dirs = "\(HorizontalDirection.Set.all.contains(.leading)) \(VerticalDirection.Set.all.contains(.down)) \(HorizontalDirection.allCases.count)"
+            try expect(log.has("preferred dark"), "\(log.all)")
+            return "\(log.all); directions \(dirs); transaction offset \(Transaction().scrollContentOffsetAdjustmentBehavior as ScrollContentOffsetAdjustmentBehavior)"
+        })
+
+        // MARK: SwiftUICore shaders + accessibility values: a ShaderLibrary from the app's metallib (its stitchable
+        // functions by name), accessibility options / categories / kinds / technologies
+        #if !os(watchOS)
+        c.append(check("SwiftUICore", "p28-shader-library-ax-values") {
+            let url = Bundle.main.url(forResource: "sdkcovCI", withExtension: "metallib")
+            try skipIf(url == nil, "no sdkcovCI.metallib in this platform's app")
+            let lib = ShaderLibrary(url: url!)
+            let f: ShaderFunction = lib.sdkcovSwapRB
+            let g = ShaderFunction(library: lib, name: "sdkcovSwapRB")
+            let shader: Shader = f()
+            try expect(f == g && f.name == "sdkcovSwapRB" && f.library == lib && lib != ShaderLibrary.default && shader == g(), "shader function \(f.name)")
+            var tech = AccessibilityTechnologies.voiceOver; tech.formUnion(.switchControl)
+            try expect(tech.contains(.switchControl) && !AccessibilityTechnologies.voiceOver.contains(.switchControl)
+                       && AccessibilityActionCategory.edit != AccessibilityActionCategory.default && AccessibilityActionKind.escape != AccessibilityActionKind.magicTap
+                       && AccessibilityDirectTouchOptions.silentOnTouch != AccessibilityDirectTouchOptions.requiresActivation
+                       && GestureInputKinds.all.contains(.directTouch) && !GestureInputKinds.pencil.contains(.pointer), "ax values")
+            return "shader \(f.name) from \(url!.lastPathComponent); ax values"
+        })
+        #endif
+
+        // MARK: SwiftUI drag and drop: draggable / drop delegate / drop destination install UIKit drag and drop
+        // interactions; DropProposal / DropOperation / configurations
+        #if os(iOS) || os(visionOS)
+        c.append(check("SwiftUI", "p28-drag-drop-interactions", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28DragRoot(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(4) { p28Last(log, "draggable") != nil }
+            try await Task.sleep(for: .milliseconds(400))
+            let ints = await onMain { () -> [String] in
+                guard let w = p6LastWindow else { return [] }
+                var out: [String] = []
+                func walk(_ v: UIView) { out += v.interactions.map { String(describing: type(of: $0)) }; v.subviews.forEach(walk) }
+                walk(w); return out
+            }
+            let counts = Dictionary(ints.map { ($0, 1) }, uniquingKeysWith: +)
+            let d = "interactions \(counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" })"
+            try expect(counts["UIDragInteraction", default: 0] >= 1 && counts["UIDropInteraction", default: 0] >= 1, d)
+            let p = DropProposal(operation: .copy)
+            try expect(p.operation == DropOperation.copy && DropOperation.move != DropOperation.forbidden, "proposal")
+            return d
+        })
+        #endif
+
+        // MARK: SwiftUI tables + outlines on an iPhone (compact: the first column as a list), column customization,
+        // custom column / row content, row item providers; OutlineGroup rows; editable ForEach types
+        #if os(iOS) || os(visionOS)
+        c.append(check("SwiftUI", "p28-table-outline-editable", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28TableRoot(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(4) { log.has("outline root") }
+            try await Task.sleep(for: .milliseconds(500))
+            let cells = await onMain { () -> [String] in
+                guard let w = p6LastWindow else { return [] }
+                return p6Find(w, UICollectionViewCell.self).filter { !$0.isHidden }.map { c in
+                    p6Find(c, UILabel.self).compactMap(\.text).joined(separator: "/")
+                }.filter { !$0.isEmpty }
+            }
+            let d = "\(log.all); cells \(cells); editable \(p28EditableTypes())"
+            try expect(log.all.contains { $0.hasPrefix("table cust id hidden") } && log.has("outline root"), d)
+            return d
+        })
+        #endif
+
+        // MARK: SwiftUI documents: a ReferenceFileDocument's snapshot; the iOS 27 Document reader and writer round trip
+        // through a file; NewDocumentButton's default label
+        #if os(iOS) || os(visionOS)
+        c.append(check("SwiftUI", "p28-documents-reader-writer", timeout: 20) {
+            let ref = P28RefDoc(text: "hello")
+            let snap = try ref.snapshot(contentType: .plainText)
+            let doc = P28Doc()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("p28doc.txt")
+            try await P28TextWriter().write(snapshot: "v2", to: url, previous: "v1", progress: ProgressManager(totalCount: 1).subprogress(assigningCount: 1))
+            let back = try await P28TextReader().read(from: url, progress: ProgressManager(totalCount: 1).subprogress(assigningCount: 1))
+            try await doc.apply(snapshot: back, previous: nil)
+            let docSnap = try await doc.snapshot(contentType: .plainText)
+            try expect(docSnap == back && snap == "hello" && back == "v2 (was v1)" && P28Doc.readableContentTypes == [.plainText] && P28RefDoc.writableContentTypes == [.plainText], "snapshot \(snap) read \(back)")
+            _ = doc
+            return "snapshot \(snap); round trip \(back)"
         })
         #endif
 
