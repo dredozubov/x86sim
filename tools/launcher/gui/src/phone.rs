@@ -769,6 +769,12 @@ impl App {
         kv_text(ui, lw, "Screen", format!("{} × {} pixels", inst.screen.0, inst.screen.1));
         if let Some(s) = st.filter(|_| on) {
             kv_text(ui, lw, "Processes", s.procs.len().to_string());
+            // the GPU it renders on now (its helper's record); the setting is in Advanced
+            if let Some(d) = s.gpu.as_ref().and_then(|g| g.device.as_ref()) {
+                kv(ui, lw, "GPU", |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(d.label()).size(T_SMALL).color(pal().ink_2)).truncate()).on_hover_text(format!("{} · {} · {}", d.name, d.driver, d.pci));
+                });
+            }
         }
         let prof = features::load(&inst.dir);
         let off: Vec<String> = features::defs().features.iter().filter(|f| !prof.enabled(&f.id)).map(|f| f.title.clone()).collect();
@@ -1189,6 +1195,31 @@ impl App {
             s.metal = opts[i].0.into();
             save = true;
         }
+        field(ui, "GPU", "MTLVK_DEVICE_ID: the GPU Metal runs on; devices on the same GPU share one helper · Applies at next start");
+        match gpu_choices(ui.ctx()) {
+            Some(choices) => {
+                let cur = choices.iter().find(|c| c.0 == s.gpu).map(|c| c.1.clone()).unwrap_or_else(|| if s.gpu == "auto" || s.gpu.is_empty() { "Auto".into() } else { format!("{} (not found)", s.gpu.split(',').next().unwrap_or("")) });
+                let mut pick = None;
+                ui.add_enabled_ui(s.metal != "0", |ui| {
+                    egui::ComboBox::from_id_salt(("gpu", &inst.id)).icon(caret).width(ui.available_width().min(320.0)).selected_text(body(cur)).show_ui(ui, |ui| {
+                        for (v, l) in &choices {
+                            if ui.selectable_label(*v == s.gpu, l).clicked() {
+                                pick = Some(v.clone());
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Auto: a discrete GPU first · CPU: no GPU, slow");
+                });
+                if let Some(v) = pick.filter(|v| *v != s.gpu) {
+                    s.gpu = v;
+                    save = true;
+                }
+            }
+            None => {
+                ui.label(muted("Reading…"));
+            }
+        }
         field(ui, "Background services", "A64_JOBS · Full adds widgets; Slim and Minimal are for tests · Applies at next start");
         let opts = [("std", "Standard"), ("full", "Full"), ("slim", "Slim"), ("min", "Minimal")];
         let sel = opts.iter().position(|o| o.0 == s.jobs);
@@ -1252,6 +1283,27 @@ impl App {
         });
         ui.add_space(S3);
     }
+}
+
+/// The GPU picker's choices (setting, label), read once in the background (`mtlvk --list-gpus` takes a moment): None
+/// until then. Auto, each GPU by name and type, then the CPU device when lavapipe is there.
+fn gpu_choices(ctx: &egui::Context) -> Option<Vec<(String, String)>> {
+    use std::sync::{Mutex, OnceLock};
+    static C: OnceLock<Mutex<Option<Vec<(String, String)>>>> = OnceLock::new();
+    let mut started = false;
+    let c = C.get_or_init(|| {
+        started = true;
+        Mutex::new(None)
+    });
+    if started {
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let v = x86sim_core::gpu::list().map(|l| x86sim_core::gpu::choices(&l)).unwrap_or_else(|_| vec![("auto".into(), "Auto".into())]);
+            *C.get().unwrap().lock().unwrap() = Some(v);
+            ctx.request_repaint();
+        });
+    }
+    c.lock().unwrap().clone()
 }
 
 /// A log line passes the source picker and the filter

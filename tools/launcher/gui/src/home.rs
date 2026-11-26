@@ -277,7 +277,13 @@ impl App {
                 });
                 let mut line = device_line(&inst.name, &inst.model, &inst.ios);
                 match &st {
-                    Some(s) if phase != Phase::Off && s.pss_mb >= 1.0 => line += &format!(" · {} · {:.0}%", fmt_mb(s.pss_mb), s.cpu_pct),
+                    Some(s) if phase != Phase::Off && s.pss_mb >= 1.0 => {
+                        line += &format!(" · {} · {:.0}%", fmt_mb(s.pss_mb), s.cpu_pct);
+                        // the GPU it renders on (its helper's), in a word or two
+                        if let Some(d) = s.gpu.as_ref().and_then(|g| g.device.as_ref()) {
+                            line += &format!(" · {}", d.compact());
+                        }
+                    }
                     _ if phase != Phase::Off && phase != Phase::Running => line += &format!(" · {}", label.to_lowercase()),
                     _ => {}
                 }
