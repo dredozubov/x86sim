@@ -115,6 +115,25 @@ impl AccountUi {
     }
 }
 
+/// xtool's sign-in as a status line: "ok: xtool signed in as ID, team T, token until D" -> "Team T · Until D"
+fn signing_line(s: &str) -> String {
+    let Some(rest) = s.strip_prefix("ok: ") else {
+        return if s.starts_with("xtool not signed in") { "Not signed in".into() } else { s.split(" (").next().unwrap_or(s).to_string() };
+    };
+    let mut out = vec![];
+    for part in rest.split(" (").next().unwrap_or(rest).split(", ") {
+        if let Some(t) = part.strip_prefix("team ") {
+            out.push(format!("Team {t}"));
+        } else if let Some(d) = part.strip_prefix("token until ") {
+            out.push(format!("Until {d}"));
+        }
+    }
+    if rest.contains("a different Apple ID") {
+        out.push("Other Apple ID".into());
+    }
+    out.join(" · ")
+}
+
 impl App {
     pub fn account_section(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -153,12 +172,12 @@ impl App {
                     Waiting::Code(p) => {
                         egui::Frame::new().inner_margin(egui::Margin { left: 60, right: 16, top: 0, bottom: 12 }).show(ui, |ui| {
                             let what = match p.sent.as_str() {
-                                "sms" => format!("Enter the {}-digit code texted to {}.", p.length, p.sms_to),
-                                "xtool" => "xtool's sign-in for signing: enter the code shown on your trusted Apple devices.".to_string(),
-                                _ => format!("Enter the {}-digit code shown on your trusted Apple devices.", p.length),
+                                "sms" => format!("Code texted to {}", p.sms_to),
+                                "xtool" => "Code for xtool's sign-in".to_string(),
+                                _ => "Code from your Apple devices".to_string(),
                             };
                             if p.retry {
-                                ui.label(egui::RichText::new("Apple didn't take that code: try again.").color(pal().crit));
+                                ui.label(egui::RichText::new("Wrong code").color(pal().crit));
                             }
                             ui.label(muted(what));
                             ui.horizontal(|ui| {
@@ -172,7 +191,7 @@ impl App {
                             });
                             if p.sent != "xtool" && !p.phones.is_empty() {
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.label(muted("No device nearby? Text it to"));
+                                    ui.label(muted("Text it to"));
                                     for ph in &p.phones {
                                         if ui.add(Btn::ghost(&ph.number).small()).clicked() {
                                             if let Some(tx) = &self.account.code_tx {
@@ -214,41 +233,42 @@ impl App {
                 None => busy(ui, "Checking the Apple Account…"),
                 Some(Err(e)) => note(ui, e),
                 Some(Ok(s)) if s.signed_in => {
-                    let who = if s.name.is_empty() { s.apple_id.clone() } else { format!("{} ({})", s.apple_id, s.name) };
-                    let detail = format!(
-                        "Signed in {}; the session is in the {}{}",
-                        s.signed_in_on,
-                        if s.store == "keyring" { "Secret Service keyring" } else { "0600 file in ~/.config/x86sim" },
-                        match s.session_ok {
-                            Some(true) => ", works",
-                            Some(false) if s.expired => "; Apple has ended it since",
-                            Some(false) => ", doesn't work",
-                            None => "",
-                        }
-                    );
+                    let who = if s.name.is_empty() { s.apple_id.clone() } else { format!("{} · {}", s.apple_id, s.name) };
+                    let mut detail = format!("Signed in {}", s.signed_in_on);
+                    if s.session_ok == Some(false) && !s.expired {
+                        detail += " · Not working";
+                    }
+                    let store = if s.store == "keyring" { "Kept in the Secret Service keyring" } else { "Kept in a 0600 file in ~/.config/x86sim" };
                     list_row(ui, if s.expired { icon::USER_CIRCLE } else { icon::USER_CIRCLE_CHECK }, &who, &detail, |ui| {
-                        sign_out = ui.add(Btn::secondary("Sign out")).on_hover_text("Forget the session (xtool's sign-in stays: x86sim account logout signs it out too)").clicked();
+                        sign_out = ui.add(Btn::secondary("Sign out")).on_hover_text("Forgets the session; xtool's sign-in stays").clicked();
                         if s.expired {
                             ui.add_space(S2);
                             badge(ui, "Expired", pal().warn);
                         }
-                    });
+                    })
+                    .on_hover_text(store);
                     hline(ui);
                     let (dl_badge, dl_col) = match s.downloads.as_str() {
                         "ok" => ("Ready", pal().good),
                         _ if s.expired => ("Expired", pal().warn),
                         _ => ("Check", pal().warn),
                     };
-                    list_row(ui, icon::DOWNLOAD_SIMPLE, "Developer downloads", &s.downloads, |ui| {
+                    // the state is the badge; why not, its tooltip
+                    let b = list_row(ui, icon::DOWNLOAD_SIMPLE, "Developer downloads", "", |ui| {
                         badge(ui, dl_badge, dl_col);
                     });
+                    if s.downloads != "ok" {
+                        b.on_hover_text(&s.downloads);
+                    }
                     hline(ui);
                     let sign_ok = s.signing.starts_with("ok");
-                    list_row(ui, icon::HAMMER, "Signing (xtool)", &s.signing, |ui| {
+                    list_row(ui, icon::HAMMER, "Signing (xtool)", &signing_line(&s.signing), |ui| {
                         badge(ui, if sign_ok { "Ready" } else { "Off" }, if sign_ok { pal().good } else { pal().warn });
-                    });
+                    })
+                    .on_hover_text(&s.signing);
                     hline(ui);
-                    list_row(ui, icon::CLOCK, "Renewal", &s.renew, |_| {});
+                    let renew = if s.trusted_until.is_empty() { "Password and code".to_string() } else { format!("No code until {}", s.trusted_until) };
+                    list_row(ui, icon::CLOCK, "Renewal", &renew, |_| {}).on_hover_text("Apple ends sign-ins after a while, often a day");
                 }
                 Some(Ok(_)) => {}
             }
@@ -260,27 +280,17 @@ impl App {
                 if signed_in {
                     hline(ui);
                 }
-                // the session can't be renewed without the password (never kept): say so, the form is right here
-                if let (true, Some(Ok(s))) = (expired, &st) {
-                    egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 4 }).show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = S2;
-                            ui.label(egui::RichText::new(icon::WARNING_CIRCLE).family(icons()).size(14.0).color(pal().warn));
-                            let code = if s.trusted_until.is_empty() { "password and a two-factor code".to_string() } else { format!("password only, no code until {}", s.trusted_until) };
-                            ui.add(egui::Label::new(body(format!("Apple ended this sign-in, as it does after a while. Sign in again to download Xcode ({code})."))).wrap());
-                        });
-                    });
-                }
-                form_row(ui, "Apple ID", "Any Apple ID (free) works for Xcode downloads; signing for devices needs it too.", false, |ui| {
+                // an expired session: the Expired badge above and "Sign in again" below say it
+                form_row(ui, "Apple ID", "Any free Apple ID", false, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.account.apple_id).hint_text("you@example.com").desired_width(260.0));
                 });
-                form_row(ui, "Password", "Sent only as Apple's SRP proof, never stored. Apple then asks for a two-factor code.", false, |ui| {
+                form_row(ui, "Password", "Never stored; sent only as Apple's SRP proof", false, |ui| {
                     let r = ui.add(egui::TextEdit::singleline(&mut self.account.password).password(true).desired_width(260.0));
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         start = Some(false);
                     }
                 });
-                form_row(ui, "Also sign in for signing", "xtool (device builds, installs, x86sim dev ship) gets the same password once, for its own sign-in with Apple; it uses a third-party anisette service for its device identity.", false, |ui| {
+                form_row(ui, "Also sign in for signing", "xtool's own sign-in for device builds; uses a third-party anisette service", false, |ui| {
                     toggle(ui, &mut self.account.signing);
                 });
                 form_row(ui, "", "", true, |ui| {
