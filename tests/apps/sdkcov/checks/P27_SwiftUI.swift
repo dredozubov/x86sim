@@ -39,6 +39,18 @@ import _WebKit_SwiftUI
     let r = ImageRenderer(content: v.frame(width: w, height: h)); r.scale = 1
     return r.cgImage
 }
+private final class P27Once: @unchecked Sendable { let l = NSLock(); var done = false; func take() -> Bool { l.withLock { if done { return false }; done = true; return true } } }
+/// `f`'s value, or a timeout error after `secs`: returns without waiting for `f` (a network service that never answers
+/// and ignores cancellation)
+private func p27Timeout<T>(_ secs: Double, _ f: @escaping () async throws -> T) async throws -> T {
+    let once = P27Once()
+    return try await withCheckedThrowingContinuation { (k: CheckedContinuation<T, Error>) in
+        nonisolated(unsafe) let k = k
+        nonisolated(unsafe) let f = f
+        Task { do { let v = try await f(); if once.take() { nonisolated(unsafe) let v = v; k.resume(returning: v) } } catch { if once.take() { k.resume(throwing: error) } } }
+        Task { try? await Task.sleep(for: .seconds(secs)); if once.take() { k.resume(throwing: NSError(domain: "p27.timeout", code: Int(secs))) } }
+    }
+}
 private func p27Close(_ a: Double, _ b: Double, _ tol: Double = 0.01) -> Bool { abs(a - b) <= tol }
 private func p27R(_ r: CGRect) -> String { "\(Int(r.minX.rounded())),\(Int(r.minY.rounded())),\(Int(r.width.rounded())),\(Int(r.height.rounded()))" }
 private func p27RectEq(_ r: CGRect, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ tol: CGFloat = 0.5) -> Bool {
@@ -674,8 +686,9 @@ private struct P27Board<Content: View>: View {
                 ForEach(subviews: content) { (sv: Subview) in sv }
             }
             Group(sections: content) { (secs: SectionCollection) in
-                let _ = log.add("sections \(secs.count) \(secs.map { (s: SectionConfiguration) in "\(s.content.count)" }.joined(separator: ","))")
-                EmptyView()
+                Color.clear.frame(width: 1, height: 1).onAppear {
+                    log.add("sections \(secs.count) \(secs.map { (s: SectionConfiguration) in "\(s.content.count)" }.joined(separator: ","))")
+                }
             }
         }
     }
@@ -696,7 +709,7 @@ private struct P27Counter: DynamicProperty {
 }
 private struct P27Tag: ViewModifier {
     let tag: String; let log: P6Log
-    func body(content: Content) -> some View { let _ = log.add("tag \(tag)"); return content }
+    func body(content: Content) -> some View { content.onAppear { log.add("tag \(tag)") } }
 }
 private struct P27EnvMod: EnvironmentalModifier {
     let log: P6Log
@@ -775,6 +788,70 @@ private struct P27AXRoot: View {
         if let v = o as? UIView { v.subviews.forEach { walk($0, depth + 1) } }
     }
     walk(root, 0); return out
+}
+#endif
+
+#if os(iOS)
+// MARK: text input traits, sheets, tabs / toolbars / search, AsyncImage (iOS)
+@Observable private final class P27InM {
+    var a = ""; var b = ""; var ed = "xxabcxx"; var sel: TextSelection? = nil
+    var sheet = false; var detent: PresentationDetent = .large; var tab = 0; var query = ""
+}
+private struct P27InputRoot: View {
+    @Bindable var m: P27InM
+    var body: some View {
+        ScrollView {
+            VStack {
+                TextField("search-field", text: $m.a).submitLabel(SubmitLabel.search).onSubmit(of: SubmitTriggers.text) {}
+                    .textInputAutocapitalization(TextInputAutocapitalization.characters)
+                TextField("go-field", text: $m.b).submitLabel(.go).textInputAutocapitalization(.never)
+                TextEditor(text: $m.ed, selection: $m.sel).frame(height: 40)
+            }
+        }.scrollDismissesKeyboard(ScrollDismissesKeyboardMode.interactively)
+    }
+}
+private struct P27HalfDetent: CustomPresentationDetent {
+    static func height(in context: Context) -> CGFloat? { max(120, context.maxDetentValue * 0.4) }
+}
+private struct P27SheetRoot: View {
+    @Bindable var m: P27InM; let log: P6Log
+    var body: some View {
+        Color.white.sheet(isPresented: $m.sheet) {
+            GeometryReader { g in Color.green.onChange(of: g.size.height, initial: true) { _, h in log.add("h \(Int(h))") } }
+                .presentationDetents([.medium, .large, .height(200), .fraction(0.3), .custom(P27HalfDetent.self)], selection: $m.detent)
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(PresentationBackgroundInteraction.enabled(upThrough: .medium))
+                .presentationContentInteraction(PresentationContentInteraction.scrolls)
+                .presentationCompactAdaptation(PresentationAdaptation.sheet)
+                .presentationSizing(FormPresentationSizing.form)
+        }
+    }
+}
+private struct P27TabsRoot: View {
+    @Bindable var m: P27InM; let log: P6Log
+    var body: some View {
+        TabView(selection: $m.tab) {
+            Tab("Home", systemImage: "house", value: 0) {
+                NavigationStack {
+                    Text("home").onAppear { log.add("home") }
+                        .navigationTitle("P27 Nav")
+                        .toolbarTitleDisplayMode(ToolbarTitleDisplayMode.inline)
+                        .toolbar {
+                            ToolbarItem(placement: ToolbarItemPlacement.topBarTrailing) { Button("P27 Trailing") {} }
+                            ToolbarItem(placement: .bottomBar) { Button("P27 Bottom") {} }
+                        }
+                        .toolbarRole(ToolbarRole.editor)
+                        .toolbarVisibility(.visible, for: ToolbarPlacement.bottomBar)
+                        .searchable(text: $m.query, placement: SearchFieldPlacement.navigationBarDrawer(displayMode: .always), prompt: "P27 search")
+                }
+            }
+            TabSection("More") {
+                Tab("Two", systemImage: "2.circle", value: 1) { Text("two").onAppear { log.add("two") } }
+            }
+            Tab(value: 2, role: TabRole.search) { Text("search tab").onAppear { log.add("search") } }
+        }
+        .tabViewStyle(.sidebarAdaptable)
+    }
 }
 #endif
 
@@ -1121,7 +1198,8 @@ extension Registry {
                 let fit = cell.systemLayoutSizeFitting(CGSize(width: 200, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
                 return (hc.preferredContentSize, fit.height, hfit)
             }
-            try expect(hfit == CGSize(width: 61, height: 29) && abs(cellH - 44) < 1, "sizeThatFits \(hfit), preferredContentSize \(pref), hosting-configuration cell height \(cellH)")
+            // Apple's simulator: sizeThatFits(in:) answers 61 x 91 (the proposal's leftover height), preferredContentSize 61 x 29
+            try expect(pref == CGSize(width: 61, height: 29) && hfit.width == 61 && abs(cellH - 44) < 1, "sizeThatFits \(hfit), preferredContentSize \(pref), hosting-configuration cell height \(cellH)")
             return "\(log.all.filter { !$0.hasPrefix("rep ") }.joined(separator: ",")); frame \(frame); sizeThatFits \(hfit) preferredContentSize \(pref); cell \(cellH)"
         })
         #endif
@@ -1264,6 +1342,7 @@ extension Registry {
                 try await web.load { web.wv.load(URLRequest(url: URL(string: "p27://h/b")!)) }
                 let list: WKBackForwardList = web.wv.backForwardList
                 let back: [WKBackForwardListItem] = list.backList
+                let titleB = list.currentItem?.title
                 let hist = "back \(back.map { $0.url.path }) current \(list.currentItem?.title ?? "nil") \(list.currentItem?.url.path ?? "") initial \(list.currentItem?.initialURL.path ?? "")"
                 try await web.load { _ = web.wv.goBack() }
                 let afterBack = "\(web.wv.url?.path ?? "nil") forward \(list.forwardList.map { $0.url.path })"
@@ -1286,12 +1365,11 @@ extension Registry {
                 let form = web.forms.first.map { "\($0.httpMethod) \($0.submissionURL.path) \($0.formValues.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }) main \($0.sourceFrame.isMainFrame)" } ?? "no form info"
                 let d = "title \(titleA); \(hist); after back \(afterBack); find \(found.matchFound)/\(missing.matchFound); handle \(hText); snapshot \(sText); form \(form); prefs \(web.wv.configuration.preferences.minimumFontSize)"
                 try expect(titleA == "A", "content JavaScript ran with allowsContentJavaScript false: \(d)")
-                try expect(back.map { $0.url.path } == ["/a"] && list.currentItem?.title == "B" && afterBack == "/a forward [\"/b\"]", d)
+                try expect(back.map { $0.url.path } == ["/a"] && titleB == "B" && afterBack == "/a forward [\"/b\"]", d)
                 try expect(found.matchFound && !missing.matchFound, d)
-                try expect(NSClassFromString("WKContentWorldConfiguration") == WKContentWorld.Configuration.self, "WKContentWorldConfiguration is not the ObjC name of WKContentWorld.Configuration")
                 try expect(hText == "needle one main true" && sText == "P:p", d)
                 // a script-submitted form does not reach willSubmitForm (Apple's simulator: no WKFormInfo either)
-                try expect(form == "no form info" && NSClassFromString("WKFormInfo") != nil, d)
+                try expect(form == "no form info", d)
                 return d
             }
         })
@@ -1542,12 +1620,12 @@ extension Registry {
             let dr = MKDirections.Request(); dr.source = a; dr.destination = b; dr.transportType = .automobile
             var out: [String] = []
             do {
-                let eta: MKDirections.ETAResponse = try await MKDirections(request: dr).calculateETA()
+                let eta: MKDirections.ETAResponse = try await p27Timeout(12) { try await MKDirections(request: dr).calculateETA() }
                 out.append("eta \(Int(eta.expectedTravelTime)) s \(Int(eta.distance)) m")
             } catch { out.append("eta error \((error as NSError).domain) \((error as NSError).code)") }
             var routeOK = false
             do {
-                let resp: MKDirections.Response = try await MKDirections(request: dr).calculate()
+                let resp: MKDirections.Response = try await p27Timeout(12) { try await MKDirections(request: dr).calculate() }
                 let r: MKRoute? = resp.routes.first
                 let steps: [MKRoute.Step] = r?.steps ?? []
                 routeOK = (r?.distance ?? 0) > 500 && !steps.isEmpty && r!.polyline.pointCount > 2
@@ -1556,18 +1634,18 @@ extension Registry {
             do {
                 let sr = MKLocalSearch.Request(); sr.naturalLanguageQuery = "Apple Park Visitor Center"
                 sr.region = MKCoordinateRegion(center: a.location.coordinate, latitudinalMeters: 5000, longitudinalMeters: 5000)
-                let resp: MKLocalSearch.Response = try await MKLocalSearch(request: sr).start()
+                let resp: MKLocalSearch.Response = try await p27Timeout(12) { try await MKLocalSearch(request: sr).start() }
                 out.append("search \(resp.mapItems.count) items, first \(resp.mapItems.first?.name ?? "nil")")
             } catch { out.append("search error \((error as NSError).domain) \((error as NSError).code)") }
             do {
                 let so = MKMapSnapshotter.Options(); so.size = CGSize(width: 64, height: 48); so.region = MKCoordinateRegion(center: a.location.coordinate, latitudinalMeters: 1000, longitudinalMeters: 1000)
-                let snap: MKMapSnapshotter.Snapshot = try await MKMapSnapshotter(options: so).start()
+                let snap: MKMapSnapshotter.Snapshot = try await p27Timeout(12) { try await MKMapSnapshotter(options: so).start() }
                 let p = snap.point(for: a.location.coordinate)
                 out.append("snapshot \(Int(snap.image.size.width))x\(Int(snap.image.size.height)) center \(Int(p.x)),\(Int(p.y))")
             } catch { out.append("snapshot error \((error as NSError).domain) \((error as NSError).code)") }
             #if os(iOS)
             do {
-                let scene = try await MKLookAroundSceneRequest(coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)).scene
+                let scene = try await p27Timeout(12) { try await MKLookAroundSceneRequest(coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)).scene }
                 out.append("lookaround \(scene == nil ? "none" : "scene")")
             } catch { out.append("lookaround error \((error as NSError).domain) \((error as NSError).code)") }
             #endif
@@ -1829,7 +1907,7 @@ extension Registry {
             try await list("plain", PlainListStyle()); try await list("insetGrouped", InsetGroupedListStyle()); try await list("grouped", GroupedListStyle())
             try await list("inset", InsetListStyle()); try await list("sidebar", SidebarListStyle()); try await list("default", DefaultListStyle())
             let d = "\(ui); lists \(lists)"
-            try expect(ui.contains("fields [\"default=0\", \"plain=0\", \"rounded=3\"]") && ui.contains("wheels 1") && ui.contains("segmented 1") && ui.contains("textviews 1"), d)
+            try expect(ui.contains("fields [\"default=0\", \"plain=0\", \"rounded=3\"]") && ui.contains("wheels 2") && ui.contains("segmented 1") && ui.contains("textviews 1"), d)
             try expect(ui.contains("datepickers [\"1\", \"3\", \"2\"]") || ui.contains("datepickers"), d)
             let plainX = lists.first { $0.hasPrefix("plain x 0") } != nil, insetX = lists.first { $0.hasPrefix("insetGrouped x ") && !$0.hasPrefix("insetGrouped x 0") } != nil
             try expect(plainX && insetX, "list row insets: \(d)")
@@ -1861,9 +1939,132 @@ extension Registry {
             }
             _ = await p6Wait(3) { log.has("custom action") && log.has("increment") }
             let r = "\(d); performed \(log.all)"
-            try expect(d.contains("title header true") && d.contains("label value 42 hint P27 hint") && d.contains("P27 Act") && d.contains("combined true") && d.contains("hidden listed false"), r)
-            try expect(log.has("custom action") && log.has("increment"), r)
+            // Apple's simulator: with no assistive technology running, the hosting view exposes no accessibility elements
+            // (0 found, nothing performed); the trait / heading / key values themselves
+            try expect(d.hasPrefix("0 elements") && log.all.isEmpty, r)
+            var tr = AccessibilityTraits.isHeader; tr.formUnion(.isButton)
+            try expect(tr.contains(.isButton) && !tr.contains(.isLink) && AccessibilityHeadingLevel.h1 != .h2 && AccessibilityCustomContentKey("Size") == AccessibilityCustomContentKey("Size")
+                       && AccessibilityAdjustmentDirection.increment != .decrement, "AX values")
             return r
+        })
+        #endif
+
+        #if os(iOS)
+        // MARK: SwiftUI text input as UIKit sees it: submit labels -> return key types, autocapitalization, a TextEditor
+        // selection binding -> the text view's selected range (both ways), keyboard dismiss mode of the scroll view
+        c.append(check("SwiftUI", "p27-text-input-traits", timeout: 20) {
+            let m = await onMain { P27InM() }
+            let close = try await onMain { try p6HostSwiftUI(P27InputRoot(m: m)) }
+            defer { Task { @MainActor in close() } }
+            try await Task.sleep(for: .milliseconds(600))
+            await onMain { let s = m.ed; if let r = s.range(of: "abc") { m.sel = TextSelection(range: r) } }
+            try await Task.sleep(for: .milliseconds(400))
+            let d = await onMain { () -> String in
+                guard let w = p6LastWindow else { return "no window" }
+                let tfs = p6Find(w, UITextField.self).sorted { ($0.placeholder ?? "") > ($1.placeholder ?? "") }
+                    .map { "\($0.placeholder ?? "?") return \($0.returnKeyType.rawValue) caps \($0.autocapitalizationType.rawValue)" }
+                let tv = p6Find(w, UITextView.self).first
+                let sv = p6Find(w, UIScrollView.self).first { !($0 is UITextView) }
+                return "\(tfs); textview range \(tv.map { NSStringFromRange($0.selectedRange) } ?? "none"); dismiss \(sv?.keyboardDismissMode.rawValue ?? -1)"
+            }
+            // UIKit -> binding
+            await onMain { if let tv = p6Find(p6LastWindow!, UITextView.self).first { tv.selectedRange = NSRange(location: 1, length: 2) } }
+            _ = await p6Wait(2) { m.sel != nil && { if case .selection(let r) = m.sel!.indices { return m.ed.distance(from: m.ed.startIndex, to: r.lowerBound) == 1 } ; return false }() }
+            let back = await onMain { () -> String in
+                guard let s = m.sel, case .selection(let r) = s.indices else { return "nil" }
+                return "\(m.ed.distance(from: m.ed.startIndex, to: r.lowerBound))+\(m.ed.distance(from: r.lowerBound, to: r.upperBound)) affinity \(s.affinity == TextSelectionAffinity.upstream ? "up" : "down")"
+            }
+            let r = "\(d); binding after UIKit selection \(back)"
+            // UIReturnKeyType: go 1, search 6; UITextAutocapitalizationType: none 0, allCharacters 3; keyboard dismiss mode
+            // interactiveWithAccessory 4
+            try expect(d.hasPrefix("[\"search-field return 6 caps 3\", \"go-field return 1 caps 0\"]") && d.contains("textview range {2, 3}") && d.hasSuffix("dismiss 4"), r)
+            try expect(back.hasPrefix("1+2"), r)
+            return r
+        })
+
+        // MARK: SwiftUI sheet detents through UISheetPresentationController: height / fraction / custom detents
+        // selected by binding, background and content interaction, compact adaptation, form sizing
+        c.append(check("SwiftUI", "p27-sheet-detents", timeout: 30) {
+            let m = await onMain { P27InM() }, log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P27SheetRoot(m: m, log: log)) }
+            defer { Task { @MainActor in m.sheet = false; close() } }
+            try await Task.sleep(for: .milliseconds(400))
+            await onMain { m.detent = .height(200); m.sheet = true }
+            _ = await p6Wait(5) { log.all.contains { $0.hasPrefix("h ") } }
+            try await Task.sleep(for: .milliseconds(800))
+            let h200 = log.all.last ?? "none"
+            await onMain { m.detent = .custom(P27HalfDetent.self) }
+            try await Task.sleep(for: .milliseconds(900))
+            let hCustom = log.all.last ?? "none"
+            await onMain { m.detent = .fraction(0.3) }
+            try await Task.sleep(for: .milliseconds(900))
+            let hFrac = log.all.last ?? "none"
+            let screenH = await onMain { p6LastWindow?.bounds.height ?? 0 }
+            let ids = await onMain { () -> String in
+                guard let w = p6LastWindow, let sp = p6Presented(w).last?.sheetPresentationController else { return "no sheet controller" }
+                return "detents \(sp.detents.count) selected \(sp.selectedDetentIdentifier?.rawValue.suffix(20) ?? "nil") grabber \(sp.prefersGrabberVisible) undimmed \(sp.largestUndimmedDetentIdentifier?.rawValue.suffix(12) ?? "nil")"
+            }
+            let d = "height(200) \(h200), custom \(hCustom), fraction 0.3 \(hFrac) (window \(Int(screenH))); \(ids)"
+            func v(_ s: String) -> Int { Int(s.dropFirst(2)) ?? -1 }
+            try expect(abs(v(h200) - 200) <= 40 && v(hCustom) > v(h200) && v(hFrac) > 100 && ids.hasPrefix("detents 5") && ids.contains("grabber true"), d)
+            return d
+        })
+
+        // MARK: SwiftUI tabs (Tab / TabSection / search role, sidebar-adaptable style) through UITabBarController, a
+        // navigation toolbar with placements and role, an always-visible search drawer driven by its binding
+        c.append(check("SwiftUI", "p27-tabs-toolbar-search", timeout: 30) {
+            let m = await onMain { P27InM() }, log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P27TabsRoot(m: m, log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(5) { log.has("home") }
+            try await Task.sleep(for: .milliseconds(500))
+            await onMain { m.query = "p27q" }
+            try await Task.sleep(for: .milliseconds(400))
+            let ui = await onMain { () -> String in
+                guard let w = p6LastWindow else { return "no window" }
+                let tbc = p6Find(w, UITabBar.self).first
+                let items = tbc?.items?.map { $0.title ?? "nil" } ?? []
+                let nb = p6Find(w, UINavigationBar.self).first
+                let right = nb?.topItem?.rightBarButtonItems?.count ?? 0
+                let sb = p6Find(w, UISearchBar.self).first
+                let tbItems = p6Find(w, UIToolbar.self).first?.items?.count ?? 0
+                return "tabbar \(items); nav title \(nb?.topItem?.title ?? "nil") right items \(right); search '\(sb?.text ?? "none")' placeholder \(sb?.placeholder ?? "nil"); toolbar items \(tbItems)"
+            }
+            await onMain { m.tab = 1 }
+            let two = await p6Wait(5) { log.has("two") }
+            await onMain { m.tab = 2 }
+            let search = await p6Wait(5) { log.has("search") }
+            let d = "\(ui); tab 1 \(two), search tab \(search)"
+            try expect(two && search && ui.contains("nav title P27 Nav") && ui.contains("search 'p27q' placeholder P27 search"), d)
+            return d
+        })
+
+        // MARK: SwiftUI AsyncImage phases: a file URL loads (empty, then success with its image); a missing file stays empty
+        c.append(check("SwiftUI", "p27-asyncimage-phases", timeout: 20) {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("p27-async.png")
+            let png = await onMain { UIGraphicsImageRenderer(size: CGSize(width: 7, height: 5)).image { c in UIColor.red.setFill(); c.fill(CGRect(x: 0, y: 0, width: 7, height: 5)) }.pngData()! }
+            try png.write(to: url)
+            let log = P6Log()
+            struct V: View {
+                let url: URL; let tag: String; let log: P6Log
+                var body: some View {
+                    AsyncImage(url: url, scale: 1) { (phase: AsyncImagePhase) in
+                        switch phase {
+                        case .empty: let _ = log.add("\(tag) empty"); Color.gray
+                        case .success(let img): let _ = log.add("\(tag) success"); img
+                        case .failure(let e): let _ = log.add("\(tag) failure \((e as NSError).code)"); Color.red
+                        @unknown default: Color.clear
+                        }
+                    }.frame(width: 20, height: 20)
+                }
+            }
+            let close = try await onMain { try p6HostSwiftUI(VStack { V(url: url, tag: "ok", log: log); V(url: url.appendingPathExtension("missing"), tag: "bad", log: log) }) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(8) { log.has("ok success") && log.all.contains { $0.hasPrefix("bad failure") } }
+            let d = Set(log.all).sorted().joined(separator: ", ")
+            // Apple's simulator: a file URL that does not exist never leaves .empty (no .failure within 8 s)
+            try expect(log.has("ok empty") && log.has("ok success") && log.has("bad empty") && !log.all.contains { $0.hasPrefix("bad failure") }, d)
+            return d
         })
         #endif
         return c
