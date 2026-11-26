@@ -10,6 +10,8 @@ the .app around the binary), installs and launches it; then the app's UI is read
            heading is in the snapshot; tapping "Greet" calls the Rust command, whose answer appears on the page.
   dioxus   rust/samples/dioxus-hello: Dioxus mobile (tao + WKWebView, no dx). "Dioxus on x86Sim" in the snapshot; a
            tap on "Count" turns "Count: 0" into "Count: 1".
+  bevy     rust/samples/bevy-hello: Bevy 0.20 (winit 0.30 + wgpu on Metal, the scene adapter). No accessibility: the
+           snapshot reads "Bevy on x86Sim" by OCR; a tap on "Taps: 0" (found by OCR) turns it into "Taps: 1".
 
 Usage: tests/dev/rust_e2e.py --phone NAME [--start] [--mcp PATH] [--only hello,...] [--out DIR]
   --start boots the phone when it is off and stops it at the end. X86SIM_OAD picks the dev toolchain checkout (default: external/omarchy-apple-dev).
@@ -33,6 +35,7 @@ SAMPLES = {
     "hello": ("rust/samples/hello-uikit", "Hello from Rust", "Tap me", "Taps: 1", False),
     "tauri": ("rust/samples/tauri-hello", "Tauri on x86Sim", "Greet", "Hello from Rust, x86Sim!", False),
     "dioxus": ("rust/samples/dioxus-hello", "Dioxus on x86Sim", "Count", "Count: 1", False),
+    "bevy": ("rust/samples/bevy-hello", "Bevy on x86Sim", "Taps: 0", "Taps: 1", True),
 }
 
 
@@ -67,7 +70,9 @@ class Run:
             return
         self.m.call("wait_for", target=up, timeout=120)
         snap, lab = self.labels(ocr)
-        self.check(f"{name}: the snapshot shows its UI", any(up in l for l in lab), "%r in %s" % (up, [l for l in lab if l.strip()][:12]))
+        # OCR may get the case of a letter wrong ("Bevy On x86Sim")
+        seen = (lambda l: up.lower() in l.lower()) if ocr else (lambda l: up in l)
+        self.check(f"{name}: the snapshot shows its UI", any(seen(l) for l in lab), "%r in %s" % (up, [l for l in lab if l.strip()][:12]))
         text, _, err, _ = self.m.call("tap", target=tap)
         self.check(f"{name}: tap {tap!r}", not err, text[:200].replace("\n", " | "))
         text, _, err, _ = self.m.call("wait_for", target=after, timeout=30)
