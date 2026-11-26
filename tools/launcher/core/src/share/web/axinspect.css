@@ -36,5 +36,6 @@
 .axfind .fix { color: var(--muted); }
 .axlist { max-height: 300px; overflow: auto; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; }
 .axrow { padding: 3px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.axrow:hover, .axrow.on { background: var(--raised); }
+.axrow:hover { background: var(--hilite-fill); }
+.axrow.on { background: var(--selected); }
 @media (max-width: 760px) { .side.ax-wide { width: auto; } }

@@ -90,6 +90,27 @@ impl Theme {
         }
         parse_color(v)
     }
+    /// a shell.toml value with `hyprland.active-border`-style references followed (a gradient stays whole)
+    fn shell_raw(&self, section: &str, key: &str) -> Option<&str> {
+        let mut v = self.shell.get(&format!("{section}.{key}"))?;
+        for _ in 0..4 {
+            match self.shell.get(v.as_str()) {
+                Some(next) if !v.starts_with('#') => v = next,
+                _ => break,
+            }
+        }
+        Some(v)
+    }
+    /// a border as CSS: Hyprland's gradient ("rgba(..) rgba(..) 45deg") as a linear-gradient, a solid colour as a
+    /// one-colour one, at the `<key>-alpha` companion
+    fn shell_ring(&self, section: &str, key: &str) -> Option<String> {
+        let a = self.f(section, &format!("{key}-alpha"), 1.0);
+        gradient(self.shell_raw(section, key)?, a)
+    }
+    /// a border width ("N" or a CSS-style list: the first one), px
+    fn width(&self, section: &str, key: &str, d: f32) -> f32 {
+        self.shell.get(&format!("{section}.{key}")).and_then(|v| v.split_whitespace().next()?.parse().ok()).unwrap_or(d)
+    }
     fn shell_color_a(&self, section: &str, key: &str) -> Option<Rgba> {
         let c = self.shell_color(section, key)?;
         let a = self.f(section, &format!("{key}-alpha"), 1.0);
@@ -97,6 +118,25 @@ impl Theme {
     }
     fn light(&self) -> bool {
         self.colors.get("mode").is_some_and(|m| m == "light")
+    }
+}
+
+/// Hyprland's colour list ("rgba(798186ee) rgba(caccccee) 45deg", one colour, "#hex") as a CSS linear-gradient
+fn gradient(v: &str, a: f32) -> Option<String> {
+    let mut stops = vec![];
+    let mut angle = 0.0f32;
+    for tok in v.split_whitespace() {
+        if let Some(d) = tok.strip_suffix("deg") {
+            angle = d.parse().unwrap_or(0.0);
+        } else if let Some(c) = parse_color(tok) {
+            stops.push(rgba(c, a));
+        }
+    }
+    match stops.len() {
+        0 => None,
+        1 => Some(format!("linear-gradient({0}, {0})", stops[0])),
+        // Hyprland's 0deg runs left to right, CSS's runs upward
+        _ => Some(format!("linear-gradient({}deg, {})", (90.0 + angle) % 360.0, stops.join(", "))),
     }
 }
 
@@ -246,7 +286,38 @@ pub fn css() -> Option<String> {
         ("--r-sm", format!("{}px", radius.min(4))),
         ("color-scheme", (if light { "light" } else { "dark" }).into()),
     ];
-    let _ = (a_border_hover, selection);
+    let _ = a_border_hover;
+    // the shell's own surfaces: flyouts and dialogs ([popups], else [menu]), notifications, the chosen menu row
+    let popup = t.shell_color_a("popups", "background").or_else(|| t.shell_color_a("menu", "background"));
+    let ring = t.shell_ring("popups", "border").or_else(|| t.shell_ring("menu", "border"));
+    if let Some(c) = popup {
+        v.push(("--popup", rgba(c, 1.0)));
+    }
+    if let Some(r) = &ring {
+        v.push(("--ring", r.clone()));
+    }
+    if let Some(c) = t.shell_color_a("notifications", "background") {
+        v.push(("--toast", rgba(c, 1.0)));
+    }
+    if let Some(r) = t.shell_ring("notifications", "border").or(ring) {
+        v.push(("--toast-ring", r));
+    }
+    let on = popup.unwrap_or(bg);
+    let hilite = t.shell_color("menu", "selected-text").or_else(|| t.shell_color("launcher", "selected-text")).filter(|c| contrast(*c, on) >= 3.0).unwrap_or(accent_ink);
+    v.push(("--hilite", hex(hilite)));
+    if let Some(c) = t.shell_color_a("menu", "selected-background") {
+        v.push(("--hilite-fill", rgba(c, 1.0)));
+    }
+    // text selection, the keyboard focus, the theme's other hues
+    v.push(("--selection", rgba(selection, t.f("controls", "selection-fill-alpha", 0.85).max(0.35))));
+    let focus = t.shell_color("controls", "focus-border").unwrap_or(control);
+    v.push(("--focus-edge", rgba(focus, (t.f("controls", "focus-border-alpha", 0.25) + a_border).min(1.0))));
+    v.push(("--focus-fill", rgba(t.shell_color("controls", "focus-color").unwrap_or(control), t.f("controls", "focus-fill-alpha", 0.08))));
+    v.push(("--magenta", hex(pick(&[t.color("magenta"), t.color("bright_magenta")], bg, 3.0, ink_2))));
+    v.push(("--orange", hex(pick(&[t.color("orange"), t.color("bright_red"), t.color("red")], bg, 3.0, warn))));
+    // control border widths ([controls] normal / focus)
+    v.push(("--bw", format!("{}px", t.width("controls", "normal-border-width", 1.0))));
+    v.push(("--bw-focus", format!("{}px", t.width("controls", "focus-border-width", 1.0).max(1.0))));
     if let Some(f) = &font {
         v.push(("--mono", format!("\"{}\", \"x86sim-host-mono\", ui-monospace, monospace", f.replace('"', ""))));
     }
@@ -352,6 +423,8 @@ mod tests {
         assert!(contrast((0, 0, 0, 255), (255, 255, 255, 255)) > 20.0);
         // the launcher's default dark ramp (app.css's built-in values)
         assert_eq!(hex(mix((0xd6, 0xd8, 0xdc, 255), (0x15, 0x17, 0x1a, 255), 0.22)), "#acaeb1");
+        assert_eq!(gradient("rgba(798186ee) rgba(caccccee)", 1.0).unwrap(), "linear-gradient(90deg, rgb(121 129 134 / 0.933), rgb(202 204 204 / 0.933))");
+        assert_eq!(gradient("#ffffff", 0.5).unwrap(), "linear-gradient(rgb(255 255 255 / 0.500), rgb(255 255 255 / 0.500))");
     }
 
     #[test]
@@ -359,9 +432,11 @@ mod tests {
         let d = std::env::temp_dir().join(format!("x86sim-theme-test-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("colors.toml"), "background = \"#1a1b26\"\nforeground = \"#c0caf5\"\naccent = \"#7aa2f7\"\nmode = \"dark\"\n").unwrap();
+        std::fs::write(d.join("shell.toml"), "[hyprland]\nactive-border = \"rgba(33ccffee) rgba(00ff99ee) 45deg\"\n[popups]\nbackground = \"#16161e\"\nborder = \"hyprland.active-border\"\n[controls]\nnormal-border-width = \"2 1\"\n").unwrap();
         std::env::set_var("X86SIM_OMARCHY_THEME_DIR", &d);
         let c = css().unwrap();
         assert!(c.contains("--canvas: #1a1b26;") && c.contains("--accent: #7aa2f7;") && c.contains("color-scheme: dark;"), "{c}");
+        assert!(c.contains("--popup: rgb(22 22 30 / 1.000);") && c.contains("--ring: linear-gradient(135deg, rgb(51 204 255 / 0.933), rgb(0 255 153 / 0.933));") && c.contains("--bw: 2px;"), "{c}");
         assert!(!generation().is_empty());
         std::env::remove_var("X86SIM_OMARCHY_THEME_DIR");
         let _ = std::fs::remove_dir_all(&d);

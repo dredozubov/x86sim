@@ -20,6 +20,11 @@
   --bg: var(--canvas); --panel: var(--canvas); --border: var(--line); --text: var(--ink); --muted: var(--ink-3);
   --ok: var(--good); --bad: var(--crit); --accent-text: var(--on-accent);
   --mono: ui-monospace, "JetBrainsMono Nerd Font", "JetBrains Mono", "SF Mono", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* the shell's surfaces (theme.css maps Omarchy's [popups] / [notifications] / [menu] / [controls] onto these) */
+  --popup: var(--canvas); --ring: linear-gradient(var(--active), var(--active)); --toast: var(--canvas); --toast-ring: var(--ring);
+  --hilite: var(--accent-ink); --hilite-fill: var(--hover); --selection: color-mix(in srgb, var(--accent) 35%, transparent);
+  --focus-edge: var(--active); --focus-fill: transparent; --magenta: #c678dd; --orange: #e5995c;
+  --bw: 1px; --bw-focus: 1px;
   --h-md: 36px; --h-sm: 32px;                        /* touch sizes; the wide layout drops to the GUI's 28 / 24 */
   color-scheme: dark;
   font-family: var(--mono); font-size: 13px; line-height: 1.45;
@@ -34,7 +39,7 @@
     --raised: rgb(29 31 35 / .04); --hover: rgb(29 31 35 / .08); --pressed: rgb(29 31 35 / .22);
     --selected: rgb(29 31 35 / .18); --edge: rgb(29 31 35 / .4);
     --accent: #b98500; --accent-ink: #1d1f23; --on-accent: #1d1f23;
-    --active: #6b7078; --good: #2e7d43; --warn: #9a6700; --crit: #c0392b; --blue: #2f6fb5; --cyan: #1f7f86;
+    --active: #6b7078; --good: #2e7d43; --warn: #9a6700; --crit: #c0392b; --blue: #2f6fb5; --cyan: #1f7f86; --magenta: #8a4fb0; --orange: #b45a1b;
     --scrim: rgb(246 246 247 / .6); --bezel: #1a1b1d;
     color-scheme: light;
   }
@@ -45,7 +50,7 @@
     --raised: rgb(29 31 35 / .04); --hover: rgb(29 31 35 / .08); --pressed: rgb(29 31 35 / .22);
     --selected: rgb(29 31 35 / .18); --edge: rgb(29 31 35 / .4);
     --accent: #b98500; --accent-ink: #1d1f23; --on-accent: #1d1f23;
-    --active: #6b7078; --good: #2e7d43; --warn: #9a6700; --crit: #c0392b; --blue: #2f6fb5; --cyan: #1f7f86;
+    --active: #6b7078; --good: #2e7d43; --warn: #9a6700; --crit: #c0392b; --blue: #2f6fb5; --cyan: #1f7f86; --magenta: #8a4fb0; --orange: #b45a1b;
     --scrim: rgb(246 246 247 / .6); --bezel: #1a1b1d;
     color-scheme: light;
 }
@@ -61,7 +66,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .grow { flex: 1; }
 .meta, .muted { color: var(--ink-3); font-size: 11px; }
 [hidden] { display: none !important; }
-::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+::selection { background: var(--selection); }
 
 /* ---------------------------------------------------------------- the title bar */
 .top { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 10px; padding-top: max(6px, env(safe-area-inset-top));
@@ -84,12 +89,12 @@ main { flex: 1; overflow: auto; min-height: 0; }
 
 /* ---------------------------------------------------------------- controls (theme::Btn) */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--h-md); padding: 0 12px;
-  font-size: 12px; color: var(--ink); background: var(--raised); border: 1px solid var(--edge); border-radius: var(--r);
+  font-size: 12px; color: var(--ink); background: var(--raised); border: var(--bw) solid var(--edge); border-radius: var(--r);
   cursor: pointer; white-space: nowrap; text-decoration: none; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .btn:hover { background: var(--hover); border-color: var(--edge-hover); }
 .btn:active { background: var(--pressed); }
 .btn.on { background: var(--selected); border-color: var(--accent-ink); }
-.btn:focus-visible, .chip:focus-visible, .switch:focus-visible, .seg input:focus-visible + span { outline: 1px solid var(--active); outline-offset: -1px; }
+.btn:focus-visible, .chip:focus-visible, .switch:focus-visible, .seg input:focus-visible + span { outline: var(--bw-focus) solid var(--focus-edge); outline-offset: calc(-1 * var(--bw-focus)); background-color: var(--focus-fill); }
 .btn.small { height: var(--h-sm); padding: 0 10px; font-size: 11px; }
 .btn.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; }
 .btn.primary:hover { background: var(--accent-hover); }
@@ -107,7 +112,7 @@ main { flex: 1; overflow: auto; min-height: 0; }
 .btn.rec { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 55%, transparent); }
 
 select, textarea, input:not([type]), input[type="search"], input[type="text"] {
-  color: var(--ink); background: var(--well); border: 1px solid var(--edge); border-radius: var(--r); padding: 0 8px; min-height: var(--h-md);
+  color: var(--ink); background: var(--well); border: var(--bw) solid var(--edge); border-radius: var(--r); padding: 0 8px; min-height: var(--h-md);
   font-size: 13px; min-width: 0; }
 /* under 16 px iOS zooms into a focused field */
 @supports (-webkit-touch-callout: none) { select, textarea, input:not([type]), input[type="search"], input[type="text"] { font-size: 16px; } }
@@ -119,7 +124,7 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--a
 input[type="range"] { accent-color: var(--accent); }
 
 /* a switch (theme::toggle) */
-.switch { position: relative; flex: none; width: 40px; height: 22px; border-radius: 11px; border: 1px solid var(--edge); background: var(--raised);
+.switch { position: relative; flex: none; width: 40px; height: 22px; border-radius: 11px; border: var(--bw) solid var(--edge); background: var(--raised);
   padding: 0; cursor: pointer; touch-action: manipulation; }
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-3); }
 .switch[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
@@ -128,7 +133,7 @@ input[type="range"] { accent-color: var(--accent); }
 .switch.busy::after { left: 12px; background: var(--ink-2); }
 
 /* a segmented control (theme::segmented): radios or buttons side by side */
-.seg { display: inline-flex; border: 1px solid var(--edge); border-radius: var(--r); overflow: hidden; background: var(--raised); }
+.seg { display: inline-flex; border: var(--bw) solid var(--edge); border-radius: var(--r); overflow: hidden; background: var(--raised); }
 .seg > .btn { border: 0; border-radius: 0; background: transparent; }
 .seg > .btn + .btn, .seg label + label { border-left: 1px solid var(--edge); }
 .seg > .btn.on { background: var(--selected); color: var(--ink); }
@@ -157,7 +162,7 @@ input[type="range"] { accent-color: var(--accent); }
 .chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; flex: 1 1 100%; }
 .chips::-webkit-scrollbar { display: none; }
 .chip { flex: none; display: inline-flex; gap: 6px; align-items: center; height: var(--h-sm); padding: 0 10px; font-size: 11px;
-  color: var(--ink-2); background: var(--raised); border: 1px solid var(--edge); border-radius: var(--r-sm); cursor: pointer; touch-action: manipulation; }
+  color: var(--ink-2); background: var(--raised); border: var(--bw) solid var(--edge); border-radius: var(--r-sm); cursor: pointer; touch-action: manipulation; }
 .chip:hover { background: var(--hover); border-color: var(--edge-hover); color: var(--ink); }
 .chip .n { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .chip.on { background: var(--selected); border-color: var(--accent-ink); color: var(--ink); }
@@ -265,7 +270,7 @@ canvas.screen.readonly { cursor: default; }
 
 /* ---------------------------------------------------------------- dialogs: a sheet from the bottom on a phone, a
    centred panel on a wide screen */
-dialog { background: var(--canvas); color: var(--ink); border: 1px solid var(--active); padding: 0; margin: auto auto 0; width: 100%; max-width: 100%;
+dialog { background: linear-gradient(var(--popup), var(--popup)) padding-box, var(--ring) border-box; color: var(--ink); border: 1px solid transparent; padding: 0; margin: auto auto 0; width: 100%; max-width: 100%;
   max-height: 92dvh; border-radius: 10px 10px 0 0; border-bottom: 0; overflow: hidden; }
 dialog[open] { display: flex; flex-direction: column; }
 dialog::backdrop { background: var(--scrim); }
@@ -283,7 +288,7 @@ dialog::backdrop { background: var(--scrim); }
 .field > select, .field > .seg { width: 100%; }
 .fields { display: grid; grid-template-columns: 1fr; gap: 10px; }
 @media (min-width: 761px) {
-  dialog { margin: auto; max-width: min(600px, calc(100vw - 48px)); max-height: min(760px, calc(100dvh - 48px)); border-radius: var(--r); border-bottom: 1px solid var(--active); }
+  dialog { margin: auto; max-width: min(600px, calc(100vw - 48px)); max-height: min(760px, calc(100dvh - 48px)); border-radius: var(--r); border-bottom: 1px solid transparent; }
   .dhead { padding: 8px 8px 8px 16px; }
   .dfoot { padding-bottom: 10px; }
   .dfoot .btn { flex: none; }
@@ -315,8 +320,8 @@ dialog::backdrop { background: var(--scrim); }
   .urls { flex: 1; }
 }
 
-.toast { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); background: var(--canvas);
-  border: 1px solid var(--active); padding: 8px 14px; border-radius: var(--r); z-index: 10; max-width: calc(100vw - 32px); font-size: 12px; }
+.toast { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+  background: linear-gradient(var(--toast), var(--toast)) padding-box, var(--toast-ring) border-box; border: 1px solid transparent; padding: 8px 14px; border-radius: var(--r); z-index: 10; max-width: calc(100vw - 32px); font-size: 12px; }
 .crumb .back { color: var(--ink-3); text-decoration: none; white-space: nowrap; }
 /* a device page on a phone: "‹ Devices / name" without the brand */
 /* a device page on a phone: "‹ name ●" without the brand, the word Devices or the state's word */
@@ -400,9 +405,9 @@ dialog::backdrop { background: var(--scrim); }
 .tool .ic, .btn .ic { font-family: "x86sim-icons"; font-size: 18px; line-height: 1; font-style: normal; }
 .tool:hover { background: var(--hover); color: var(--ink); }
 .tool:active { background: var(--pressed); }
-.tool.on { color: var(--accent-ink); background: var(--selected); }
+.tool.on { color: var(--hilite); background: var(--selected); }
 .tool.rec { color: var(--crit); }
-.tool:focus-visible { outline: 1px solid var(--active); outline-offset: -1px; }
+.tool:focus-visible { outline: var(--bw-focus) solid var(--focus-edge); outline-offset: calc(-1 * var(--bw-focus)); background-color: var(--focus-fill); }
 .tgap { height: 10px; }
 @media (min-width: 761px) {
   .stage { gap: 14px; }
