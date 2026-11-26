@@ -912,7 +912,7 @@ function phoneView(id) {
     const poseBtns = (info.poses || []).map((ps, k) => {
       const b = tool(icons[k] || I.hingeOpen, ps.label, () => {
         send({ t: "hinge", pose: ps.key });
-        if (duo && ps.angle != null) duo.command(ps.angle);
+        if (duo && ps.angle != null) duo.pose(ps.angle, ps.orientation);
         if (ps.angle != null) { slider.value = ps.angle; cur = ps.angle; }
         if (ps.orientation) orient = ps.orientation;
         sentAt = performance.now();
