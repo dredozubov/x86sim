@@ -12,6 +12,10 @@
 //! - godot: a Godot 4 project (project.godot) with an iOS export preset. The dev toolchain's shells/godot/export.sh
 //!   exports it on Linux (Godot's editor, headless, and its iOS template) into build/godot-ios; the Xcode project
 //!   builds for iOS devices (the template's simulator library is x86_64 only), which x86Sim converts at install.
+//! - unity: a Unity project (ProjectSettings/ProjectVersion.txt, Assets/). The dev toolchain's shells/unity/build.sh
+//!   exports its iOS Xcode project (IL2CPP, arm64 simulator) with the Unity editor for Linux (UNITY_EDITOR /
+//!   UNITY_HOME; it needs iOS Build Support and an activated license) into build/unity-ios and makes its IL2CPP step
+//!   run on Linux.
 //! - cordova: package.json with cordova-ios (config.xml beside it). `cordova prepare ios` (the app's own cordova CLI,
 //!   else npx's) adds the platform and copies www/; the Xcode project is platforms/ios (App.xcworkspace).
 use crate::{dev, devxcode};
@@ -32,6 +36,9 @@ pub fn detect(dir: &Path) -> Option<&'static str> {
     if dir.join("project.godot").is_file() {
         return Some("godot");
     }
+    if dir.join("ProjectSettings/ProjectVersion.txt").is_file() && dir.join("Assets").is_dir() {
+        return Some("unity");
+    }
     let pj = package_json(dir)?;
     let cap_config = ["capacitor.config.ts", "capacitor.config.js", "capacitor.config.json"].iter().any(|f| dir.join(f).exists());
     if has_dep(&pj, "@capacitor/ios") || (has_dep(&pj, "@capacitor/core") && cap_config) {
@@ -48,13 +55,16 @@ pub fn detect(dir: &Path) -> Option<&'static str> {
 }
 
 pub fn is_shell(kind: &str) -> bool {
-    matches!(kind, "capacitor" | "cordova" | "nativescript" | "godot")
+    matches!(kind, "capacitor" | "cordova" | "nativescript" | "godot" | "unity")
 }
 
 /// The generated Xcode project's directory (where its .xcodeproj / .xcworkspace is)
 fn native_dir(dir: &Path, kind: &str) -> PathBuf {
     if kind == "godot" {
         return dir.join("build/godot-ios");
+    }
+    if kind == "unity" {
+        return dir.join("build/unity-ios");
     }
     if kind == "cordova" || kind == "nativescript" {
         return dir.join("platforms/ios");
@@ -108,6 +118,11 @@ pub fn prepare(dir: &Path, kind: &str, say: &mut dyn FnMut(&str)) -> Result<()> 
         let mut c = dev::command("bash");
         c.arg(dev::fork_dir().join("shells/godot/export.sh")).arg(dir).arg(native_dir(dir, kind));
         return step(c, dir, "Godot: export the iOS Xcode project (shells/godot/export.sh)", say);
+    }
+    if kind == "unity" {
+        let mut c = dev::command("bash");
+        c.arg(dev::fork_dir().join("shells/unity/build.sh")).arg(dir).arg(native_dir(dir, kind));
+        return step(c, dir, "Unity: export the iOS Xcode project (shells/unity/build.sh)", say);
     }
     let pm = package_manager(dir);
     if !dir.join("node_modules").is_dir() {

@@ -704,7 +704,7 @@ pub struct Project {
     /// xtool (Package.swift + xtool.yml: builds here), dotnet (a net*-ios .csproj: builds here), flutter, expo /
     /// reactnative (package.json: CocoaPods workspace built by the fork's xcbuild.py), rust (a cargo package: builds
     /// here with rust/build.py), swiftpm (no xtool.yml), xcodeproj (an .xcodeproj / .xcworkspace: Swift Build),
-    /// capacitor, cordova, nativescript, godot (shell apps and engine exports: their tool writes the Xcode
+    /// capacitor, cordova, nativescript, godot, unity (shell apps and engine exports: their tool writes the Xcode
     /// project, devweb.rs)
     pub kind: String,
     pub bundle_id: String,

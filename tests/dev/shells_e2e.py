@@ -17,6 +17,11 @@ snapshot must show the app's UI and one tap must change it.
              toolchain's shells/godot/export.sh, built for iOS devices (the template's simulator library is x86_64
              only) and converted for the simulator at install. Godot draws its own UI: the snapshot reads "Godot on
              x86Sim" by OCR; tapping "Tap me" (found by OCR) turns "Taps: 0" into "Taps: 1".
+  unity      shells/samples/unity-hello (only with --only unity: it needs the Unity editor for Linux with iOS Build
+             Support and an activated license; UNITY_EDITOR / UNITY_HOME): exported by shells/unity/build.sh (IL2CPP,
+             its build step made to run on Linux), built with Swift Build for the arm64 simulator. x86Sim's Unity
+             reader lists the uGUI controls: "Unity on x86Sim" in the snapshot; tapping the button "Play" shows
+             "Score: 1". (tests/ax/games_e2e.py's unity check drives the same game further: typing.)
   nativescript  shells/samples/nativescript-hello: NativeScript 9 (hello-world-ts template). The dev toolchain's
              shells/nativescript/ns prepares platforms/ios on Linux with its Linux-built metadata generator; native
              UIKit views: the action bar "NativeScript on x86Sim", tapping "TAP" turns "42 taps left" into "41 taps left".
@@ -45,6 +50,7 @@ SAMPLES = {
     "ionic": ("shells/samples/ionic-hello", "Ionic on x86Sim", "Tap me", "Taps: 1", False),
     "cordova": ("shells/samples/cordova-hello", "Cordova 8.2.0 on ios", "Tap me", "Taps: 1", False),
     "godot": ("shells/samples/godot-hello", "Godot on x86Sim", "Tap me", "Taps: 1", True),
+    "unity": ("shells/samples/unity-hello", "Unity on x86Sim", "Play", "Score: 1", False),
     "nativescript": ("shells/samples/nativescript-hello", "NativeScript on x86Sim", "TAP", "41 taps left", False),
 }
 # what a copy of a sample leaves out (each run starts from the sources)
@@ -116,7 +122,7 @@ def main():
     ap.add_argument("--phone", required=True)
     ap.add_argument("--mcp", default=os.path.join(ROOT, "tools/launcher/target/release/x86sim-mcp"))
     ap.add_argument("--start", action="store_true", help="boot the phone if it is off, and stop it at the end")
-    ap.add_argument("--only", default=",".join(SAMPLES))
+    ap.add_argument("--only", default=",".join(n for n in SAMPLES if n != "unity"))
     ap.add_argument("--out", default=os.path.expanduser("~/scratch/shells_e2e"))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
