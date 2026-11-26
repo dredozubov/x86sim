@@ -63,11 +63,7 @@ impl App {
             self.setup.refresh(ui.ctx());
         }
         let mut recheck = false;
-        let sub_text = match setup::appimage() {
-            Some(_) => format!("x86Sim {}. Everything below runs once; data lives in {}.", setup::version(), x86sim_core::aot::repo_root().display()),
-            None => format!("Checkout at {} (developer setup: see README.md).", x86sim_core::aot::repo_root().display()),
-        };
-        page_header(ui, "Setup", &sub_text, |ui| {
+        page_header(ui, "Setup", |ui| {
             recheck = ui.add(Btn::secondary("Check again").icon(icon::ARROW_CLOCKWISE)).clicked();
         });
         if recheck {

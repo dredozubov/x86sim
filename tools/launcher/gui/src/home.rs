@@ -41,7 +41,7 @@ impl App {
         let sorts = [("name", "Name"), ("newest", "Newest first"), ("oldest", "Oldest first"), ("model", "Model"), ("ios", "Version")];
         let mut sort = self.hub.sort.clone();
         // no subtitle: the count is on the nav item, what runs in the sidebar's footer
-        page_header(ui, "Devices", "", |ui| {
+        page_header(ui, "Devices", |ui| {
             add = ui.add(Btn::primary("Add device").icon(icon::PLUS).key("n")).on_hover_text("Add an iPhone, iPad, Apple TV or Apple Watch").clicked();
             if n > 1 {
                 let cur = sorts.iter().find(|s| s.0 == sort).map(|s| s.1).unwrap_or("Name");

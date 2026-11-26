@@ -143,7 +143,7 @@ impl App {
         ctx.request_repaint_after(every);
 
         let mut recheck = false;
-        page_header(ui, "Develop", "Build iPhone, iPad, Apple TV, Apple Watch and Vision Pro apps on Linux with omarchy-apple-dev, and run them on your devices.", |ui| {
+        page_header(ui, "Develop", |ui| {
             recheck = ui.add(Btn::secondary("Check again").icon(icon::ARROW_CLOCKWISE)).clicked();
         });
         if recheck {
