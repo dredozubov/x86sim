@@ -124,15 +124,21 @@
   const AVS = `#version 300 es
 precision highp float;
 uniform mat3 u_rot; uniform vec3 u_c; uniform vec4 u_fit; uniform vec3 u_dnf;
-uniform mat4 u_bones[32];
+uniform mat4 u_bones[32]; uniform float u_lift;
 in vec3 a_p; in vec3 a_n; in vec2 a_uv; in vec2 a_uv1; in vec4 a_j; in vec4 a_w;
 out vec3 v_n; out vec3 v_p; out vec2 v_uv; out vec2 v_uv1;
 void main() {
     mat4 sk = u_bones[int(a_j.x)] * a_w.x + u_bones[int(a_j.y)] * a_w.y + u_bones[int(a_j.z)] * a_w.z + u_bones[int(a_j.w)] * a_w.w;
     vec3 p = u_rot * (sk * vec4(a_p, 1.0)).xyz - u_c;
+    // the screens lie on a black panel in the same plane (other triangles): lifted toward the camera by u_lift (half
+    // a panel pixel) so the panel never shows through, whatever the depth buffer's precision or polygon offset
+    p.z += u_lift;
     float w = u_dnf.x - p.z;
+    // depth as a perspective projection's: an affine function of 1/w, so it interpolates exactly across a triangle
+    // (one linear in w drifted by tens of units inside large tilted triangles: the panel came through in patches)
+    float n = u_dnf.y, f = u_dnf.z;
     gl_Position = vec4(p.x * u_dnf.x * u_fit.x + u_fit.z * w, p.y * u_dnf.x * u_fit.y + u_fit.w * w,
-        ((w - u_dnf.y) / (u_dnf.z - u_dnf.y) * 2.0 - 1.0) * w, w);
+        ((f + n) * w - 2.0 * f * n) / (f - n), w);
     v_n = u_rot * (mat3(sk) * a_n); v_p = p; v_uv = a_uv; v_uv1 = a_uv1;
 }
 `;
@@ -267,7 +273,7 @@ void main() {
     async function appleGL(M) {
       const p = program(gl, AVS, AFS, ["a_p", "a_n", "a_uv", "a_uv1", "a_j", "a_w"]);
       const U = {};
-      for (const n of ["u_rot", "u_c", "u_fit", "u_dnf", "u_bones", "u_ts", "u_nscale", "u_nbias", "u_base", "u_mat", "u_coat", "u_pic", "u_t0", "u_t1", "u_t2", "u_t3", "u_t4", "u_t5"]) U[n] = gl.getUniformLocation(p, n);
+      for (const n of ["u_rot", "u_c", "u_fit", "u_dnf", "u_bones", "u_ts", "u_nscale", "u_nbias", "u_base", "u_mat", "u_coat", "u_lift", "u_pic", "u_t0", "u_t1", "u_t2", "u_t3", "u_t4", "u_t5"]) U[n] = gl.getUniformLocation(p, n);
       const vao = gl.createVertexArray(), vb = gl.createBuffer(), ib = gl.createBuffer();
       gl.bindVertexArray(vao);
       gl.bindBuffer(gl.ARRAY_BUFFER, vb);
@@ -321,6 +327,8 @@ void main() {
         gl.uniform3fv(U.u_base, mt.base);
         gl.uniform4f(U.u_mat, mt.metallic, mt.roughness, mt.opacity, mt.clearcoat);
         gl.uniform2f(U.u_coat, mt.clearcoatRoughness, mt.screen ? 1 : 0);
+        // the screens a half pixel in front of the black panel they lie on (gpu.rs SCREEN_LIFT)
+        gl.uniform1f(U.u_lift, mt.screen ? 0.5 : 0);
         const blended = gi >= M.head.opaque;
         if (blended) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
         if (mt.screen) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(-1, -4); }

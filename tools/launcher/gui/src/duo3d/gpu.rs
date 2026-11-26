@@ -50,18 +50,27 @@ struct ModelGl {
 #[derive(Default, Clone)]
 pub struct Target(Arc<Mutex<Option<Result<Gl, ()>>>>);
 
+/// How far the screens are drawn in front of the black panel they lie on (inner-screen pixels; AVS's u_lift)
+const SCREEN_LIFT: f32 = 0.5;
+
 /// Skinned in the vertex shader (four joints a vertex)
 const AVS: &str = r#"
 uniform mat3 u_rot; uniform vec3 u_c; uniform vec4 u_fit; uniform vec3 u_dnf;
-uniform mat4 u_bones[32];
+uniform mat4 u_bones[32]; uniform float u_lift;
 IN vec3 a_p; IN vec3 a_n; IN vec2 a_uv; IN vec2 a_uv1; IN vec4 a_j; IN vec4 a_w;
 OUT vec3 v_n; OUT vec3 v_p; OUT vec2 v_uv; OUT vec2 v_uv1;
 void main() {
     mat4 sk = u_bones[int(a_j.x)] * a_w.x + u_bones[int(a_j.y)] * a_w.y + u_bones[int(a_j.z)] * a_w.z + u_bones[int(a_j.w)] * a_w.w;
     vec3 p = u_rot * (sk * vec4(a_p, 1.0)).xyz - u_c;
+    // the screens lie on a black panel in the same plane (other triangles): lifted toward the camera by u_lift (half
+    // a panel pixel) so the panel never shows through, whatever the depth buffer's precision or polygon offset
+    p.z += u_lift;
     float w = u_dnf.x - p.z;
+    // depth as a perspective projection's: an affine function of 1/w, so it interpolates exactly across a triangle
+    // (one linear in w drifted by tens of units inside large tilted triangles: the panel came through in patches)
+    float n = u_dnf.y, f = u_dnf.z;
     gl_Position = vec4(p.x * u_dnf.x * u_fit.x + u_fit.z * w, p.y * u_dnf.x * u_fit.y + u_fit.w * w,
-        ((w - u_dnf.y) / (u_dnf.z - u_dnf.y) * 2.0 - 1.0) * w, w);
+        ((f + n) * w - 2.0 * f * n) / (f - n), w);
     v_n = u_rot * (mat3(sk) * a_n); v_p = p; v_uv = a_uv; v_uv1 = a_uv1;
 }
 "#;
@@ -277,7 +286,7 @@ unsafe fn draw(gl: &glow::Context, a: &ModelGl, m: &Model, bones: &[[f32; 16]], 
             gl.uniform_1_i32(u(&format!("u_t{k}")).as_ref(), k);
         }
         gl.uniform_1_i32(u("u_pic").as_ref(), 6);
-        let (l_ts, l_ns, l_nb, l_base, l_mat, l_coat) = (u("u_ts"), u("u_nscale"), u("u_nbias"), u("u_base"), u("u_mat"), u("u_coat"));
+        let (l_ts, l_ns, l_nb, l_base, l_mat, l_coat, l_lift) = (u("u_ts"), u("u_nscale"), u("u_nbias"), u("u_base"), u("u_mat"), u("u_coat"), u("u_lift"));
         gl.bind_vertex_array(Some(a.vao));
         for (gi, g) in m.groups.iter().enumerate() {
             let mt = &m.mats[g.mat];
@@ -304,6 +313,7 @@ unsafe fn draw(gl: &glow::Context, a: &ModelGl, m: &Model, bones: &[[f32; 16]], 
             gl.uniform_3_f32_slice(l_base.as_ref(), &mt.base);
             gl.uniform_4_f32(l_mat.as_ref(), mt.metallic, mt.roughness, mt.opacity, mt.clearcoat);
             gl.uniform_2_f32(l_coat.as_ref(), mt.clearcoat_roughness, if mt.screen > 0 { 1.0 } else { 0.0 });
+            gl.uniform_1_f32(l_lift.as_ref(), if mt.screen > 0 { SCREEN_LIFT } else { 0.0 });
             let blended = gi >= m.opaque;
             if blended {
                 gl.enable(glow::BLEND);
