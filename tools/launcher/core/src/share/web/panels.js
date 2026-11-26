@@ -1,5 +1,5 @@
 // x86Sim share page: the device page's panels the launcher has (gui/src/phone.rs, devctl_ui.rs): the overview tiles,
-// Features, Logs, Performance and Simulate, as folds that remember whether they are open. Server: share/device.rs.
+// Features, GPU, Logs, Performance and Simulate, as folds that remember whether they are open. Server: share/device.rs.
 "use strict";
 window.PANELS = (() => {
   const OPEN_KEY = "x86sim.folds";
@@ -49,8 +49,8 @@ window.PANELS = (() => {
       const g = on && d.gpu;
       gpuLine.hidden = !g;
       if (g) {
-        gpuLine.textContent = `+ ${fmtMem(g.memory_mb)} GPU helper` + (g.users > 1 ? ` · ${g.users} devices` : "");
-        gpuLine.title = "mtlvk runs every Metal call on Vulkan. It is not in this device's memory.";
+        gpuLine.textContent = `+ ${fmtMem(g.memory_mb)} GPU helper` + (g.short ? ` · ${g.short}` : "") + (g.users > 1 ? ` · ${g.users} devices` : "");
+        gpuLine.title = (g.name ? g.name + (g.driver ? ` · ${g.driver}` : "") + "\n" : "") + "mtlvk runs every Metal call on Vulkan. It is not in this device's memory.";
       }
       facts.replaceChildren(...[d.screen ? kv("Screen", `${d.screen[0]} × ${d.screen[1]} pixels`) : null, on && d.processes != null ? kv("Processes", String(d.processes)) : null].filter(Boolean));
     }
@@ -128,6 +128,36 @@ window.PANELS = (() => {
     function restartBanner() {
       return h("div", { class: "banner" }, h("span", { class: "warnmark", text: "!" }), h("span", { class: "grow", text: "Restart to apply" }),
         h("button", { type: "button", class: "btn small", text: "Restart now", onclick: (e) => o.restart(e) }));
+    }
+
+    // ---- GPU: the GPU this device renders on (Advanced > GPU in the launcher); applies at the next start
+    let gpuSet = null;
+    const gpuBody = h("div", { class: "gpus" });
+    const gpuFold = control ? fold("gpu", "GPU", gpuBody, (open) => { if (open) loadGpu(); drawGpuSummary(); }) : null;
+    async function loadGpu() {
+      if (!gpuSet) gpuBody.replaceChildren(h("div", { class: "muted", text: "Reading…" }));
+      try { gpuSet = await api(base + "gpu"); drawGpu(); } catch (e) { gpuBody.replaceChildren(h("div", { class: "muted", text: e.message })); }
+    }
+    async function setGpu(v) {
+      try { gpuSet = await api(base + "gpu", { gpu: v }); drawGpu(); pollDetail(); toast("GPU: " + gpuSet.label); } catch (e) { toast(e.message); drawGpu(); }
+    }
+    function drawGpuSummary() {
+      if (!gpuFold || !gpuSet) return;
+      gpuFold.sum.textContent = gpuFold.open ? "" : gpuSet.label;
+    }
+    function drawGpu() {
+      const g = gpuSet;
+      const known = g.choices.some((c) => c.value === g.gpu);
+      const sel = h("select", { "aria-label": "GPU", title: "Auto: a discrete GPU first · CPU: no GPU, slow", disabled: !g.metal },
+        ...(known ? [] : [h("option", { value: g.gpu, text: g.label })]),
+        ...g.choices.map((c) => h("option", { value: c.value, text: c.label })));
+      sel.value = g.gpu;
+      sel.addEventListener("change", () => setGpu(sel.value));
+      gpuBody.replaceChildren(...[
+        field("GPU", "MTLVK_DEVICE_ID: the GPU Metal runs on; devices on the same GPU share one helper · Applies at next start", sel),
+        g.renders_on ? kv("Now", g.renders_on) : null,
+        g.needs_restart && g.running ? restartBanner() : null].filter(Boolean));
+      drawGpuSummary();
     }
 
     // ---- Logs: a live tail, filtered by text or process and by group
@@ -221,9 +251,10 @@ window.PANELS = (() => {
     timers.push(setInterval(pollDetail, 3000), setInterval(pollLogs, 1000));
     // a fold open from last time fires its own toggle, which loads it; a folded Features still shows its summary
     if (feat && !feat.open) api(base + "features").then((f) => { features = f; drawFeatSummary(); }).catch(() => {});
+    if (gpuFold && !gpuFold.open) api(base + "gpu").then((g) => { gpuSet = g; drawGpuSummary(); }).catch(() => {});
     drawOverview();
     return {
-      overview, features: feat, logs, perf, simulate, fold,
+      overview, features: feat, gpu: gpuFold, logs, perf, simulate, fold,
       refresh: pollDetail,
       close() { alive = false; timers.forEach(clearInterval); },
     };
