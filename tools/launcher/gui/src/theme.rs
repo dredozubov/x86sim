@@ -904,21 +904,16 @@ pub fn list_card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> 
         .inner
 }
 
-/// Page title row: title + optional subtitle on the left, actions on the right.
-pub fn page_header(ui: &mut egui::Ui, title: &str, sub_text: &str, actions: impl FnOnce(&mut egui::Ui)) {
-    // the text keeps clear of the actions (their width as last drawn): unbounded, a long subtitle ran under the
-    // button at narrow widths ("Check for updates" on Versions)
+/// Page title row: title on the left, actions on the right.
+pub fn page_header(ui: &mut egui::Ui, title: &str, actions: impl FnOnce(&mut egui::Ui)) {
+    // the title keeps clear of the actions (their width as last drawn)
     let aw_id = ui.id().with(("page-header-actions", title));
     let aw: f32 = ui.data(|d| d.get_temp(aw_id)).unwrap_or(0.0);
     ui.horizontal(|ui| {
         let tw = (ui.available_width() - aw - S4).max(160.0);
         ui.vertical(|ui| {
             ui.set_max_width(tw);
-            ui.spacing_mut().item_spacing.y = 2.0;
             ui.add(egui::Label::new(h1(title)).truncate());
-            if !sub_text.is_empty() {
-                ui.add(egui::Label::new(sub(sub_text)).wrap());
-            }
         });
         let w = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1026,25 +1021,22 @@ pub fn kv_text(ui: &mut egui::Ui, label_w: f32, label: &str, value: impl Into<St
     });
 }
 
-/// Settings-style row: title + description on the left, control on the right, hairline below unless last. A row of
-/// the keyboard cursor: Enter goes to its first control.
-pub fn form_row(ui: &mut egui::Ui, label: &str, desc: &str, last: bool, control: impl FnOnce(&mut egui::Ui)) {
+/// Settings-style row: label on the left (`tip`: more about it on hover), control on the right, hairline below unless
+/// last. A row of the keyboard cursor: Enter goes to its first control.
+pub fn form_row(ui: &mut egui::Ui, label: &str, tip: &str, last: bool, control: impl FnOnce(&mut egui::Ui)) {
     let row = nav::row(ui.id().with(("form-row", label)));
     let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        // the description wraps to what the control leaves (its width as last drawn): unbounded, a long one ran under
-        // the control ("How much" on Pre-translate)
+        // the label keeps to what the control leaves (its width as last drawn)
         let cw_id = ui.id().with(("form-row-control", label));
         let cw: f32 = ui.data(|d| d.get_temp(cw_id)).unwrap_or(160.0);
         ui.horizontal(|ui| {
             ui.set_min_height(H_MD);
             let tw = (ui.available_width() - cw - S4).max(140.0);
-            ui.vertical(|ui| {
-                ui.set_max_width(tw);
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(strong(label));
-                if !desc.is_empty() {
-                    ui.add(egui::Label::new(muted(desc)).wrap());
+            ui.allocate_ui_with_layout(egui::vec2(tw, H_MD), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let l = ui.add(egui::Label::new(strong(label)).truncate());
+                if !tip.is_empty() {
+                    l.on_hover_text(tip);
                 }
             });
             let w = ui

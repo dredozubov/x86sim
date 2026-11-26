@@ -126,7 +126,7 @@ pub fn section(ui: &mut egui::Ui, inst: &Instance, live: bool) {
             load_apps(&ctx, inst, &st, &mut s);
         }
         let ok = live && !s.busy && !s.bundle.trim().is_empty();
-        if ui.add_enabled(ok, Btn::secondary(if s.busy { "Working…" } else { "Capture + relaunch" }).small()).on_hover_text("Record this app's requests from a fresh launch").on_disabled_hover_text("Start the device and pick an app").clicked() {
+        if ui.add_enabled(ok, Btn::secondary(if s.busy { "Working…" } else { "Capture + relaunch" }).small()).on_hover_text("Its requests from a fresh launch, HTTPS in the clear (URLSession; other stacks as connections)").on_disabled_hover_text("Start the device and pick an app").clicked() {
             let b = s.bundle.trim().to_string();
             capture(&ctx, inst, &st, b, true, true);
         }

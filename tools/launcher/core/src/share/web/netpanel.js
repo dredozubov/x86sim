@@ -47,8 +47,8 @@ window.NETPANEL = (() => {
           ...(apple.length ? [h("optgroup", { label: "Apple" }, ...apple.map(opt))] : []));
       } catch {}
     }
-    const capBtn = h("button", { type: "button", class: "btn small", text: "Capture + relaunch", title: "Record this app's requests from a fresh launch" });
-    const filterIn = h("input", { type: "search", placeholder: "Filter (words, status:4xx, method:POST, error)", "aria-label": "Filter requests" });
+    const capBtn = h("button", { type: "button", class: "btn small", text: "Capture + relaunch", title: "Its requests from a fresh launch, HTTPS in the clear (URLSession; other stacks as connections)" });
+    const filterIn = h("input", { type: "search", placeholder: "Filter", title: "Words, status:4xx, method:POST, error", "aria-label": "Filter requests" });
     const appSel = h("select", { "aria-label": "Which app" }, h("option", { value: "", text: "All apps" }));
     const clearBtn = h("button", { type: "button", class: "btn small ghost", text: "Clear", title: "Empty the recorded requests" });
     const list = h("div", { class: "netlist", role: "list", tabindex: "0" });
@@ -93,7 +93,7 @@ window.NETPANEL = (() => {
       if (!bundle) return toast("Choose an app");
       try {
         const r = await api(base + "capture", { app: bundle, on, relaunch });
-        toast(on ? (r.hooked === false ? "Capture on, but the hook did not start" : `Capturing ${nameOf(bundle)}`) : `Capture off for ${nameOf(bundle)}`);
+        toast(on ? (r.hooked === false ? "Capture on · Hook not started" : `Capturing ${nameOf(bundle)}`) : `Capture off for ${nameOf(bundle)}`);
         poll();
       } catch (e) { toast(e.message); }
     }

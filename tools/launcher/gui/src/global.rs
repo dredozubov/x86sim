@@ -306,7 +306,7 @@ impl App {
     pub fn ios_page(&mut self, ui: &mut egui::Ui) {
         let mut check = false;
         let checking = self.catalogue.lock().unwrap().is_none();
-        page_header(ui, "Versions", "Each device runs one version: iOS for iPhone and iPad, tvOS for Apple TV, watchOS for Apple Watch.", |ui| {
+        page_header(ui, "Versions", |ui| {
             check = ui.add_enabled(!checking, Btn::secondary(if checking { "Checking…" } else { "Check for updates" }).icon(icon::ARROW_CLOCKWISE)).on_hover_text("Ask Apple for its current list").clicked();
         });
         if check {
@@ -333,7 +333,7 @@ impl App {
         let mut rt_stop: Vec<String> = vec![];
         list_card(ui, |ui| {
             if runtimes.is_empty() {
-                empty_state(ui, icon::STACK, "No version yet", "Download one below to start a device.", |_| {});
+                empty_state(ui, icon::STACK, "No version yet", "", |_| {});
             }
             for (k, r) in runtimes.iter().enumerate() {
                 if k > 0 {
@@ -353,7 +353,7 @@ impl App {
                     line = format!("{scope} · {line}");
                 }
                 if let Some(b) = size {
-                    line += &format!(" · {:.1} GB translated code", b as f64 / 1e9);
+                    line += &format!(" · {:.1} GB translated", b as f64 / 1e9);
                 }
                 // a badge only for what needs attention: the section says these are installed, the progress row below
                 // that one is downloading
@@ -417,11 +417,9 @@ impl App {
                 } else if let Some(b) = partial {
                     let total = cat.as_ref().and_then(|c| c.iter().find(|c| c.build == r.build)).map(|c| c.gb);
                     note(ui, &match total {
-                        Some(gb) => format!("Download stopped at {:.1} of {gb:.1} GB. Resume picks up where it stopped.", b as f64 / 1e9),
-                        None => format!("Download stopped at {:.1} GB. Resume picks up where it stopped.", b as f64 / 1e9),
+                        Some(gb) => format!("{:.1} of {gb:.1} GB", b as f64 / 1e9),
+                        None => format!("{:.1} GB", b as f64 / 1e9),
                     });
-                } else if !r.present {
-                    note(ui, "Its files are missing. Download it again to start devices on this version.");
                 }
             }
         });
@@ -429,8 +427,14 @@ impl App {
         let betas = self.hub_show_betas;
         let mut show_betas = betas;
         section(ui, "Available from Apple", |ui| {
-            ui.label(sub("Show betas"));
-            toggle(ui, &mut show_betas);
+            // why the newest version may be missing: in the toggle's tooltip, not on the page
+            let tip = cat.as_ref().filter(|c| !c.is_empty()).map(|c| catalogue_notes(c).join("\n\n")).unwrap_or_default();
+            let l = ui.label(sub("Show betas"));
+            let t = toggle(ui, &mut show_betas);
+            if !tip.is_empty() {
+                l.on_hover_text(&tip);
+                t.on_hover_text(&tip);
+            }
         });
         if show_betas != betas {
             self.hub_show_betas = show_betas;
@@ -445,7 +449,7 @@ impl App {
                 egui::Frame::new().inner_margin(16).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(icon::WIFI_SLASH).family(icons()).size(16.0).color(pal().ink_3));
-                        ui.label(sub("Couldn't reach Apple. Check the connection, then Check for updates."));
+                        ui.label(sub("Couldn't reach Apple"));
                     });
                 });
             }
@@ -460,7 +464,7 @@ impl App {
                     egui::Frame::new().inner_margin(16).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(icon::CHECK_CIRCLE).family(icons()).size(16.0).color(pal().good));
-                            ui.label(sub("You have every release Apple offers."));
+                            ui.label(sub("Nothing new"));
                         });
                     });
                 }
@@ -501,23 +505,11 @@ impl App {
                 if !show_betas && hidden > 0 {
                     hline(ui);
                     egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
-                        ui.label(muted(format!("{hidden} betas and release candidates hidden")));
+                        ui.label(muted(format!("{hidden} betas hidden")));
                     });
                 }
             }
         });
-        // why the newest iOS on a phone (27.2.1) or in the news (27.3) may not be here
-        if let Some(c) = cat.as_ref().filter(|c| !c.is_empty()) {
-            ui.add_space(S2);
-            for line in catalogue_notes(c, show_betas) {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = S2;
-                    ui.label(egui::RichText::new(icon::INFO).family(icons()).size(14.0).color(pal().ink_3));
-                    ui.add(egui::Label::new(muted(line)).wrap());
-                });
-                ui.add_space(S1);
-            }
-        }
         if let Some((b, l)) = fetch {
             self.download(&b, &l);
         }
@@ -525,7 +517,7 @@ impl App {
             host::cancel_fetch(&f);
             self.fetching.remove(&f.build);
             self.fetch_started.remove(&f.build);
-            self.say("Download stopped. Resume picks up where it stopped.");
+            self.say("Download stopped");
             self.runtimes = host::runtimes();
         }
         if let Some(r) = discard {
@@ -555,10 +547,10 @@ impl App {
 
     // ---------------- Pre-translate ----------------
     pub fn aot_page(&mut self, ui: &mut egui::Ui) {
-        page_header(ui, "Pre-translate", "Code translated ahead of time, so devices and apps start fast. Kept up to date on its own, one cache per version.", |_| {});
+        page_header(ui, "Pre-translate", |_| {});
         let present: Vec<host::Runtime> = self.runtimes.iter().filter(|r| r.present).cloned().collect();
         if present.is_empty() {
-            card(ui, |ui| empty_state(ui, icon::LIGHTNING, "Nothing to pre-translate yet", "Download a version first.", |_| {}));
+            card(ui, |ui| empty_state(ui, icon::LIGHTNING, "No version yet", "", |_| {}));
             return;
         }
         let building = self.aot.building();
@@ -635,13 +627,13 @@ impl App {
                         pal().accent,
                         self.aot.progress.as_ref().filter(|p| p.chunks_total > 0).map(|p| format!("{} of {} parts done", p.chunks_done, p.chunks_total)).unwrap_or_else(|| "Getting ready…".into()),
                     ),
-                    (Some(s), _) if s.total == 0 => ("Nothing to translate yet", pal().ink_3, "Start a device on this version first: it learns what's used.".to_string()),
-                    (Some(s), _) if s.image_current && need == 0 => ("Ready", pal().good, format!("All {} parts are ready", s.total)),
-                    (Some(s), _) if need == 0 => ("Almost ready", pal().warn, "Every part is translated; it needs putting together".to_string()),
-                    (Some(s), _) if self.aot.auto_paused && s.image_present => ("Paused", pal().warn, format!("{need} of {} parts to redo; Update picks it up again", s.total)),
-                    (Some(s), _) if self.aot.auto_paused => ("Paused", pal().ink_3, format!("{} parts to translate; Start picks it up again", s.total)),
-                    (Some(s), _) if s.image_present => ("Update queued", pal().ink_3, format!("{need} of {} parts to redo; starts on its own", s.total)),
-                    (Some(s), _) => ("Queued", pal().ink_3, format!("{} parts to translate; starts on its own", s.total)),
+                    (Some(s), _) if s.total == 0 => ("Nothing to translate yet", pal().ink_3, "Start a device first".to_string()),
+                    (Some(s), _) if s.image_current && need == 0 => ("Ready", pal().good, format!("{} parts", s.total)),
+                    (Some(s), _) if need == 0 => ("Almost ready", pal().warn, "Needs Finish".to_string()),
+                    (Some(s), _) if self.aot.auto_paused && s.image_present => ("Paused", pal().warn, format!("{need} of {} parts to redo", s.total)),
+                    (Some(s), _) if self.aot.auto_paused => ("Paused", pal().ink_3, format!("{} parts to translate", s.total)),
+                    (Some(s), _) if s.image_present => ("Update queued", pal().ink_3, format!("{need} of {} parts to redo", s.total)),
+                    (Some(s), _) => ("Queued", pal().ink_3, format!("{} parts to translate", s.total)),
                     (None, Some(Err(_))) => ("Couldn't check", pal().crit, String::new()),
                     _ => ("Checking…", pal().ink_3, String::new()),
                 };
@@ -664,7 +656,7 @@ impl App {
                         self.aot.refresh();
                     }
                     if building {
-                        let tip = if self.aot.external_run().is_some() { "Stop the run started outside this window" } else { "Stop; automatic runs pause until the launcher starts again" };
+                        let tip = if self.aot.external_run().is_some() { "Stop the run started outside this window" } else { "Automatic runs pause until the next launch" };
                         if ui.add(Btn::secondary("Cancel").icon(icon::X).key("c")).on_hover_text(tip).clicked() {
                             self.aot.cancel();
                         }
@@ -703,7 +695,7 @@ impl App {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(icon::WARNING_CIRCLE).family(icons()).size(14.0).color(pal().warn));
-                        ui.label(body(format!("Translate all {} parts again? This takes a while and uses {} cores.", st_ok.as_ref().map(|s| s.total).unwrap_or(0), self.aot.cores)));
+                        ui.label(body(format!("Redo all {} parts?", st_ok.as_ref().map(|s| s.total).unwrap_or(0)))).on_hover_text(format!("Takes a while on {} cores", self.aot.cores));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(Btn::primary("Redo all").small()).on_hover_text("Start over now").clicked() {
                                 self.aot.confirm_redo = false;
@@ -731,9 +723,9 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(icon::CHECK_CIRCLE).family(icons()).size(15.0).color(pal().good));
                         let t = if nothing {
-                            "Last run: nothing to do, every part was already up to date".to_string()
+                            "Last run · Nothing to do".to_string()
                         } else {
-                            format!("Last run translated {} part{} in {}", p.chunks_done, if p.chunks_done == 1 { "" } else { "s" }, fmt_s(p.elapsed_s))
+                            format!("Last run · {} part{} · {}", p.chunks_done, if p.chunks_done == 1 { "" } else { "s" }, fmt_s(p.elapsed_s))
                         };
                         ui.label(sub(t)).on_hover_text(&p.message);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -796,11 +788,11 @@ impl App {
             Some(Ok(s)) if s.total == 0 => {}
             Some(Ok(s)) => {
                 // how many are ready and how many to redo is the card's own line; only the size is new here
-                let mut t = format!("The translated code takes {}.", fmt_mb(s.chunks.iter().map(|c| c.slot_mb).sum::<f64>().max(0.0)));
+                let t = format!("{} translated", fmt_mb(s.chunks.iter().map(|c| c.slot_mb).sum::<f64>().max(0.0)));
+                let r = ui.label(muted(t));
                 if s.dropped > 0 {
-                    t += &format!(" {} more parts get ready the first time they're used.", s.dropped);
+                    r.on_hover_text(format!("{} more parts get ready on first use", s.dropped));
                 }
-                ui.label(muted(t));
             }
         }
         ui.add_space(S5);
@@ -808,7 +800,7 @@ impl App {
         // ---- options
         section(ui, "Options", |_| {});
         list_card(ui, |ui| {
-            form_row(ui, "How much", "Common and More follow what your devices use (until one has run, they cover everything); Everything covers every app and framework.", false, |ui| {
+            form_row(ui, "How much", "Common and More follow what devices use; Everything covers it all", false, |ui| {
                 let scopes = [("hot", "Common"), ("loaded", "More"), ("all", "Everything")];
                 let sel = scopes.iter().position(|s| self.aot.cfg.scope == s.0);
                 if let Some(i) = segmented(ui, &scopes.map(|s| s.1), sel, !building) {
@@ -817,11 +809,11 @@ impl App {
                     self.aot.refresh();
                 }
             });
-            form_row(ui, "Speed", "CPU cores to use while translating.", false, |ui| {
+            form_row(ui, "Speed", "CPU cores", false, |ui| {
                 ui.label(sub(format!("{} cores", self.aot.cores)));
                 ui.add_enabled(!building, egui::Slider::new(&mut self.aot.cores, 1..=self.aot.max_cores).show_value(false));
             });
-            form_row(ui, "Skip turned-off features", "Leave out what the device has turned off.", true, |ui| {
+            form_row(ui, "Skip turned-off features", "", true, |ui| {
                 let mut f = self.aot.cfg.follow_features;
                 if ui.add_enabled_ui(!building, |ui| toggle(ui, &mut f)).inner.changed() {
                     self.aot.cfg.follow_features = f;
@@ -912,11 +904,11 @@ impl App {
 
     // ---------------- Settings / host ----------------
     pub fn settings_page(&mut self, ui: &mut egui::Ui) {
-        page_header(ui, "Settings", "", |_| {});
+        page_header(ui, "Settings", |_| {});
         let mut save = false;
         section(ui, "Hub", |_| {});
         list_card(ui, |ui| {
-            form_row(ui, "Appearance", "System follows the Omarchy theme, or your desktop's light or dark setting.", false, |ui| {
+            form_row(ui, "Appearance", "System follows the Omarchy theme or the desktop", false, |ui| {
                 let cur = crate::theme::appearance();
                 let labels: Vec<&str> = crate::theme::Appearance::ALL.iter().map(|a| a.label()).collect();
                 let sel = crate::theme::Appearance::ALL.iter().position(|a| *a == cur);
@@ -927,13 +919,13 @@ impl App {
                     save = true;
                 }
             });
-            form_row(ui, "Live previews", "Show each running device's screen on the Devices page.", false, |ui| {
+            form_row(ui, "Live previews", "Running screens on the Devices page", false, |ui| {
                 save |= toggle(ui, &mut self.hub.thumbnails).changed();
             });
-            form_row(ui, "Open a device when it starts", "Jump to its screen after pressing Start.", false, |ui| {
+            form_row(ui, "Open a device when it starts", "", false, |ui| {
                 save |= toggle(ui, &mut self.hub.open_on_start).changed();
             });
-            form_row(ui, "Card size", "How large devices appear on the Devices page.", true, |ui| {
+            form_row(ui, "Card size", "", true, |ui| {
                 save |= ui.add(egui::Slider::new(&mut self.hub.card_w, 200.0..=360.0).show_value(false)).drag_stopped();
             });
         });
@@ -952,11 +944,11 @@ impl App {
         list_card(ui, |ui| {
             let sizes = self.sizes.lock().unwrap().clone();
             let last = sizes.is_empty();
-            form_row(ui, "GPU helpers", "mtlvk runs the devices' Metal calls on Vulkan; one helper may serve several devices", false, |ui| {
+            form_row(ui, "GPU helpers", "Metal on Vulkan (mtlvk); one may serve several devices", false, |ui| {
                 ui.label(body(match gpu { 0 => "None running".to_string(), 1 => "1 running".to_string(), n => format!("{n} running") }));
             });
-            form_row(ui, "Disk use", &format!("{free} free where caches and device data live, {}", aot::scratch().display()), last, |ui| {
-                if ui.add_enabled(!self.measuring, Btn::secondary(if self.measuring { "Measuring…" } else { "Measure" }).icon(icon::HARD_DRIVES)).on_hover_text("Add up what each cache and device takes on disk").on_disabled_hover_text("Adding up the folders…").clicked() {
+            form_row(ui, "Disk use", &aot::scratch().display().to_string(), last, |ui| {
+                if ui.add_enabled(!self.measuring, Btn::secondary(if self.measuring { "Measuring…" } else { "Measure" }).icon(icon::HARD_DRIVES)).on_hover_text("Size of each cache and device").clicked() {
                     self.measuring = true;
                     let sizes = self.sizes.clone();
                     let mut dirs: Vec<PathBuf> = self.runtimes.iter().map(|r| r.jc.clone()).collect();
@@ -971,6 +963,8 @@ impl App {
                         }
                     });
                 }
+                ui.add_space(S2);
+                ui.label(body(format!("{free} free")));
             });
             if !sizes.is_empty() {
                 self.measuring = false;
@@ -1004,7 +998,8 @@ impl App {
 }
 
 /// A list row: icon tile, title + detail, trailing controls (right to left).
-pub(crate) fn list_row(ui: &mut egui::Ui, ic: &str, title_text: &str, detail: &str, trailing: impl FnOnce(&mut egui::Ui)) {
+/// Returns the title + detail's response (a tooltip with more about it goes there).
+pub(crate) fn list_row(ui: &mut egui::Ui, ic: &str, title_text: &str, detail: &str, trailing: impl FnOnce(&mut egui::Ui)) -> egui::Response {
     let row = nav::row(ui.id().with(("list-row", title_text, detail)));
     let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -1015,22 +1010,34 @@ pub(crate) fn list_row(ui: &mut egui::Ui, ic: &str, title_text: &str, detail: &s
             ui.add_space(4.0);
             // the text wraps before the trailing buttons (room for about two) instead of running under them
             let text_w = (ui.available_width() - 200.0).max(160.0);
-            ui.vertical(|ui| {
-                ui.set_max_width(text_w);
-                ui.spacing_mut().item_spacing.y = 1.0;
-                ui.add(egui::Label::new(strong(title_text)).wrap());
-                ui.add(egui::Label::new(muted(detail)).wrap());
-            });
+            let text = ui
+                .vertical(|ui| {
+                    ui.set_max_width(text_w);
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    if detail.is_empty() {
+                        // a title alone sits level with the icon
+                        ui.allocate_ui_with_layout(egui::vec2(text_w, 32.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(strong(title_text)).truncate());
+                        });
+                    } else {
+                        ui.add(egui::Label::new(strong(title_text)).wrap());
+                        ui.add(egui::Label::new(muted(detail)).wrap());
+                    }
+                })
+                .response;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 nav::offer_activation(&row);
                 trailing(ui);
                 nav::withdraw_activation();
             });
-        });
+            text
+        })
+        .inner
     });
     if row.current {
         nav::mark(ui, r.response.rect.shrink(1.0), radius_sm());
     }
+    r.inner
 }
 
 /// A muted note under a list row, aligned with its title.
@@ -1063,21 +1070,21 @@ fn catalogue_scope(c: &host::Catalogue, all: &[host::Catalogue], have: &[host::R
     if !c.alt_of.is_empty() {
         match have.iter().find(|r| r.build == c.alt_of && !r.unsupported.is_empty()) {
             Some(g) => format!("For {} only", names(&g.unsupported)),
-            None => format!("For particular devices (beside {})", all.iter().find(|o| o.build == c.alt_of).map(other).unwrap_or(c.alt_of.clone())),
+            None => format!("Some devices · beside {}", all.iter().find(|o| o.build == c.alt_of).map(other).unwrap_or(c.alt_of.clone())),
         }
     } else if let Some(o) = all.iter().filter(|o| o.alt_of == c.build).min_by_key(|o| (o.beta, o.version != c.version)) {
         match have.iter().find(|r| r.build == o.build && !r.restricted_to.is_empty()) {
             Some(d) => format!("Every device but {}", names(&d.restricted_to)),
-            None => format!("Most devices ({} is for particular ones)", other(o)),
+            None => format!("Most devices · {} for the rest", other(o)),
         }
     } else {
         String::new()
     }
 }
 
-/// The notes under Apple's list: a version that only has betas so far, and why a device-only update (27.2.1) never
-/// shows up. Simulator runtimes come with Xcode, so they follow Xcode's releases, not every iOS update.
-fn catalogue_notes(cat: &[host::Catalogue], show_betas: bool) -> Vec<String> {
+/// Why a version may be missing from Apple's list (the Show betas tooltip): one that only has betas so far, and a
+/// device-only update (27.2.1). Simulator runtimes come with Xcode, so they follow Xcode's releases, not every iOS update.
+fn catalogue_notes(cat: &[host::Catalogue]) -> Vec<String> {
     let mut out = vec![];
     let mut beta_only = vec![];
     for p in sim::PLATFORMS {
@@ -1095,21 +1102,14 @@ fn catalogue_notes(cat: &[host::Catalogue], show_betas: bool) -> Vec<String> {
             n => format!("{} and {}", beta_only[..n - 1].join(", "), beta_only[n - 1]),
         };
         let verb = if beta_only.len() == 1 { "is" } else { "are" };
-        out.push(if show_betas {
-            format!("{list} {verb} beta-only so far. The release shows here once Apple publishes its simulator runtime.")
-        } else {
-            format!("{list} {verb} beta-only so far: turn on Show betas to see {}. The release shows here once Apple publishes its simulator runtime.", if beta_only.len() == 1 { "it" } else { "them" })
-        });
+        out.push(format!("{list} {verb} beta-only so far"));
     }
     let newest_ios = cat.iter().filter(|c| c.platform == "ios" && !c.beta).map(|c| c.version.as_str()).max_by_key(|v| ver_key(v));
     let example = newest_ios.map(|v| {
         let (a, b, c) = ver_key(v);
-        format!(" (iOS {a}.{b}.{}, say)", c + 1)
+        format!(" (iOS {a}.{b}.{})", c + 1)
     });
-    out.push(format!(
-        "Simulator runtimes come with Xcode releases, not with every iOS update: Apple makes none for most updates that only phones get{}, so a phone can be on a newer version than any here.",
-        example.unwrap_or_default()
-    ));
+    out.push(format!("Runtimes follow Xcode releases, not phone-only updates{}", example.unwrap_or_default()));
     out
 }
 

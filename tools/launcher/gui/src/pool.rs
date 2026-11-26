@@ -111,7 +111,7 @@ impl App {
                         s.members.len(),
                         s.cost_mb,
                         s.room_for,
-                        if s.ksm.running { format!("on ({:.0} MB shared)", s.ksm.saved_mb) } else { "off".into() },
+                        if s.ksm.running { format!("on · {:.0} MB shared", s.ksm.saved_mb) } else { "off".into() },
                         if s.reflink { "reflink" } else { "full copy" }
                     )));
                     for m in &s.members {

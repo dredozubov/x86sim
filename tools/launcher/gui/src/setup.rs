@@ -63,11 +63,7 @@ impl App {
             self.setup.refresh(ui.ctx());
         }
         let mut recheck = false;
-        let sub_text = match setup::appimage() {
-            Some(_) => format!("x86Sim {}. Everything below runs once; data lives in {}.", setup::version(), x86sim_core::aot::repo_root().display()),
-            None => format!("Checkout at {} (developer setup: see README.md).", x86sim_core::aot::repo_root().display()),
-        };
-        page_header(ui, "Setup", &sub_text, |ui| {
+        page_header(ui, "Setup", |ui| {
             recheck = ui.add(Btn::secondary("Check again").icon(icon::ARROW_CLOCKWISE)).clicked();
         });
         if recheck {
@@ -93,13 +89,14 @@ impl App {
                     if k > 0 {
                         hline(ui);
                     }
+                    // how to fix it: on the badge
                     let (ic, col, st) = level_look(c.level);
                     list_row(ui, ic, c.name, &c.detail, |ui| {
-                        badge(ui, st, col);
+                        let b = badge(ui, st, col);
+                        if !c.fix.is_empty() {
+                            b.on_hover_text(&c.fix);
+                        }
                     });
-                    if !c.fix.is_empty() {
-                        note(ui, &c.fix);
-                    }
                 }
             }
         });
@@ -116,14 +113,14 @@ impl App {
             self.setup.refresh(ui.ctx());
         }
         list_card(ui, |ui| {
-            let detail = match &ds {
-                DarlingState::Ready if setup::userns() => "Ready, without root: it runs in a user namespace of your own. Nothing to install.".into(),
-                DarlingState::Ready if setup::nonroot() => "Ready, without root or namespaces (this system allows neither): each device's prefix is a copy of the system. Nothing to install.".into(),
-                DarlingState::Ready => format!("Installed in {}", setup::OPT_DARLING),
-                DarlingState::Outdated { .. } => "This version of x86Sim brings a newer build.".into(),
-                _ => format!("Copied to {} once, owned by root: its launcher must be setuid root to set up each device's container.", setup::OPT_DARLING),
+            let (detail, tip) = match &ds {
+                DarlingState::Ready if setup::userns() => ("Ready · No root".to_string(), "Runs in a user namespace of your own"),
+                DarlingState::Ready if setup::nonroot() => ("Ready · No root".to_string(), "Each device's prefix is a copy of the system"),
+                DarlingState::Ready => (format!("Installed · {}", setup::OPT_DARLING), ""),
+                DarlingState::Outdated { .. } => ("Update available".to_string(), ""),
+                _ => ("Not installed".to_string(), "Goes to /opt once, setuid root"),
             };
-            list_row(ui, icon::SHIELD_CHECK, "Darling", &detail, |ui| {
+            let row = list_row(ui, icon::SHIELD_CHECK, "Darling", &detail, |ui| {
                 if setup::appimage().is_some() && !ready && !self.setup.installing {
                     install = ui.add(Btn::primary(if matches!(ds, DarlingState::Outdated { .. }) { "Update" } else { "Install" }).icon(icon::LOCK_KEY)).on_hover_text("Asks for your password once (pkexec)").clicked();
                 }
@@ -131,17 +128,13 @@ impl App {
                     busy(ui, "Installing…");
                 }
             });
+            if !tip.is_empty() {
+                row.on_hover_text(tip);
+            }
             if self.setup.installing {
                 note(ui, &line);
             } else if let Some(Err(e)) = &res {
                 note(ui, &format!("Didn't install: {e}"));
-            }
-            if !ready {
-                if let Some(cmd) = setup::install_command(&setup::stage_dir()) {
-                    note(ui, &format!("Or in a terminal, after copying {} to {}: sudo {}", std::env::var("X86SIM_DARLING_STAGE").unwrap_or_default(), setup::stage_dir().display(), cmd.join(" ")));
-                } else if setup::appimage().is_none() {
-                    note(ui, "In a checkout: make darling-install (README.md, Setup step 3).");
-                }
             }
         });
         if install {
@@ -169,16 +162,19 @@ impl App {
         list_card(ui, |ui| {
             let fetching = self.fetching.get(setup::DEFAULT_BUILD).cloned();
             let detail = if let Some(r) = present.first() {
-                format!("iOS {} ({}) is ready", r.version, r.build)
+                format!("Ready · Build {}", r.build)
             } else {
-                "Apple's iOS simulator, downloaded straight from Apple (about 8 GB, 30 GB unpacked). Not redistributed: each computer gets its own copy.".into()
+                "8 GB download · 30 GB unpacked".into()
             };
-            list_row(ui, icon::STACK, &format!("iOS {}", setup::DEFAULT_VERSION), &detail, |ui| {
+            let row = list_row(ui, icon::STACK, &format!("iOS {}", setup::DEFAULT_VERSION), &detail, |ui| {
                 if !have_rt && fetching.is_none() {
                     let partial = self.runtimes.iter().find(|r| r.build == setup::DEFAULT_BUILD).and_then(x86sim_core::host::partial_download);
                     fetch = ui.add(Btn::primary(if partial.is_some() { "Resume download" } else { "Download" }).icon(icon::DOWNLOAD_SIMPLE)).clicked();
                 }
             });
+            if !have_rt {
+                row.on_hover_text("Straight from Apple; each computer gets its own copy");
+            }
             if let Some(f) = &fetching {
                 if fetch_progress(ui, f) {
                     cancel = Some(f.clone());
@@ -186,10 +182,9 @@ impl App {
             }
             if !have_rt && fetching.is_none() {
                 egui::Frame::new().inner_margin(egui::Margin { left: 60, right: 16, top: 0, bottom: 12 }).show(ui, |ui| {
-                    ui.label(muted("Already have it on disk (a checkout's runtimes/ios-27.2-24B8117-arm64)? Use it instead of downloading:"));
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut self.setup.runtime_path).hint_text("/path/to/runtimes/ios-27.2-24B8117-arm64").desired_width(420.0));
-                        link = ui.add_enabled(!self.setup.runtime_path.trim().is_empty(), Btn::secondary("Use this folder")).clicked();
+                        link = ui.add_enabled(!self.setup.runtime_path.trim().is_empty(), Btn::secondary("Use this folder")).on_hover_text("A runtime already on disk, instead of downloading").clicked();
                     });
                 });
             }
@@ -230,24 +225,27 @@ impl App {
         list_card(ui, |ui| {
             let failed = !self.aot.building() && !built && !self.aot.message.is_empty();
             let detail = if built {
-                "Done. New versions and updates are translated on their own.".to_string()
+                "Done".to_string()
             } else if self.aot.building() {
                 match self.aot.progress.as_ref().filter(|p| p.chunks_total > 0) {
-                    Some(p) => format!("Translating iOS ahead of time: {} of {} parts. Devices already work meanwhile, just slower.", p.chunks_done, p.chunks_total),
-                    None => "Getting ready to translate iOS ahead of time…".to_string(),
+                    Some(p) => format!("{} of {} parts", p.chunks_done, p.chunks_total),
+                    None => "Getting ready…".to_string(),
                 }
             } else if failed {
-                format!("It stopped: {}", self.aot.message)
+                format!("Stopped: {}", self.aot.message)
             } else {
-                "Translates iOS ahead of time, once, so devices and apps start fast. Starts on its own when iOS is here.".to_string()
+                "Waiting for iOS".to_string()
             };
-            list_row(ui, icon::LIGHTNING, "Faster starts", &detail, |ui| {
+            let row = list_row(ui, icon::LIGHTNING, "Faster starts", &detail, |ui| {
                 if self.aot.building() {
                     busy(ui, "Translating…");
                 } else if failed {
                     retry = ui.add(Btn::secondary("Try again").icon(icon::ARROW_CLOCKWISE)).clicked();
                 }
             });
+            if self.aot.building() {
+                row.on_hover_text("Devices already work meanwhile, just slower");
+            }
         });
         if retry {
             self.setup.aot_auto = false;
@@ -259,7 +257,7 @@ impl App {
         let mut add = false;
         let mut finish = false;
         list_card(ui, |ui| {
-            let detail = if phones { format!("{} device{} made", self.insts.len(), if self.insts.len() == 1 { "" } else { "s" }) } else { "Pick a model (iPhone or iPad); each device has its own apps and data.".into() };
+            let detail = if phones { format!("{} device{} made", self.insts.len(), if self.insts.len() == 1 { "" } else { "s" }) } else { "None yet".into() };
             list_row(ui, icon::DEVICE_MOBILE, "Phone", &detail, |ui| {
                 if phones {
                     finish = ui.add(Btn::primary("Done").icon(icon::CHECK)).clicked();
@@ -280,15 +278,17 @@ impl App {
             let (mut add_entry, mut remove_entry) = (false, false);
             list_card(ui, |ui| {
                 let detail = match st {
-                    State::Installed => format!("x86Sim is in your desktop's app menu ({})", desktop::entry_path().display()),
-                    State::Foreign => format!("{} exists and wasn't written by x86Sim", desktop::entry_path().display()),
-                    State::Absent => "Start x86Sim from your desktop's app menu or launcher; it keeps working after updates.".into(),
+                    State::Installed => "Added".to_string(),
+                    State::Foreign => "Another entry is there".to_string(),
+                    State::Absent => "Not added".into(),
                 };
+                let detail_tip = desktop::entry_path().display().to_string();
                 list_row(ui, icon::APP_WINDOW, "App menu", &detail, |ui| match st {
                     State::Installed => remove_entry = ui.add(Btn::secondary("Remove").icon(icon::TRASH)).clicked(),
                     State::Absent => add_entry = ui.add(Btn::primary("Add").icon(icon::PLUS)).clicked(),
                     State::Foreign => {}
-                });
+                })
+                .on_hover_text(detail_tip);
                 if !self.setup.desktop_msg.is_empty() {
                     note(ui, &self.setup.desktop_msg);
                 }

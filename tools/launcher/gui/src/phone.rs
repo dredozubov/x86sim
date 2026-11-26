@@ -166,7 +166,7 @@ impl App {
                 let h = ui.available_height();
                 ui.add_space((h / 2.0 - 110.0).max(0.0));
                 let mut dl = false;
-                empty_state(ui, icon::CLOUD_ARROW_DOWN, &format!("{} isn't installed", inst.ios), "Download it to start this device. Its apps and data are kept.", |ui| {
+                empty_state(ui, icon::CLOUD_ARROW_DOWN, &format!("{} isn't installed", inst.ios), "", |ui| {
                     if busy {
                         let line = self.fetching.get(&inst.build).map(crate::home::fetch_line).unwrap_or_default();
                         crate::theme::busy(ui, &line);
@@ -341,12 +341,11 @@ impl App {
                     ui.set_width(420.0);
                     ui.spacing_mut().item_spacing.y = 4.0;
                     ui.add(egui::Label::new(dialog_title(format!("Remove {}?", inst.name))).wrap());
-                    ui.label(sub("Its apps, data and settings are deleted. This can't be undone."));
                     ui.add_space(S2);
                     let frees = match *size.lock().unwrap() {
-                        None => "Measuring what it frees…".to_string(),
-                        Some(b) if b < 1 << 20 => "Frees less than 1 MB.".to_string(),
-                        Some(b) => format!("Frees {}.", fmt_mb(b as f64 / 1048576.0)),
+                        None => "Measuring…".to_string(),
+                        Some(b) if b < 1 << 20 => "Apps, data and settings · under 1 MB".to_string(),
+                        Some(b) => format!("Apps, data and settings · {}", fmt_mb(b as f64 / 1048576.0)),
                     };
                     ui.label(muted(frees)).on_hover_text(paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"));
                     ui.add_space(S5);
@@ -713,9 +712,9 @@ impl App {
             // the GPU helper apart from the phone's own memory: one helper may serve several devices
             if let Some(g) = st.and_then(|s| s.gpu.as_ref()) {
                 ui.add_space(S1);
-                let shared = if g.users > 1 { format!(", shared by {} devices", g.users) } else { String::new() };
-                ui.label(muted(format!("+ {} for the GPU helper{shared}", fmt_mb(g.pss_mb))))
-                    .on_hover_text("mtlvk runs every Metal call on Vulkan. It is not in this device's memory; the total in the sidebar counts it once.");
+                let shared = if g.users > 1 { format!(" · {} devices", g.users) } else { String::new() };
+                ui.label(muted(format!("+ {} GPU helper{shared}", fmt_mb(g.pss_mb))))
+                    .on_hover_text("mtlvk, outside this device's memory; the sidebar total counts it once");
             }
             ui.add_space(S3);
         }
@@ -840,8 +839,6 @@ impl App {
         let cur = features::preset_of(&prof);
         let presets = [("full", "Full"), ("lean", "Lean"), ("minimal", "Minimal")];
         let mut changed = false;
-        ui.label(muted("Turn off what you don't use to save memory."));
-        ui.add_space(S1);
         let sel = presets.iter().position(|p| cur.as_deref() == Some(p.0));
         if let Some(i) = segmented(ui, &presets.map(|p| p.1), sel, true) {
             let _ = features::apply_preset(&dev, presets[i].0);
@@ -856,19 +853,19 @@ impl App {
                 Some(i) => (f.desc[..i].trim().to_string(), f.desc[i + 4..].trim().to_string()),
                 None => (f.desc.clone(), String::new()),
             };
-            let what = if !on && !lose.is_empty() {
-                format!("Off: {lose}")
-            } else if what.is_empty() {
-                format!("When off: {lose}")
-            } else {
-                what
-            };
+            // what it is and what turning it off loses: the row's tooltip
+            let mut tip = what;
+            if !lose.is_empty() {
+                tip = if tip.is_empty() { format!("Off: {lose}") } else { format!("{tip}\nOff: {lose}") };
+            }
+            if !f.tech.is_empty() {
+                tip = format!("{tip}\n\n{}", f.tech);
+            }
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - 104.0);
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.label(strong(&f.title));
-                    ui.add(egui::Label::new(muted(what)).wrap());
+                let w = ui.available_width() - 104.0;
+                ui.allocate_ui_with_layout(egui::vec2(w, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_width(w);
+                    ui.add(egui::Label::new(strong(&f.title)).truncate());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if toggle(ui, &mut on).changed() {
@@ -881,7 +878,7 @@ impl App {
                 });
             })
             .response
-            .on_hover_text(&f.tech);
+            .on_hover_text(tip.trim());
             if !on && f.default {
                 saving += f.cost_mb;
             }
@@ -889,7 +886,7 @@ impl App {
         }
 
         if saving > 0 {
-            dot_label(ui, &format!("Saving about {saving} MB"), pal().good);
+            dot_label(ui, &format!("Saving {saving} MB"), pal().good);
         }
         let st = self.status.get(&inst.id).cloned();
         if (changed || instance::needs_restart(inst, st.as_ref())) && phase != Phase::Off {
@@ -1063,7 +1060,7 @@ impl App {
 
     fn perf_section(&mut self, ui: &mut egui::Ui, id: &str, st: Option<&instance::Status>) {
         let Some(s) = st.filter(|s| s.phase != Phase::Off) else {
-            ui.label(muted("Start the device to see what it uses."));
+            ui.label(muted("Off"));
             ui.add_space(S3);
             return;
         };
@@ -1129,13 +1126,9 @@ impl App {
         let mut save = false;
         let field = |ui: &mut egui::Ui, label: &str, tip: &str| {
             ui.add_space(S1);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.label(egui::RichText::new(label).size(T_SMALL).family(medium()).color(pal().ink_2));
-                ui.label(egui::RichText::new(icon::INFO).family(icons()).size(12.0).color(pal().ink_3)).on_hover_text(tip);
-            });
+            ui.label(egui::RichText::new(label).size(T_SMALL).family(medium()).color(pal().ink_2)).on_hover_text(tip);
         };
-        field(ui, "Screen scaling", "How the screen is shrunk when it is drawn smaller than the device (a small window, the side panel). Smooth averages the pixels; Sharp keeps every nth one (least CPU, but text and edges shimmer); Full sends the whole frame and lets the GPU scale it. Applies at once.");
+        field(ui, "Screen scaling", "Smooth averages pixels; Sharp keeps every nth (least CPU, edges shimmer); Full lets the GPU scale. Applies at once");
         let opts = [("smooth", "Smooth"), ("sharp", "Sharp"), ("full", "Full resolution")];
         let sel = opts.iter().position(|o| o.0 == s.scaling);
         let mut scaled = false;
@@ -1144,37 +1137,35 @@ impl App {
             scaled = true;
         }
         ui.add_space(S2);
-        ui.label(muted("The rest apply at the next start."));
-        field(ui, "Graphics", "X86SIM_METAL: GPU for everything (all), only the system (backboardd), or software rendering (0).");
+        field(ui, "Graphics", "X86SIM_METAL · Applies at next start");
         let opts = [("all", "GPU"), ("backboardd", "System only"), ("0", "Software")];
         let sel = opts.iter().position(|o| o.0 == s.metal);
         if let Some(i) = segmented(ui, &opts.map(|o| o.1), sel, true) {
             s.metal = opts[i].0.into();
             save = true;
         }
-        field(ui, "Background services", "A64_JOBS: which background services boot. Standard is right for daily use; Full adds widgets; Slim and Minimal are for tests.");
+        field(ui, "Background services", "A64_JOBS · Full adds widgets; Slim and Minimal are for tests · Applies at next start");
         let opts = [("std", "Standard"), ("full", "Full"), ("slim", "Slim"), ("min", "Minimal")];
         let sel = opts.iter().position(|o| o.0 == s.jobs);
         if let Some(i) = segmented(ui, &opts.map(|o| o.1), sel, true) {
             s.jobs = opts[i].0.into();
             save = true;
         }
-        field(ui, "Memory cap", "X86SIM_MEM_MAX for this device's processes (systemd MemoryMax), e.g. 6G. Empty: no cap.");
+        field(ui, "Memory cap", "X86SIM_MEM_MAX (systemd MemoryMax), e.g. 6G · Applies at next start");
         if ui.add(egui::TextEdit::singleline(&mut s.mem_max).hint_text(egui::RichText::new("No cap").color(pal().ink_3)).desired_width(120.0).margin(egui::Margin::symmetric(8, 6))).lost_focus() {
             save = true;
         }
         ui.add_space(S1);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(egui::RichText::new("Share the GPU helper").size(T_SMALL).family(medium()).color(pal().ink_2));
-            ui.label(egui::RichText::new(icon::INFO).family(icons()).size(12.0).color(pal().ink_3)).on_hover_text("A64_MTLVK_SOCKET: use one mtlvk for all running devices instead of starting another");
+            ui.label(egui::RichText::new("Share the GPU helper").size(T_SMALL).family(medium()).color(pal().ink_2)).on_hover_text("A64_MTLVK_SOCKET: one mtlvk for all running devices · Applies at next start");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if toggle(ui, &mut s.share_mtlvk).changed() {
                     save = true;
                 }
             });
         });
-        field(ui, "Extra environment", "A64_ENV: KEY=value pairs for launchd_sim, e.g. X86SIM_A64_TRACE=1");
+        field(ui, "Extra environment", "A64_ENV for launchd_sim · Applies at next start");
         if ui.add(egui::TextEdit::singleline(&mut s.extra_env).font(egui::TextStyle::Monospace).hint_text(egui::RichText::new("KEY=value …").color(pal().ink_3)).desired_width(ui.available_width()).margin(egui::Margin::symmetric(8, 6))).lost_focus() {
             save = true;
         }
@@ -1186,7 +1177,7 @@ impl App {
                     v.shared.scaling.store(sc, std::sync::atomic::Ordering::Relaxed);
                 }
             }
-            self.say(if save { "Saved. Applies at the next start." } else { "Saved." });
+            self.say(if save { "Saved · applies at next start" } else { "Saved" });
         }
         ui.add_space(S3);
         ui.label(overline("paths"));

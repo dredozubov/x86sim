@@ -595,19 +595,19 @@ impl App {
             what.push(format!("{n} device{} keep{} running", if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
         }
         if !self.fetching.is_empty() {
-            what.push("the download continues".to_string());
+            what.push("Download continues".to_string());
         }
         if self.aot.child.is_some() {
-            what.push("pre-translating continues".to_string());
+            what.push("Pre-translating continues".to_string());
         }
         if self.add.as_ref().is_some_and(|a| a.working) {
-            what.push("the device being set up is kept".to_string());
+            what.push("New device is kept".to_string());
         }
         let m = modal("quit").show(ctx, |ui| {
             ui.set_width(360.0);
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.label(dialog_title("Quit x86Sim?"));
-            ui.label(sub(format!("Without the window, {}.", what.join("; "))));
+            ui.label(sub(what.join(" · ")));
             ui.add_space(S4);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(Btn::primary("Quit").key("Enter").min_w(88.0)).clicked() {
