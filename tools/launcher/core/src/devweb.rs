@@ -9,6 +9,9 @@
 //! - nativescript: package.json with @nativescript/ios or @nativescript/core and a nativescript.config.*. The dev
 //!   toolchain's shells/nativescript/ns runs `ns prepare ios` with the CLI's macOS gates lifted, then puts its Linux
 //!   build of NativeScript's metadata generator into platforms/ios (the Xcode project; its link step runs it).
+//! - godot: a Godot 4 project (project.godot) with an iOS export preset. The dev toolchain's shells/godot/export.sh
+//!   exports it on Linux (Godot's editor, headless, and its iOS template) into build/godot-ios; the Xcode project
+//!   builds for iOS devices (the template's simulator library is x86_64 only), which x86Sim converts at install.
 //! - cordova: package.json with cordova-ios (config.xml beside it). `cordova prepare ios` (the app's own cordova CLI,
 //!   else npx's) adds the platform and copies www/; the Xcode project is platforms/ios (App.xcworkspace).
 use crate::{dev, devxcode};
@@ -26,6 +29,9 @@ fn has_dep(pj: &serde_json::Value, name: &str) -> bool {
 
 /// The shell kind of the app in DIR, if it is one
 pub fn detect(dir: &Path) -> Option<&'static str> {
+    if dir.join("project.godot").is_file() {
+        return Some("godot");
+    }
     let pj = package_json(dir)?;
     let cap_config = ["capacitor.config.ts", "capacitor.config.js", "capacitor.config.json"].iter().any(|f| dir.join(f).exists());
     if has_dep(&pj, "@capacitor/ios") || (has_dep(&pj, "@capacitor/core") && cap_config) {
@@ -42,11 +48,14 @@ pub fn detect(dir: &Path) -> Option<&'static str> {
 }
 
 pub fn is_shell(kind: &str) -> bool {
-    matches!(kind, "capacitor" | "cordova" | "nativescript")
+    matches!(kind, "capacitor" | "cordova" | "nativescript" | "godot")
 }
 
 /// The generated Xcode project's directory (where its .xcodeproj / .xcworkspace is)
 fn native_dir(dir: &Path, kind: &str) -> PathBuf {
+    if kind == "godot" {
+        return dir.join("build/godot-ios");
+    }
     if kind == "cordova" || kind == "nativescript" {
         return dir.join("platforms/ios");
     }
@@ -58,6 +67,10 @@ fn native_dir(dir: &Path, kind: &str) -> PathBuf {
 
 /// The last simulator build's .app
 pub fn last_app(dir: &Path, kind: &str) -> Option<PathBuf> {
+    if kind == "godot" {
+        let products = native_dir(dir, kind).join("build/x86sim/Build/Products");
+        return std::fs::read_dir(products).ok()?.flatten().filter(|e| e.file_name().to_string_lossy().ends_with("-iphoneos")).flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten().map(|a| a.path())).find(|p| p.extension().is_some_and(|x| x == "app"));
+    }
     devxcode::last_app(&native_dir(dir, kind))
 }
 
@@ -91,6 +104,11 @@ fn step(mut c: Command, dir: &Path, what: &str, say: &mut dyn FnMut(&str)) -> Re
 
 /// node_modules, the web build, the shell's native project: what the Xcode build needs
 pub fn prepare(dir: &Path, kind: &str, say: &mut dyn FnMut(&str)) -> Result<()> {
+    if kind == "godot" {
+        let mut c = dev::command("bash");
+        c.arg(dev::fork_dir().join("shells/godot/export.sh")).arg(dir).arg(native_dir(dir, kind));
+        return step(c, dir, "Godot: export the iOS Xcode project (shells/godot/export.sh)", say);
+    }
     let pm = package_manager(dir);
     if !dir.join("node_modules").is_dir() {
         let mut c = dev::command(pm);
@@ -147,5 +165,28 @@ pub fn build(dir: &Path, kind: &str, platform: &str, release: bool, say: &mut dy
     prepare(dir, kind, say)?;
     let native = native_dir(dir, kind);
     anyhow::ensure!(devxcode::container(&native).is_some(), "{}: no Xcode project after the {kind} step", native.display());
+    if kind == "godot" {
+        return device_build(&native, release, say);
+    }
     devxcode::build(&native, platform, release, say).context("the Xcode project's build")
+}
+
+/// An unsigned iOS device build of the Xcode project in DIR (x86Sim's install converts a device app for its simulator)
+fn device_build(dir: &Path, release: bool, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
+    let (flag, path) = devxcode::container(dir).context("no Xcode project")?;
+    let scheme = devxcode::scheme(dir)?;
+    let cfg = if release { "Release" } else { "Debug" };
+    say(&format!("== build {scheme} (generic/platform=iOS, {cfg}, unsigned: converted for the simulator at install)"));
+    let mut c = dev::command("python3");
+    c.arg(devxcode::xcodebuild()).arg(flag).arg(&path).args(["-scheme", &scheme, "-configuration", cfg, "-destination", "generic/platform=iOS", "-derivedDataPath"]);
+    c.arg(dir.join("build/x86sim")).args(["CODE_SIGNING_ALLOWED=NO", "build"]).current_dir(dir);
+    let mut app = None;
+    let rc = dev::stream(c, &mut |l: &str| {
+        if let Some(a) = l.strip_prefix("product: ") {
+            app = Some(PathBuf::from(a.trim()));
+        }
+        say(l);
+    })?;
+    anyhow::ensure!(rc == 0, "the build failed (exit {rc})");
+    app.filter(|a| a.extension().is_some_and(|x| x == "app")).context("the build named no .app")
 }
