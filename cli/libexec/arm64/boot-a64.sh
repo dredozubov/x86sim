@@ -137,7 +137,10 @@ stop_a64_mtlvks() {
 	for f in "$ST"/mtlvk*.pid; do [ -e "$f" ] && stop_a64_mtlvk "${f%.pid}"; done
 	return 0
 }
-if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ]; then
+# A stop (A64_STOP_ONLY) starts no mtlvk: it used to start one for a phone whose own helper was not up (one that
+# shared another phone's, or on another GPU), which then idled until MTLVK_IDLE_EXIT
+if [ "${A64_STOP_ONLY:-0}" = 1 ]; then A64_NO_MTLVK_START=1; fi
+if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ] && [ -z "${A64_NO_MTLVK_START:-}" ]; then
 	# On-disk Metal binary so xpc_bundle can find MTLCompilerService.xpc (see ensure-metal-framework.sh).
 	"$X/cli/libexec/arm64/ensure-metal-framework.sh" || {
 		echo "boot-a64: ensure-metal-framework failed; pipelines will not compile" >&2
@@ -153,7 +156,7 @@ if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ]; then
 		fi
 	fi
 fi
-if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ] && [ -z "${A64_MTLVK_SOCKET:-}" ]; then
+if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ] && [ -z "${A64_MTLVK_SOCKET:-}" ] && [ -z "${A64_NO_MTLVK_START:-}" ]; then
 	export X86SIM_MTLVK_SOCKET=$M.sock
 	if a64_mtlvk_live && [ "$(a64_mtlvk_users "$M.sock")" -gt 0 ]; then
 		# another phone renders through this boot's earlier mtlvk (same GPU: same key): use it too (a fresh one would
