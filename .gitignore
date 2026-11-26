@@ -93,3 +93,6 @@ core.[0-9]*
 !/host/simhid/arm64-xros/SimulatorHID.framework/
 # release build outputs (build/release/build.sh, appimage.sh)
 /build/release/out/
+
+# a local unpack of Apple's Metal toolchain (Apple content: never committed; build/metal-toolchain.py keeps it in sdks/)
+/build/metal-research/
