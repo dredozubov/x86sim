@@ -535,7 +535,7 @@ impl App {
                     self.view = View::Home;
                 }
                 // the inspector's folds
-                for (k, sec) in [(Key::F, "features"), (Key::L, "logs"), (Key::P, "perf"), (Key::A, "adv")] {
+                for (sec, k, _, _) in crate::phone::FOLD_KEYS {
                     if key(k) && !self.open.remove(sec) {
                         self.open.insert(sec);
                     }
@@ -629,7 +629,7 @@ impl App {
         }
         let page: &[(&str, &str)] = match &self.view {
             View::Home => &[("h / l  j / k", "move between devices"), ("Enter", "open the device"), ("s", "start / stop it"), ("r", "restart it"), ("o", "its screen in its own window"), ("F2", "rename it"), ("Delete", "remove it (when off)"), ("Esc", "drop the cursor")],
-            View::Phone(_) => &[("click the screen", "keys go to the device; click outside to get them back"), ("s", "start / stop"), ("r", "restart"), ("o", "its screen in its own window"), ("f  l  p  a", "features, logs, performance, advanced"), ("F2", "rename"), ("Delete", "remove (when off)"), ("F1 – F4", "the device's buttons (see the i tool)"), ("Esc", "back to all devices")],
+            View::Phone(_) => &[("click the screen", "keys go to the device; click outside to get them back"), ("s", "start / stop"), ("r", "restart"), ("o", "its screen in its own window"), ("F2", "rename"), ("Delete", "remove (when off)"), ("F1 – F4", "the device's buttons (see the i tool)"), ("Esc", "back to all devices")],
             View::Ios => &[("j / k", "move between versions"), ("Enter", "download, resume or pre-translate the version"), ("/", "search"), ("Esc", "drop the cursor")],
             View::Aot => &[("Enter", "start, update or finish (the cursor on the status)"), ("c", "cancel the run"), ("j / k", "move between options"), ("/", "search the parts")],
             View::Settings | View::Setup | View::Develop => &[("j / k", "move between rows"), ("Enter", "flip the switch, press the button, step the choice"), ("Esc", "drop the cursor")],
@@ -652,8 +652,23 @@ impl App {
                 }
                 ui.add_space(S3);
             };
-            group(ui, "everywhere", &[("1 – 5", "devices, versions, pre-translate, settings, setup"), ("n", "add a device"), ("?", "this list"), ("q", "quit"), ("Tab", "move between controls")]);
+            group(ui, "everywhere", &[("1 – 6", "devices, versions, pre-translate, settings, setup, develop"), ("n", "add a device"), ("?", "this list"), ("q", "quit"), ("Tab", "move between controls")]);
             group(ui, "this page", page);
+            // the device page's folds: three to a row (nine rows of their own made the list taller than the window)
+            if matches!(self.view, View::Phone(_)) {
+                ui.label(overline("folds (open / close)"));
+                ui.add_space(2.0);
+                egui::Grid::new("help-folds").num_columns(6).spacing(egui::vec2(S3, 4.0)).show(ui, |ui| {
+                    for (i, (_, _, k, what)) in crate::phone::FOLD_KEYS.iter().enumerate() {
+                        keys(ui, k, pal().hilite);
+                        ui.label(muted(*what));
+                        if i % 3 == 2 {
+                            ui.end_row();
+                        }
+                    }
+                });
+                ui.add_space(S3);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(Btn::secondary("Close").key("Esc")).clicked() {
                     self.help = false;
