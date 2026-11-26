@@ -328,7 +328,12 @@ def main():
             "model": model, "class": p["productClass"],
             "w": str(ints(sd["main-screen-width"])), "h": str(ints(sd["main-screen-height"])),
             # numbers, or strings in a few profiles (Apple TV 4K (4th generation) (at 1080p)); Apple TV: no pitch (an external display)
-            "scale": "%f" % float(sd["main-screen-scale"]), "pitch": "%f" % float(sd.get("main-screen-pitch", 0)),
+            # Apple TV 4K at 3840x2160: MobileGestalt's main-screen-scale says 1, but tvOS lays out 1920x1080 points,
+            # so at scale 1 the UI filled a quarter of the screen; the artwork scale factor (2) is the screen's scale
+            "scale": "%f" % (float(caps["capabilities"].get("ArtworkTraits", {}).get("ArtworkDeviceScaleFactor", 1))
+                             if caps["capabilities"].get("ArtworkTraits", {}).get("ArtworkDeviceIdiom") == "tv"
+                             else float(sd["main-screen-scale"])),
+            "pitch": "%f" % float(sd.get("main-screen-pitch", 0)),
             "suffix": p.get("environment", {}).get("SIMULATOR_LEGACY_ASSET_SUFFIX",
                                                     "" if plat[b] else
                                                     "ipad" if 2 in p["supportedProductFamilyIDs"] else "iphone"),
