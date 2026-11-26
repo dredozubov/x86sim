@@ -24,6 +24,55 @@ import MusicKit
 import ClockKit
 import UIKit
 #endif
+#if canImport(WeatherKit)
+import WeatherKit
+#endif
+#if canImport(HomeKit)
+import HomeKit
+#endif
+#if canImport(CoreMotion)
+import CoreMotion
+#endif
+#if canImport(EventKit)
+import EventKit
+#endif
+#if canImport(ManagedSettings) && os(iOS)
+import ManagedSettings
+#endif
+#if canImport(FamilyControls) && os(iOS)
+import FamilyControls
+#endif
+#if canImport(DeviceActivity) && os(iOS)
+import DeviceActivity
+#endif
+#if canImport(UserNotifications)
+import UserNotifications
+#endif
+#if canImport(SafariServices) && (os(iOS) || os(visionOS))
+import SafariServices
+#endif
+#if canImport(CoreTelephony) && os(iOS)
+import CoreTelephony
+#endif
+#if canImport(PhotosUI) && os(iOS)
+import PhotosUI
+#endif
+#if canImport(MessageUI) && os(iOS)
+import MessageUI
+#endif
+#if canImport(ContactsUI) && os(iOS)
+import ContactsUI
+import SwiftUI
+#endif
+#if canImport(IntentsUI) && os(iOS)
+import IntentsUI
+#endif
+#if canImport(Photos) && !os(watchOS)
+import Photos
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
+#endif
 #if canImport(SensorKit) && os(iOS)
 import SensorKit
 #endif
@@ -78,6 +127,8 @@ func p27sAnswer(_ secs: Double, _ body: @escaping @Sendable () async throws -> S
     do { return try await p27sWithin(secs, body).map { "ok " + $0 } ?? "no answer in \(Int(secs)) s" }
     catch { return "\(type(of: error)): \(String(describing: error).prefix(60))" }
 }
+/// is `a` `b` or a subclass of it (the ObjC runtime's answer)
+func p27sIsSub(_ a: AnyClass, _ b: AnyClass) -> Bool { var c: AnyClass? = a; while let x = c { if x == b { return true }; c = class_getSuperclass(x) }; return false }
 /// "name" list of the first few failures
 func p27sFirst(_ a: [String], _ n: Int = 6) -> String { a.isEmpty ? "" : " [" + a.prefix(n).joined(separator: " ") + (a.count > n ? " +\(a.count - n)" : "") + "]" }
 
@@ -185,7 +236,7 @@ extension Registry {
             return "\(ok)/\(have) data classes round trip, nil from empty coder \(nilInit.count)\(p27sFirst(nilInit, 8)) (absent \(absent.count))\(p27sFirst(absent, 3))"
         })
 #endif
-        c += p27sIntentValues + p27sHealth + p27sMusic + p27sCarPlay + p27sClockKit + p27sSensorKit
+        c += p27sIntentValues + p27sHealth + p27sMusic + p27sCarPlay + p27sClockKit + p27sSensorKit + p27sWeather + p27sHome + p27sMotion + p27sContacts + p27sPhotos + p27sLocation + p27sEventKit + p27sFamily + p27sMisc
         return c
     }
 }
@@ -941,6 +992,839 @@ extension Registry {
             let dev = SRDevice.current
             try expect(!dev.model.isEmpty && !dev.systemName.isEmpty, "current device \(dev)")
             return "\(ok)/\(coded.count) round trip; not from an empty archive \(nilInit.count)\(p27sFirst(nilInit, 12)); failed \(bad.count)\(p27sFirst(bad, 8)); \(plain.count) plain classes present; device \(dev.model) \(dev.systemName)"
+        })
+#endif
+        return c
+    }
+}
+
+#if canImport(WeatherKit)
+func p27sWeatherQueries() async throws -> String {
+    let svc = WeatherService.shared
+    let loc = CLLocation(latitude: 37.33, longitude: -122.03)
+    var r: [String: String] = [:]
+    r["forecast"] = await p27sAnswer(15) {
+        let (cur, minute, hourly, daily, alerts, avail): (CurrentWeather, Forecast<MinuteWeather>?, Forecast<HourWeather>, Forecast<DayWeather>, [WeatherAlert]?, WeatherAvailability)
+            = try await svc.weather(for: loc, including: .current, .minute, .hourly, .daily, .alerts, .availability)
+        let wind: Wind = cur.wind, uv: UVIndex = cur.uvIndex, cloud: CloudCoverByAltitude = cur.cloudCoverByAltitude
+        let day: DayWeather? = daily.first, hour: HourWeather? = hourly.first, m: MinuteWeather? = minute?.first
+        let sun: SunEvents? = day?.sun, moon: MoonEvents? = day?.moon, part: DayPartForecast? = day?.daytimeForecast
+        let byType: PrecipitationAmountByType? = day?.precipitationAmountByType, meta: WeatherMetadata = cur.metadata
+        let snow: SnowfallAmount? = byType?.snowfallAmount
+        return "\(cur.condition) wind \(wind.speed) uv \(uv.value) cloud \(cloud.low) day \(String(describing: day?.condition)) hour \(String(describing: hour?.temperature)) minute \(m != nil) sun \(sun != nil) moon \(String(describing: moon?.phase)) part \(part != nil) byType \(byType != nil) snow \(snow != nil) alerts \(alerts?.count ?? -1) minute availability \(avail.minuteAvailability) meta \(meta.date)"
+    }
+    r["weather"] = await p27sAnswer(15) { let w: Weather = try await svc.weather(for: loc); return "\(w.currentWeather.condition)" }
+    r["changes"] = await p27sAnswer(15) { let ch: WeatherChanges? = try await svc.weather(for: loc, including: .changes); let x: WeatherChange? = ch?.first; return "\(ch?.count ?? -1) \(x != nil)" }
+    r["comparisons"] = await p27sAnswer(15) {
+        let hc: HistoricalComparisons? = try await svc.weather(for: loc, including: .historicalComparisons)
+        let first: HistoricalComparison? = hc?.first
+        if case .highTemperature(let t)? = first { let tr: Trend<UnitTemperature> = t; let b: TrendBaseline<UnitTemperature> = tr.baseline; return "trend \(b.kind)" }
+        return "\(hc?.count ?? -1)"
+    }
+    r["daily statistics"] = await p27sAnswer(15) {
+        let (t, p): (DailyWeatherStatistics<DayTemperatureStatistics>, DailyWeatherStatistics<DayPrecipitationStatistics>) = try await svc.dailyStatistics(for: loc, including: .temperature, .precipitation)
+        return "\(t.count) \(p.count) \(String(describing: t.first?.averageLowTemperature))"
+    }
+    r["daily summary"] = await p27sAnswer(15) {
+        let (t, p): (DailyWeatherSummary<DayTemperatureSummary>, DailyWeatherSummary<DayPrecipitationSummary>) = try await svc.dailySummary(for: loc, including: .temperature, .precipitation)
+        return "\(t.count) \(p.count) \(String(describing: p.first?.snowfallAmount))"
+    }
+    r["hourly statistics"] = await p27sAnswer(15) {
+        let h: HourlyWeatherStatistics<HourTemperatureStatistics> = try await svc.hourlyStatistics(for: loc, including: .temperature)
+        let pc: Percentiles<UnitTemperature>? = h.first?.percentiles
+        return "\(h.count) \(String(describing: pc?.p50))"
+    }
+    r["monthly statistics"] = await p27sAnswer(15) {
+        let (t, p): (MonthlyWeatherStatistics<MonthTemperatureStatistics>, MonthlyWeatherStatistics<MonthPrecipitationStatistics>) = try await svc.monthlyStatistics(for: loc, including: .temperature, .precipitation)
+        return "\(t.count) \(p.count)"
+    }
+    r["attribution"] = await p27sAnswer(15) { let a: WeatherAttribution = try await svc.attribution; return a.serviceName }
+    let queries: [Any] = [DailyWeatherStatisticsQuery<DayTemperatureStatistics>.temperature, DailyWeatherSummaryQuery<DayPrecipitationSummary>.precipitation,
+                          HourlyWeatherStatisticsQuery<HourTemperatureStatistics>.temperature, MonthlyWeatherStatisticsQuery<MonthPrecipitationStatistics>.precipitation, WeatherQuery<Forecast<DayWeather>>.daily(startDate: .now, endDate: .now.addingTimeInterval(86400 * 3)),
+                          WeatherQuery<Forecast<HourWeather>>.hourly(startDate: .now, endDate: .now.addingTimeInterval(3600 * 6))]
+    let summary = r.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "; ")
+    try expect(queries.count == 6 && !summary.contains("no answer"), "hung: \(summary)")
+    // Apple's 27.2 simulators: the attribution is local ("Apple Weather"); every weather query fails to reach the
+    // weather daemon (xpcConnectionFailed: no weatherd in the simulator runtime)
+    let notApple = r.filter { $0.key != "attribution" && !$0.value.hasPrefix("Errors: xpcConnectionFailed") }.map(\.key)
+    try expect(r["attribution"] == "ok Apple Weather" && notApple.isEmpty, "not as Apple's: \(notApple); \(summary)")
+    return summary
+}
+#endif
+
+// MARK: WeatherKit: the value enums, every query kind asked of WeatherService (the app has no WeatherKit entitlement:
+// Apple's simulator's answers pinned), the typed results read when a query answers
+
+extension Registry {
+    static var p27sWeather: [Check] {
+        var c: [Check] = []
+#if canImport(WeatherKit)
+        c.append(check("WeatherKit", "p27-enums") {
+            // the enums: every case's raw value round-trips, descriptions, ordering
+            let conds = WeatherCondition.allCases, precs = Precipitation.allCases, trends = PressureTrend.allCases, sev = WeatherSeverity.allCases
+            let moons = MoonPhase.allCases, uv = UVIndex.ExposureCategory.allCases
+            let rawOK = conds.allSatisfy { WeatherCondition(rawValue: $0.rawValue) == $0 } && precs.allSatisfy { Precipitation(rawValue: $0.rawValue) == $0 }
+                && trends.allSatisfy { PressureTrend(rawValue: $0.rawValue) == $0 } && sev.allSatisfy { WeatherSeverity(rawValue: $0.rawValue) == $0 }
+                && moons.allSatisfy { MoonPhase(rawValue: $0.rawValue) == $0 } && uv.allSatisfy { UVIndex.ExposureCategory(rawValue: $0.rawValue) == $0 }
+            try expect(rawOK, "raw values")
+            try expect(conds.allSatisfy { !$0.description.isEmpty && !$0.accessibilityDescription.isEmpty } && moons.allSatisfy { !$0.symbolName.isEmpty }, "descriptions")
+            try expect(uv.sorted() == uv && UVIndex.ExposureCategory.low < .extreme, "UV categories ordered")
+            let devs: [Deviation] = [.muchHigher, .higher, .normal, .lower, .muchLower]
+            let devBack = try JSONDecoder().decode([Deviation].self, from: JSONEncoder().encode(devs))
+            try expect(devBack == devs, "deviation codable")
+            let kinds: [WeatherAvailability.AvailabilityKind] = [.available, .temporarilyUnavailable, .unsupported, .unknown]
+            try expect(Set(kinds.map(\.rawValue)).count == 4, "availability kinds")
+            let errs: [WeatherError] = [.permissionDenied, .unknown]
+            return "\(conds.count) conditions, \(precs.count) precipitation, \(trends.count) pressure trends, \(sev.count) severities, \(moons.count) moon phases, \(uv.count) UV categories; errors \(errs.map { $0.localizedDescription.isEmpty ? "-" : "ok" })"
+        })
+        c.append(check("WeatherKit", "p27-queries", timeout: 90) { try await p27sWeatherQueries() })
+#endif
+        return c
+    }
+}
+
+// MARK: HomeKit: the event / trigger model built locally, the setup objects (iOS), the object graph classes (no home on
+// Apple's simulators: the classes and their hierarchy, the empty manager)
+
+extension Registry {
+    static var p27sHome: [Check] {
+        var c: [Check] = []
+#if canImport(HomeKit)
+        c.append(check("HomeKit", "p27-events-triggers") {
+            var n = 0
+            func ok(_ cond: Bool, _ what: @autoclosure () -> String) throws { try expect(cond, what()); n += 1 }
+            let range = HMNumberRange(minValue: 18, maxValue: 24)
+            try ok(range.minValue == 18 && range.maxValue == 24 && HMNumberRange(minValue: 5).maxValue == nil, "number range")
+            let dur = HMDurationEvent(duration: 300)
+            let mdur = HMMutableDurationEvent(duration: 60); mdur.duration = 120
+            try ok(dur.duration == 300 && mdur.duration == 120, "duration events")
+            let pres = HMPresenceEvent(presenceEventType: .everyEntry, presenceUserType: .currentUser)
+            let mpres = HMMutablePresenceEvent(presenceEventType: .everyEntry, presenceUserType: .currentUser); mpres.presenceEventType = .lastExit
+            try ok(pres.presenceUserType == .currentUser && mpres.presenceEventType == .lastExit, "presence events")
+            var fire = DateComponents(); fire.hour = 6
+            let mcal = HMMutableCalendarEvent(fire: fire); fire.hour = 8; mcal.fireDateComponents = fire
+            let msig = HMMutableSignificantTimeEvent(significantEvent: .sunset, offset: nil); msig.significantEvent = .sunrise
+            let asTime: [HMTimeEvent] = [mcal, msig]
+            try ok(mcal.fireDateComponents.hour == 8 && msig.significantEvent == .sunrise && asTime.count == 2, "time events")
+            #if os(iOS)
+            let region = CLCircularRegion(center: CLLocationCoordinate2D(latitude: 37.33, longitude: -122.03), radius: 100, identifier: "home")
+            let loc = HMLocationEvent(region: region)
+            let mloc = HMMutableLocationEvent(region: region); mloc.region = CLCircularRegion(center: region.center, radius: 200, identifier: "home2")
+            try ok(loc.region?.identifier == "home" && mloc.region?.identifier == "home2", "location events")
+            #endif
+            let events: [HMEvent] = [dur, pres, mcal, msig]
+            try ok(events.allSatisfy { !$0.uniqueIdentifier.uuidString.isEmpty } && Set(events.map(\.uniqueIdentifier)).count == 4, "events have their own identifiers")
+            #if os(iOS) || os(visionOS)
+            let timer = HMTimerTrigger(name: "p27", fireDate: Date(timeIntervalSinceNow: 3600), timeZone: nil, recurrence: DateComponents(day: 1), recurrenceCalendar: nil)
+            let asTrigger: HMTrigger = timer
+            try ok(timer.recurrence?.day == 1 && asTrigger.name == "p27" && !asTrigger.isEnabled && asTrigger.actionSets.isEmpty, "timer trigger")
+            let evTrig = HMEventTrigger(name: "p27e", events: [dur, pres], end: [HMDurationEvent(duration: 600)], recurrences: nil, predicate: nil)
+            try ok(evTrig.events.count == 2, "event trigger events \(evTrig.events.count)")
+            let endN = evTrig.endEvents.count
+            #endif
+            #if os(iOS) || os(visionOS)
+            return "\(n) event / trigger checks; end events kept \(endN)"
+            #else
+            return "\(n) event / trigger checks"
+            #endif
+        })
+        c.append(check("HomeKit", "p27-object-classes", timeout: 30) {
+            // the home object graph has no public initializers (homed makes it): the class hierarchy Apple's runtime has
+            var pairs: [(AnyClass, AnyClass)] = [
+                (HMCameraProfile.self, HMAccessoryProfile.self), (HMNetworkConfigurationProfile.self, HMAccessoryProfile.self),
+                (HMCameraStreamControl.self, HMCameraControl.self), (HMCameraSnapshotControl.self, HMCameraControl.self),
+                (HMCameraSettingsControl.self, HMCameraControl.self), (HMCameraAudioControl.self, HMCameraControl.self),
+                (HMCameraStream.self, HMCameraSource.self), (HMCameraSnapshot.self, HMCameraSource.self),
+                (HMHomeAccessControl.self, HMAccessControl.self), (HMCharacteristicWriteAction<NSNumber>.self, HMAction.self),
+                (HMTimerTrigger.self, HMTrigger.self), (HMEventTrigger.self, HMTrigger.self),
+                (HMCharacteristicThresholdRangeEvent.self, HMEvent.self), (HMMutableCharacteristicThresholdRangeEvent.self, HMCharacteristicThresholdRangeEvent.self),
+                (HMCalendarEvent.self, HMTimeEvent.self), (HMSignificantTimeEvent.self, HMTimeEvent.self),
+            ]
+            #if !os(visionOS)
+            pairs.append((HMLocationEvent.self, HMEvent.self))
+            #endif
+            let wrong = pairs.filter { !p27sIsSub($0.0, $0.1) }.map { "\($0.0)" }
+            try expect(wrong.isEmpty, "not subclasses: \(wrong)")
+            let roots: [AnyClass] = [HMHome.self, HMRoom.self, HMZone.self, HMService.self, HMServiceGroup.self, HMCharacteristic.self, HMCharacteristicMetadata.self,
+                                     HMUser.self, HMActionSet.self, HMAccessoryCategory.self, HMMediaSourceDisplayOrderProfile.self]
+            try expect(roots.allSatisfy { p27sIsSub($0, NSObject.self) }, "roots")
+            let cats = [HMAccessoryCategoryTypeLightbulb, HMAccessoryCategoryTypeThermostat, HMAccessoryCategoryTypeIPCamera]
+            try expect(Set(cats).count == 3, "category types")
+            var setup = "n/a"
+            #if os(iOS)
+            let req = HMAccessorySetupRequest(); req.suggestedAccessoryName = "Lamp"; req.homeUniqueIdentifier = UUID()
+            let token = HMAccessoryOwnershipToken(data: Data([1, 2, 3]))
+            req.payload = HMAccessorySetupPayload(url: URL(string: "X-HM://0024XZ4OD3QXY")!, ownershipToken: token)
+            try expect(req.suggestedAccessoryName == "Lamp" && req.payload != nil && (req.copy() as? HMAccessorySetupRequest)?.suggestedAccessoryName == "Lamp", "setup request")
+            let resType: AnyClass = HMAccessorySetupResult.self
+            setup = "setup request ok, result class \(resType)"
+            _ = HMAccessorySetupManager()
+            #endif
+            return "\(pairs.count) subclass relations, \(roots.count) graph classes; \(setup)"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: CoreMotion: every manager's availability and a query each (the simulator has no motion hardware: Apple's
+// answers pinned), the data classes through secure coding
+
+extension Registry {
+    static var p27sMotion: [Check] {
+        var c: [Check] = []
+#if canImport(CoreMotion) && !os(visionOS)
+        c.append(check("CoreMotion", "p27-managers", timeout: 60) {
+            var r: [String: String] = [:]
+            let mm = CMMotionManager()
+            r["motion"] = "acc \(mm.isAccelerometerAvailable) gyro \(mm.isGyroAvailable) mag \(mm.isMagnetometerAvailable) dm \(mm.isDeviceMotionAvailable)"
+            mm.deviceMotionUpdateInterval = 0.05
+            mm.startDeviceMotionUpdates()
+            try await Task.sleep(for: .milliseconds(300))
+            let dm: CMDeviceMotion? = mm.deviceMotion, acc: CMAccelerometerData? = mm.accelerometerData, gyro: CMGyroData? = mm.gyroData, mag: CMMagnetometerData? = mm.magnetometerData
+            let att: CMAttitude? = dm?.attitude
+            r["motion data"] = "dm \(dm != nil) att \(att != nil) acc \(acc != nil) gyro \(gyro != nil) mag \(mag != nil)"
+            mm.stopDeviceMotionUpdates()
+            r["altimeter"] = "relative \(CMAltimeter.isRelativeAltitudeAvailable()) absolute \(CMAltimeter.isAbsoluteAltitudeAvailable())"
+            r["pedometer"] = "steps \(CMPedometer.isStepCountingAvailable()) distance \(CMPedometer.isDistanceAvailable()) floors \(CMPedometer.isFloorCountingAvailable()) pace \(CMPedometer.isPaceAvailable()) events \(CMPedometer.isPedometerEventTrackingAvailable())"
+            let ped = CMPedometer()
+            r["pedometer query"] = await p27sAnswer(10) {
+                try await withCheckedThrowingContinuation { (k: CheckedContinuation<String, Error>) in
+                    ped.queryPedometerData(from: Date().addingTimeInterval(-3600), to: Date()) { d, e in
+                        if let e { k.resume(throwing: e) } else { let pd: CMPedometerData? = d; k.resume(returning: "\(pd?.numberOfSteps ?? -1)") }
+                    }
+                }
+            }
+            r["activity"] = "\(CMMotionActivityManager.isActivityAvailable())"
+            let am = CMMotionActivityManager()
+            r["activity query"] = await p27sAnswer(10) {
+                try await withCheckedThrowingContinuation { (k: CheckedContinuation<String, Error>) in
+                    am.queryActivityStarting(from: Date().addingTimeInterval(-3600), to: Date(), to: .main) { a, e in
+                        if let e { k.resume(throwing: e) } else { let x: [CMMotionActivity]? = a; k.resume(returning: "\(x?.count ?? -1)") }
+                    }
+                }
+            }
+            #if !os(tvOS) && !os(visionOS)
+            r["recorder"] = "\(CMSensorRecorder.isAccelerometerRecordingAvailable()) authorized \(CMSensorRecorder.isAuthorizedForRecording())"
+            let list: CMSensorDataList? = CMSensorRecorder().accelerometerData(from: Date().addingTimeInterval(-60), to: Date())
+            r["recorder data"] = "\(list != nil)"
+            #endif
+            #if os(iOS)
+            r["step counter"] = "\(CMStepCounter.isStepCountingAvailable())"
+            #endif
+            #if os(iOS) || os(watchOS)
+            r["batched"] = "acc \(CMBatchedSensorManager.isAccelerometerSupported) dm \(CMBatchedSensorManager.isDeviceMotionSupported)"
+            #endif
+            #if os(iOS)
+            r["headphone activity"] = "\(CMHeadphoneActivityManager().isActivityAvailable)"
+            #endif
+            #if os(watchOS)
+            r["fall detection"] = "\(CMFallDetectionManager.isAvailable)"
+            r["movement disorder"] = "\(CMMovementDisorderManager.isAvailable())"
+            r["water"] = "\(CMWaterSubmersionManager.waterSubmersionAvailable)"
+            #endif
+            r["authorization"] = "\(CMMotionActivityManager.authorizationStatus().rawValue)"
+            let summary = r.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "; ")
+            try expect(!summary.contains("no answer"), summary)
+            return summary
+        })
+#endif
+#if canImport(CoreMotion)
+        c.append(check("CoreMotion", "p27-data-classes") {
+            let names = "CMLogItem CMAccelerometerData CMGyroData CMMagnetometerData CMDeviceMotion CMAttitude CMAltitudeData CMAbsoluteAltitudeData CMAmbientPressureData CMRotationRateData CMRecordedAccelerometerData CMRecordedDeviceMotion CMRecordedPressureData CMRecordedRotationRateData CMMotionActivity CMHighFrequencyHeartRateData CMOdometerData CMPedometerData CMPedometerEvent CMDyskineticSymptomResult CMTremorResult CMWaterSubmersionEvent CMWaterSubmersionMeasurement CMWaterTemperature CMFallDetectionEvent".split(separator: " ").map(String.init)
+            var ok = 0, absent: [String] = [], nilInit: [String] = [], bad: [String] = []
+            for n in names {
+                guard let cls = NSClassFromString(n) else { absent.append(n); continue }
+                var o: NSObject?
+                if let ex = SDKCovCatch({ o = try? p27sFromEmptyCoder(cls) }) { nilInit.append("\(n):\(ex[0])"); continue }
+                guard let o else { nilInit.append(n); continue }
+                var back: NSObject?
+                if let ex = SDKCovCatch({ back = try? p27sRoundTrip(o) }) { bad.append("\(n):\(ex[0])"); continue }
+                guard let back, type(of: back) == cls else { bad.append(n); continue }
+                ok += 1
+            }
+            // a log item's timestamp survives the round trip
+            if let a = try p27sFromEmptyCoder(CMAccelerometerData.self) as? CMAccelerometerData {
+                try expect(a.timestamp == 0 && a.acceleration.x == 0, "empty accelerometer data \(a.timestamp)")
+            }
+            return "\(ok)/\(names.count - absent.count) round trip; not from an empty archive \(nilInit.count)\(p27sFirst(nilInit, 10)); failed \(bad.count)\(p27sFirst(bad, 8)); absent \(absent.count)\(p27sFirst(absent, 10))"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: Contacts: the value classes on a saved contact, the change history's event classes through a visitor
+
+#if canImport(Contacts)
+/// counts the change history events by kind (CNChangeHistoryEventVisitor)
+final class P27sHistoryVisitor: NSObject, CNChangeHistoryEventVisitor {
+    var kinds: [String: Int] = [:]
+    var ids = Set<String>()
+    func note(_ k: String) { kinds[k, default: 0] += 1 }
+    func visit(_ e: CNChangeHistoryDropEverythingEvent) { note("drop") }
+    func visit(_ e: CNChangeHistoryAddContactEvent) { note("add"); ids.insert(e.contact.identifier) }
+    func visit(_ e: CNChangeHistoryUpdateContactEvent) { note("update"); ids.insert(e.contact.identifier) }
+    func visit(_ e: CNChangeHistoryDeleteContactEvent) { note("delete"); ids.insert(e.contactIdentifier) }
+    func visit(_ e: CNChangeHistoryAddGroupEvent) { note("addGroup") }
+    func visit(_ e: CNChangeHistoryUpdateGroupEvent) { note("updateGroup") }
+    func visit(_ e: CNChangeHistoryDeleteGroupEvent) { note("deleteGroup") }
+    func visit(_ e: CNChangeHistoryAddMemberToGroupEvent) { note("addMember") }
+    func visit(_ e: CNChangeHistoryRemoveMemberFromGroupEvent) { note("removeMember") }
+    func visit(_ e: CNChangeHistoryAddSubgroupToGroupEvent) { note("addSubgroup") }
+    func visit(_ e: CNChangeHistoryRemoveSubgroupFromGroupEvent) { note("removeSubgroup") }
+}
+/// the change history since `token` (Objective-C only: enumeratorForChangeHistoryFetchRequest:error:), each event given
+/// to the visitor; the events' classes
+func p27sHistory(_ store: CNContactStore, since token: Data?, _ v: P27sHistoryVisitor) -> [String] {
+    let hr = CNChangeHistoryFetchRequest(); hr.startingToken = token; hr.shouldUnifyResults = true
+    hr.additionalContactKeyDescriptors = [CNContactGivenNameKey as CNKeyDescriptor]
+    let asFetch: CNFetchRequest = hr
+    let sel = NSSelectorFromString("enumeratorForChangeHistoryFetchRequest:error:")
+    let res = (store as AnyObject).perform(sel, with: asFetch, with: nil)?.takeUnretainedValue() as? NSObject
+    var classes: [String] = []
+    if let en = res?.value(forKey: "value") as? NSEnumerator {
+        while let ev = en.nextObject() as? CNChangeHistoryEvent { ev.accept(v); classes.append("\(type(of: ev))") }
+    }
+    return classes
+}
+#endif
+
+extension Registry {
+    static var p27sContacts: [Check] {
+        var c: [Check] = []
+#if canImport(Contacts) && !os(tvOS)
+        c.append(check("Contacts", "p27-values-history", timeout: 60) {
+            // value classes: postal address (and its formatter), instant message, social profile, relation; a saved
+            // contact reads them back
+            let addr = CNMutablePostalAddress(); addr.street = "1 Infinite Loop"; addr.city = "Cupertino"; addr.state = "CA"; addr.postalCode = "95014"; addr.isoCountryCode = "us"
+            let post: CNPostalAddress = addr.copy() as! CNPostalAddress
+            let im = CNInstantMessageAddress(username: "p27", service: CNInstantMessageServiceJabber)
+            let social = CNSocialProfile(urlString: nil, username: "p27", userIdentifier: nil, service: CNSocialProfileServiceTwitter)
+            let rel = CNContactRelation(name: "Grace")
+            try expect(CNPostalAddressFormatter.string(from: post, style: .mailingAddress).contains("Cupertino") && im.service == CNInstantMessageServiceJabber && social.username == "p27" && rel.name == "Grace", "values")
+            let defaults = CNContactsUserDefaults.shared()
+            let order = defaults.sortOrder.rawValue
+            #if os(watchOS)
+            return "values ok; sort order \(order) (watchOS: the store is read-only, no history)"
+            #else
+            let st = CNContactStore.authorizationStatus(for: .contacts)
+            try skipIf(st != .authorized, "Contacts access not granted (status \(st.rawValue)): run.sh / ref-mac.sh pre-grant it")
+            let store = CNContactStore()
+            let containers: [CNContainer] = try store.containers(matching: nil)
+            try expect(!containers.isEmpty && containers.contains { $0.identifier == store.defaultContainerIdentifier() }, "containers \(containers.count)")
+            let token0 = store.currentHistoryToken
+            let tok = "P27\(Int.random(in: 10000...99999))"
+            let m = CNMutableContact(); m.givenName = tok; m.familyName = "Sdkcov"
+            m.postalAddresses = [CNLabeledValue(label: CNLabelHome, value: post)]
+            m.instantMessageAddresses = [CNLabeledValue(label: CNLabelWork, value: im)]
+            m.socialProfiles = [CNLabeledValue(label: nil, value: social)]
+            m.contactRelations = [CNLabeledValue(label: CNLabelContactRelationFriend, value: rel)]
+            let r1 = CNSaveRequest(); r1.add(m, toContainerWithIdentifier: nil); try store.execute(r1)
+            let keys = [CNContactGivenNameKey, CNContactPostalAddressesKey, CNContactInstantMessageAddressesKey, CNContactSocialProfilesKey, CNContactRelationsKey, CNContactIdentifierKey].map { $0 as CNKeyDescriptor }
+            guard let got = try store.unifiedContacts(matching: CNContact.predicateForContacts(matchingName: tok), keysToFetch: keys).first else { throw Fail("saved contact not found") }
+            try expect(got.postalAddresses.first?.value.city == "Cupertino" && got.instantMessageAddresses.first?.value.username == "p27"
+                       && got.socialProfiles.first?.value.username == "p27" && got.contactRelations.first?.value.name == "Grace", "read back")
+            let prop = CNContactProperty.self
+            // group: add, rename, member add / remove, delete; contact update, delete
+            let g = CNMutableGroup(); g.name = "\(tok) g"
+            let r2 = CNSaveRequest(); r2.add(g, toContainerWithIdentifier: nil); try store.execute(r2)
+            guard let grp: CNGroup = try store.groups(matching: nil).first(where: { $0.name == "\(tok) g" }) else { throw Fail("group not found") }
+            let gm = grp.mutableCopy() as! CNMutableGroup; gm.name = "\(tok) g2"
+            let r3 = CNSaveRequest(); r3.update(gm); r3.addMember(got, to: grp); try store.execute(r3)
+            let r4 = CNSaveRequest(); r4.removeMember(got, from: grp); try store.execute(r4)
+            let mu = got.mutableCopy() as! CNMutableContact; mu.familyName = "Sdkcov2"
+            let r5 = CNSaveRequest(); r5.update(mu); try store.execute(r5)
+            let r6 = CNSaveRequest(); r6.delete(gm); r6.delete(mu); try store.execute(r6)
+            let v = P27sHistoryVisitor()
+            let classes = p27sHistory(store, since: token0, v)
+            let k = v.kinds
+            try expect(token0 != nil && (k["add"] ?? 0) >= 1 && (k["addGroup"] ?? 0) >= 1 && (k["addMember"] ?? 0) >= 1 && (k["removeMember"] ?? 0) >= 1
+                       && (k["delete"] ?? 0) >= 1 && (k["deleteGroup"] ?? 0) >= 1 && v.ids.contains(got.identifier), "history kinds \(k)")
+            // from no token: everything dropped first
+            let v0 = P27sHistoryVisitor()
+            let all = p27sHistory(store, since: nil, v0)
+            try expect(all.first?.contains("DropEverything") == true || (v0.kinds["drop"] ?? 0) == 1, "from nil token: first \(all.first ?? "none") kinds \(v0.kinds)")
+            let sub: [AnyClass] = [CNChangeHistoryAddSubgroupToGroupEvent.self, CNChangeHistoryRemoveSubgroupFromGroupEvent.self, CNChangeHistoryUpdateGroupEvent.self, CNChangeHistoryUpdateContactEvent.self]
+            try expect(sub.allSatisfy { p27sIsSub($0, CNChangeHistoryEvent.self) }, "event classes")
+            return "history since token: \(k.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")) (\(classes.count) events); from nil: \(all.count) events, drop \(v0.kinds["drop"] ?? 0); \(containers.count) containers; sort order \(order); \(prop)"
+            #endif
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: Photos: editing an asset (content editing input / output, adjustment data), collection lists, the persistent
+// change history, cloud identifier mappings, resource / Live Photo request options (read-write access granted by
+// run.sh / ref-mac.sh)
+
+#if canImport(Photos) && !os(watchOS)
+/// a solid-colour image encoded as `type` (PNG / JPEG)
+func p27sImage(_ w: Int, _ h: Int, _ rgb: [CGFloat], _ type: UTType) -> Data {
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(red: rgb[0], green: rgb[1], blue: rgb[2], alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    let d = NSMutableData()
+    let dst = CGImageDestinationCreateWithData(d, type.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(dst, ctx.makeImage()!, nil); CGImageDestinationFinalize(dst)
+    return d as Data
+}
+#endif
+
+extension Registry {
+    static var p27sPhotos: [Check] {
+        var c: [Check] = []
+#if canImport(Photos) && !os(watchOS)
+        c.append(check("Photos", "p27-edit-collections-history", timeout: 90) {
+            let st = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            try skipIf(st != .authorized, "Photos access \(st.rawValue) (run.sh / ref-mac.sh grant kTCCServicePhotos)")
+            let lib = PHPhotoLibrary.shared()
+            let token0: PHPersistentChangeToken = lib.currentChangeToken
+            let png = p27sImage(40, 30, [0.9, 0.1, 0.1], .png)
+            let tag = "p27-\(Int.random(in: 1000...9999))"
+            var iid: String?, listID: String?
+            var placeholderType = ""
+            try await lib.performChanges {
+                let req = PHAssetCreationRequest.forAsset()
+                req.addResource(with: .photo, data: png, options: nil)
+                let ph: PHObjectPlaceholder? = req.placeholderForCreatedAsset
+                iid = ph?.localIdentifier
+                let album = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: "\(tag) album")
+                album.addAssets([ph!] as NSArray)
+                let list = PHCollectionListChangeRequest.creationRequestForCollectionList(withTitle: "\(tag) folder")
+                list.addChildCollections([album.placeholderForCreatedAssetCollection] as NSArray)
+                listID = list.placeholderForCreatedCollectionList.localIdentifier
+                let base: PHChangeRequest = list
+                placeholderType = "\(type(of: base))"
+            }
+            guard let iid, let listID, let asset = PHAsset.fetchAssets(withLocalIdentifiers: [iid], options: nil).firstObject else { throw Fail("created asset not found") }
+            // the folder holds the album, which holds the asset
+            guard let list: PHCollectionList = PHCollectionList.fetchCollectionLists(withLocalIdentifiers: [listID], options: nil).firstObject else { throw Fail("folder not found") }
+            let children: PHFetchResult<PHCollection> = PHCollection.fetchCollections(in: list, options: nil)
+            let child = children.firstObject as? PHAssetCollection
+            let obj: PHObject = list
+            try expect(list.localizedTitle == "\(tag) folder" && children.count == 1 && child.map { PHAsset.fetchAssets(in: $0, options: nil).count } == 1 && !obj.localIdentifier.isEmpty, "folder \(children.count) children")
+            // edit: content editing input -> output with adjustment data and a rendered JPEG -> committed -> read back
+            let opts = PHContentEditingInputRequestOptions(); opts.isNetworkAccessAllowed = false
+            opts.canHandleAdjustmentData = { $0.formatIdentifier == "com.x86sim.p27" }
+            let input: PHContentEditingInput = try await withCheckedThrowingContinuation { k in
+                asset.requestContentEditingInput(with: opts) { inp, info in
+                    if let inp { k.resume(returning: inp) } else { k.resume(throwing: Fail("no editing input \(info)")) }
+                }
+            }
+            try expect(input.mediaType == .image && input.fullSizeImageURL != nil, "editing input \(input.mediaType.rawValue)")
+            #if !os(tvOS)
+            let live: PHLivePhotoEditingContext? = PHLivePhotoEditingContext(livePhotoEditingInput: input)
+            try expect(live == nil, "a still image has no Live Photo editing context")
+            #endif
+            let out = PHContentEditingOutput(contentEditingInput: input)
+            out.adjustmentData = PHAdjustmentData(formatIdentifier: "com.x86sim.p27", formatVersion: "1.0", data: Data("blue".utf8))
+            try p27sImage(40, 30, [0.1, 0.1, 0.9], .jpeg).write(to: out.renderedContentURL)
+            try await lib.performChanges { PHAssetChangeRequest(for: asset).contentEditingOutput = out }
+            let edited = PHAsset.fetchAssets(withLocalIdentifiers: [iid], options: nil).firstObject!
+            let input2: PHContentEditingInput = try await withCheckedThrowingContinuation { k in
+                edited.requestContentEditingInput(with: opts) { inp, info in if let inp { k.resume(returning: inp) } else { k.resume(throwing: Fail("no editing input 2")) } }
+            }
+            let adj = input2.adjustmentData
+            try expect(adj?.formatIdentifier == "com.x86sim.p27" && adj?.data == Data("blue".utf8) && edited.hasAdjustments, "adjustment \(String(describing: adj?.formatIdentifier)) hasAdjustments \(edited.hasAdjustments)")
+            // resource request options: the original and the edit as resources
+            let ro = PHAssetResourceRequestOptions(); ro.isNetworkAccessAllowed = false
+            let res = PHAssetResource.assetResources(for: edited)
+            var bytes = 0
+            if let r0 = res.first {
+                try await withCheckedThrowingContinuation { (k: CheckedContinuation<Void, Error>) in
+                    PHAssetResourceManager.default().requestData(for: r0, options: ro, dataReceivedHandler: { bytes += $0.count }) { e in if let e { k.resume(throwing: e) } else { k.resume() } }
+                }
+            }
+            // Live Photo request options: a still asset has no Live Photo
+            let lo = PHLivePhotoRequestOptions(); lo.deliveryMode = .highQualityFormat; lo.isNetworkAccessAllowed = false
+            let lp: Bool = await withCheckedContinuation { k in
+                var done = false
+                PHImageManager.default().requestLivePhoto(for: edited, targetSize: CGSize(width: 40, height: 30), contentMode: .aspectFit, options: lo) { p, info in
+                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true || done { return }
+                    done = true; k.resume(returning: p != nil)
+                }
+            }
+            // the persistent change history since the first token has the insert
+            let changes: PHPersistentChangeFetchResult = try lib.fetchPersistentChanges(since: token0)
+            var inserted = false, nChanges = 0
+            for ch in changes {
+                let pc: PHPersistentChange = ch; nChanges += 1
+                let det: PHPersistentObjectChangeDetails = try pc.changeDetails(for: .asset)
+                if det.insertedLocalIdentifiers.contains(iid) || det.updatedLocalIdentifiers.contains(iid) { inserted = true }
+            }
+            try expect(inserted, "persistent changes \(nChanges): asset not inserted")
+            // cloud identifiers (no iCloud Photos on the simulator: Apple's answer pinned by ref-mac.sh)
+            let cm = lib.cloudIdentifierMappings(forLocalIdentifiers: [iid])
+            let cloud: String
+            switch cm[iid] {
+            case .success(let ci): let cid: PHCloudIdentifier = ci; let back = lib.localIdentifierMappings(for: [cid]); cloud = "cloud id ok, back \((try? back[cid]?.get()) == iid)"
+            case .failure(let e): cloud = "cloud id error \((e as NSError).domain) \((e as NSError).code)"
+            case nil: cloud = "no mapping"
+            }
+            let mapClasses = ["PHCloudIdentifierMapping", "PHLocalIdentifierMapping"].filter { NSClassFromString($0) != nil }.count
+            var upload = "n/a"
+            #if os(iOS)
+            let jobs: PHFetchResult<PHAssetResourceUploadJob> = PHAssetResourceUploadJob.fetchJobs(action: .acknowledge, options: nil)
+            upload = "\(jobs.count) jobs to acknowledge; job change request class \(PHAssetResourceUploadJobChangeRequest.self)"
+            let ref = PHReferenceImageInfo(asset: edited)
+            upload += ", reference image data \(ref.imageContainsReferenceImageData)"
+            #endif
+            return "\(placeholderType); folder/album/asset; edit committed (\(input2.adjustmentData?.formatVersion ?? "-")); resource \(bytes) B of \(res.count); live photo \(lp); \(nChanges) persistent changes; \(cloud); \(mapClasses) mapping classes; \(upload)"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: CoreLocation: live updates (the simulated location, when-in-use granted by run.sh / ref-mac.sh), CLMonitor with a
+// beacon condition, the session diagnostics, beacon regions, placemarks
+
+extension Registry {
+    static var p27sLocation: [Check] {
+        var c: [Check] = []
+#if canImport(CoreLocation)
+        c.append(check("CoreLocation", "p27-updater-monitor-sessions", timeout: 60) {
+            var r: [String: String] = [:]
+            // CLLocationUpdate.liveUpdates(): the first live update (Objective-C: CLLocationUpdater handing CLUpdate objects)
+            r["live"] = await p27sAnswer(15) {
+                for try await u in CLLocationUpdate.liveUpdates() {
+                    if let l = u.location { return "\(String(format: "%.3f,%.3f", l.coordinate.latitude, l.coordinate.longitude)) stationary \(u.stationary)" }
+                    if u.authorizationDenied || u.authorizationDeniedGlobally { return "denied" }
+                }
+                return "ended"
+            }
+            // CLMonitor with a beacon identity condition (iOS): added, recorded, removed
+            #if os(iOS)
+            r["monitor"] = await p27sAnswer(20) {
+                let name = "p27svc\(Int(Date().timeIntervalSince1970) % 100000)"
+                let mon = await CLMonitor(name)
+                let uuid = UUID()
+                await mon.add(CLMonitor.BeaconIdentityCondition(uuid: uuid, major: 1, minor: 2), identifier: "beacon", assuming: .unsatisfied)
+                let rec = await mon.record(for: "beacon")
+                let cond = rec?.condition as? CLMonitor.BeaconIdentityCondition
+                let ev = rec?.lastEvent
+                await mon.remove("beacon")
+                let left = await mon.identifiers
+                return "condition \(cond?.uuid == uuid && cond?.major == 1 && cond?.minor == 2) last \(ev.map { "\($0.state)" } ?? "none") left \(left.count)"
+            }
+            #endif
+            #if os(iOS) || os(watchOS)
+            r["background session"] = await p27sAnswer(8) {
+                let s = CLBackgroundActivitySession()
+                defer { s.invalidate() }
+                for try await d in s.diagnostics { let x: CLBackgroundActivitySession.Diagnostic = d; return "denied \(x.authorizationDenied) in use \(x.insufficientlyInUse) needs session \(x.serviceSessionRequired)" }
+                return "ended"
+            }
+            #endif
+            r["service session"] = await p27sAnswer(8) {
+                let s = CLServiceSession(authorization: .whenInUse)
+                defer { s.invalidate() }
+                for try await d in s.diagnostics { let x: CLServiceSession.Diagnostic = d; return "denied \(x.authorizationDenied) full accuracy denied \(x.fullAccuracyDenied)" }
+                return "ended"
+            }
+            // regions and placemarks
+            #if os(iOS)
+            let beacon = CLBeaconRegion(uuid: UUID(), major: 7, identifier: "p27")
+            let asRegion: CLRegion = beacon
+            try expect(beacon.major == 7 && beacon.minor == nil && asRegion.identifier == "p27" && beacon.beaconIdentityConstraint.major == 7, "beacon region")
+            #endif
+            #if canImport(Contacts)
+            let addr = CNMutablePostalAddress(); addr.city = "Cupertino"; addr.isoCountryCode = "US"
+            let place = CLPlacemark(location: CLLocation(latitude: 37.33, longitude: -122.03), name: "Park", postalAddress: addr)
+            try expect(place.name == "Park" && place.postalAddress?.city == "Cupertino" && place.location?.coordinate.latitude == 37.33, "placemark \(place)")
+            #endif
+            #if os(iOS) || os(watchOS)
+            let heading: CLHeading? = CLLocationManager().heading
+            r["heading"] = "\(heading == nil ? "none" : "some")"
+            #endif
+            // the ObjC classes behind the Swift CLMonitor / updater / session types
+            let objc = ["CLUpdate", "CLLocationUpdater", "CLMonitoringEvent", "CLMonitoringRecord", "CLMonitorConfiguration", "CLCondition", "CLCircularGeographicCondition",
+                        "CLBeaconIdentityCondition", "CLServiceSessionDiagnostic", "CLBackgroundActivitySessionDiagnostic"].filter { NSClassFromString($0) != nil }
+            r["objc classes"] = "\(objc.count)/10"
+            let summary = r.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "; ")
+            try expect(!summary.contains("no answer"), summary)
+            return summary
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: EventKit: sources and calendars, an event with a structured location and a by-day recurrence, virtual
+// conference descriptors (Calendar full access granted by run.sh / ref-mac.sh)
+
+extension Registry {
+    static var p27sEventKit: [Check] {
+        var c: [Check] = []
+#if canImport(EventKit)
+        c.append(check("EventKit", "p27-calendars-structured-conference", timeout: 60) {
+            // virtual conference descriptors (what a conference provider extension hands Calendar)
+            let urlD = EKVirtualConferenceURLDescriptor(title: "Join", url: URL(string: "https://example.com/m/1")!)
+            let conf = EKVirtualConferenceDescriptor(title: "P27 call", urlDescriptors: [urlD], conferenceDetails: "PIN 1234")
+            let room = EKVirtualConferenceRoomTypeDescriptor(title: "Room", identifier: "p27room")
+            try expect(conf.urlDescriptors.first?.url.host == "example.com" && conf.conferenceDetails == "PIN 1234" && room.identifier == "p27room", "conference descriptors")
+            let providerClass: AnyClass = EKVirtualConferenceProvider.self
+            let days = [EKRecurrenceDayOfWeek(.monday), EKRecurrenceDayOfWeek(.wednesday, weekNumber: 2)]
+            try expect(days[1].weekNumber == 2 && days[0].dayOfTheWeek == .monday, "days of week")
+            let rule = EKRecurrenceRule(recurrenceWith: .weekly, interval: 1, daysOfTheWeek: days, daysOfTheMonth: nil, monthsOfTheYear: nil, weeksOfTheYear: nil, daysOfTheYear: nil, setPositions: nil, end: EKRecurrenceEnd(occurrenceCount: 3))
+            let sl = EKStructuredLocation(title: "Apple Park"); sl.geoLocation = CLLocation(latitude: 37.3349, longitude: -122.009); sl.radius = 150
+            #if os(watchOS)
+            return "descriptors, days, rule \(rule.daysOfTheWeek?.count ?? 0) days, location \(sl.title ?? "") (watchOS: read-only store); \(providerClass)"
+            #else
+            let se = EKEventStore.authorizationStatus(for: .event)
+            try skipIf(se != .fullAccess, "Calendar full access not granted (status \(se.rawValue))")
+            let store = EKEventStore()
+            let sources: [EKSource] = store.sources
+            let cals: [EKCalendar] = store.calendars(for: .event)
+            guard let cal = store.defaultCalendarForNewEvents else { throw Fail("no default calendar") }
+            try expect(!sources.isEmpty && cals.contains { $0.calendarIdentifier == cal.calendarIdentifier } && cal.source != nil, "\(sources.count) sources, \(cals.count) calendars")
+            // a calendar of our own in the default calendar's source
+            let mine = EKCalendar(for: .event, eventStore: store); mine.title = "p27-\(Int.random(in: 1000...9999))"; mine.source = cal.source
+            try store.saveCalendar(mine, commit: true)
+            defer { try? store.removeCalendar(mine, commit: true) }
+            let e = EKEvent(eventStore: store); e.calendar = mine; e.title = "p27 event"
+            let start = Calendar.current.nextDate(after: .now, matching: DateComponents(hour: 10, weekday: 2), matchingPolicy: .nextTime)!
+            e.startDate = start; e.endDate = start.addingTimeInterval(1800)
+            e.structuredLocation = sl
+            e.addRecurrenceRule(rule)
+            let item: EKCalendarItem = e, obj: EKObject = e
+            try expect(obj.hasChanges && obj.isNew && item.hasRecurrenceRules, "new item \(obj.hasChanges) \(obj.isNew)")
+            try store.save(e, span: .futureEvents, commit: true)
+            let pred = store.predicateForEvents(withStart: start.addingTimeInterval(-60), end: start.addingTimeInterval(21 * 86400), calendars: [mine])
+            let occ = store.events(matching: pred)
+            let back = occ.first
+            let attendees: [EKParticipant]? = back?.attendees
+            try expect(occ.count == 3 && back?.structuredLocation?.title == "Apple Park" && abs((back?.structuredLocation?.radius ?? 0) - 150) < 1
+                       && back?.recurrenceRules?.first?.daysOfTheWeek?.count == 2 && (attendees ?? []).isEmpty, "\(occ.count) occurrences, location \(String(describing: back?.structuredLocation?.title))")
+            return "\(sources.count) sources, \(cals.count) calendars; own calendar + weekly by-day event: \(occ.count) occurrences, structured location; conference descriptors; \(providerClass)"
+            #endif
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: ManagedSettings / FamilyControls / DeviceActivity (iOS): every settings group of a store written and read back
+// (no Family Controls authorization: Apple's simulator ignores the writes), the metadata defaults, the enums, the
+// authorization answers
+
+extension Registry {
+    static var p27sFamily: [Check] {
+        var c: [Check] = []
+#if canImport(ManagedSettings) && canImport(FamilyControls) && canImport(DeviceActivity) && os(iOS)
+        c.append(check("ManagedSettings", "p27-settings-groups") {
+            let st = ManagedSettingsStore(named: .init("p27svc"))
+            st.clearAllSettings()
+            var acc: AccountSettings = st.account; acc.lockAccounts = true; st.account = acc
+            var app: ApplicationSettings = st.application; app.denyAppInstallation = true; st.application = app
+            var shop: AppStoreSettings = st.appStore; shop.maximumRating = 300; shop.denyInAppPurchases = true; st.appStore = shop
+            var cell: CellularSettings = st.cellular; cell.lockESIM = true; st.cellular = cell
+            var dt: DateAndTimeSettings = st.dateAndTime; dt.requireAutomaticDateAndTime = true; st.dateAndTime = dt
+            var gc: GameCenterSettings = st.gameCenter; gc.denyMultiplayerGaming = true; st.gameCenter = gc
+            var media: MediaSettings = st.media; media.maximumMovieRating = 200; st.media = media
+            var pass: PasscodeSettings = st.passcode; pass.lockPasscode = true; st.passcode = pass
+            var saf: SafariSettings = st.safari; saf.cookiePolicy = .never; saf.denyAutoFill = true; st.safari = saf
+            var sh: ShieldSettings = st.shield; sh.applicationCategories = ShieldSettings.ActivityCategoryPolicy<Application>.all(); sh.webDomainCategories = .none; st.shield = sh
+            var siri: SiriSettings = st.siri; siri.denySiri = true; st.siri = siri
+            var web: WebContentSettings = st.webContent; web.blockedByFilter = .specific([WebDomain(domain: "example.com")]); st.webContent = web
+            let groups: [any ManagedSettingsGroup] = [st.account, st.application, st.appStore, st.cellular, st.dateAndTime, st.gameCenter, st.media, st.passcode, st.safari, st.shield, st.siri, st.webContent]
+            let back: [Any?] = [st.account.lockAccounts, st.application.denyAppInstallation, st.appStore.maximumRating, st.cellular.lockESIM, st.dateAndTime.requireAutomaticDateAndTime,
+                                st.gameCenter.denyMultiplayerGaming, st.media.maximumMovieRating, st.passcode.lockPasscode, st.safari.cookiePolicy, st.shield.applicationCategories,
+                                st.siri.denySiri, st.webContent.blockedByFilter]
+            let kept = back.filter { $0 != nil }.count
+            st.clearAllSettings()
+            // the metadata: defaults and bounds
+            let rating: BoundedSettingMetadata<Int> = AppStoreSettings.maximumRating
+            let lock: SettingMetadata<Bool> = AccountSettings.lockAccounts
+            try expect(rating.bounds.lowerBound <= rating.defaultValue && rating.defaultValue <= rating.bounds.upperBound && lock.defaultValue == false && SafariSettings.cookiePolicy.defaultValue != .never,
+                       "metadata rating \(rating.defaultValue) in \(rating.bounds), lock \(lock.defaultValue)")
+            let wd = WebDomain(domain: "example.com")
+            let actions: [ShieldAction] = [.primaryButtonPressed, .secondaryButtonPressed], responses: [ShieldActionResponse] = [.none, .close, .defer]
+            let catType = "\(ActivityCategory.self)"
+            // Apple's simulator (no Family Controls authorization): every write is ignored, read back nil
+            try expect(groups.count == 12 && kept == 0 && wd.domain == "example.com" && actions.map(\.rawValue) == [0, 1] && responses.map(\.rawValue) == [0, 1, 2],
+                       "\(kept)/12 written values read back (Apple's simulator: 0)")
+            return "12 groups written, \(kept) read back; rating default \(rating.defaultValue) in \(rating.bounds); store active \(st.isActive); \(catType)"
+        })
+        c.append(check("FamilyControls", "p27-authorization-data", timeout: 30) {
+            let center = AuthorizationCenter.shared
+            let status: AuthorizationStatus = center.authorizationStatus
+            let members: [FamilyControlsMember] = [.child, .individual]
+            let statusBack = try JSONDecoder().decode(AuthorizationStatus.self, from: JSONEncoder().encode(status))
+            let errs: [FamilyControlsError] = [.restricted, .unavailable, .invalidAccountType, .invalidArgument, .authorizationConflict, .authorizationCanceled, .networkError]
+            let data = FamilyActivityData.shared
+            let dataAns = await p27sAnswer(10) { "\(try await data.installedApplications.count)/\(try await data.activityCategories.count)/\(try await data.visitedWebDomains.count)" }
+            // the views a picker selection is shown with (no token without authorization: built for their type only)
+            let views = "\(FamilyActivityTitleView.self) \(FamilyActivityIconView.self)"
+            let da = "authorized \(DeviceActivityAuthorization.isAuthorized) clients \(DeviceActivityAuthorization.authorizedClientIdentifiers.count) sdkcov \(DeviceActivityAuthorization.isAuthorized("com.x86sim.test.sdkcov"))"
+            let authz: DeviceActivityAuthorizing.Type = DeviceActivityAuthorization.self
+            let daData = "\(DeviceActivityData.self)"
+            try expect(statusBack == status && members.map(\.description).allSatisfy { !$0.isEmpty } && errs.allSatisfy { !$0.localizedDescription.isEmpty }, "status \(status)")
+            // Apple's simulator: never authorized
+            try expect(status == .notDetermined && !dataAns.contains("no answer"), "status \(status), data \(dataAns) (Apple's simulator: notDetermined)")
+            return "status \(status); activity data (apps/categories/domains) \(dataAns); device activity \(da); \(views); \(authz) \(daData)"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: UserNotifications, SafariServices, CoreTelephony, PhotosUI, MessageUI, ContactsUI, IntentsUI
+
+#if canImport(MessageUI) && os(iOS)
+final class P27sComposeDelegate: NSObject, MFComposeAssistantViewControllerDelegate {
+    func composeAssistantViewController(_ controller: MFComposeAssistantViewController, didComposeDraft draft: MFMailDraft) {}
+}
+#endif
+
+extension Registry {
+    static var p27sMisc: [Check] {
+        var c: [Check] = []
+#if canImport(UserNotifications)
+        c.append(check("UserNotifications", "p27-triggers-sounds-settings", timeout: 30) {
+            // triggers: next fire dates, secure coding; sounds; the app's settings object; responses through secure coding
+            var comps = DateComponents(); comps.hour = 9; comps.minute = 30
+            let cal = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
+            let next = cal.nextTriggerDate()
+            try expect(next.map { Calendar.current.dateComponents([.hour, .minute], from: $0) } == DateComponents(hour: 9, minute: 30) && cal.repeats, "calendar trigger next \(String(describing: next))")
+            let base: UNNotificationTrigger = cal
+            var trigs: [UNNotificationTrigger] = [base, UNTimeIntervalNotificationTrigger(timeInterval: 120, repeats: false)]
+            #if os(iOS) || os(watchOS)
+            let region = CLCircularRegion(center: CLLocationCoordinate2D(latitude: 37.33, longitude: -122.03), radius: 100, identifier: "p27")
+            region.notifyOnEntry = true; region.notifyOnExit = false
+            let loc = UNLocationNotificationTrigger(region: region, repeats: false)
+            try expect((loc.region as? CLCircularRegion)?.radius == 100 && loc.region.notifyOnEntry, "location trigger")
+            trigs.append(loc)
+            #endif
+            for t in trigs {
+                guard let back = try p27sRoundTrip(t) as? UNNotificationTrigger, type(of: back) == type(of: t), back.repeats == t.repeats else { throw Fail("\(type(of: t)) round trip") }
+            }
+            #if os(tvOS)
+            let sounds: [NSObject] = []
+            #elseif os(watchOS)
+            let sounds: [UNNotificationSound] = [.default, .defaultCritical, .defaultCriticalSound(withAudioVolume: 0.5)]
+            #else
+            let sounds: [UNNotificationSound] = [.default, UNNotificationSound(named: UNNotificationSoundName("p27.caf")), .defaultCritical, .defaultCriticalSound(withAudioVolume: 0.5)]
+            #endif
+            try expect(sounds.allSatisfy { (try? p27sRoundTrip($0)) != nil }, "sounds round trip")
+            let set: UNNotificationSettings = await UNUserNotificationCenter.current().notificationSettings()
+            let setBack = try p27sRoundTrip(set) as? UNNotificationSettings
+            try expect(setBack?.authorizationStatus == set.authorizationStatus, "settings round trip")
+            // responses are made by the system: their classes through an empty archive
+            var resp: [String] = []
+            for n in ["UNNotificationResponse", "UNTextInputNotificationResponse"] {
+                guard let cls = NSClassFromString(n) else { resp.append("\(n) absent"); continue }
+                var o: NSObject?
+                let ex = SDKCovCatch { o = try? p27sFromEmptyCoder(cls) }
+                resp.append("\(n) \(ex.map { $0[0] } ?? (o == nil ? "nil" : "ok"))")
+            }
+            var ctx = "n/a"
+            #if os(iOS) || os(visionOS)
+            let intent = INSendMessageIntent(recipients: nil, outgoingMessageType: .outgoingMessageText, content: "hi", speakableGroupName: nil, conversationIdentifier: "c", serviceName: nil, sender: nil, attachments: nil)
+            let amc = UNNotificationAttributedMessageContext(sendMessageIntent: intent, attributedContent: NSAttributedString(string: "**hi**"))
+            let content = UNMutableNotificationContent(); content.title = "p27"
+            let updated = try? content.updating(from: amc)
+            ctx = "attributed message context: \(updated == nil ? "not applied" : "applied, body \(updated!.body.isEmpty ? "empty" : "set")")"
+            #endif
+            return "\(trigs.count) triggers, \(sounds.count) sounds round trip; settings \(set.authorizationStatus.rawValue); \(resp.joined(separator: ", ")); \(ctx)"
+        })
+#endif
+#if canImport(SafariServices) && os(iOS)
+        c.append(check("SafariServices", "p27-blockers-extensions-config", timeout: 40) {
+            var r: [String: String] = [:]
+            r["content blocker"] = await p27sAnswer(10) { let st: SFContentBlockerState = try await SFContentBlockerManager.stateOfContentBlocker(withIdentifier: "com.x86sim.test.sdkcov.none"); return "enabled \(st.isEnabled)" }
+            r["extension"] = await p27sAnswer(10) { let st: SFSafariExtensionState = try await SFSafariExtensionManager.stateOfExtension(withIdentifier: "com.x86sim.test.sdkcov.none"); return "enabled \(st.isEnabled)" }
+            let settings: AnyClass = SFSafariSettings.self   // its calls open Settings (UI): the class only
+            let cfg = await onMain { () -> String in
+                let c = SFSafariViewController.Configuration(); c.barCollapsingEnabled = false; c.entersReaderIfAvailable = true
+                c.activityButton = SFSafariViewController.ActivityButton(templateImage: UIImage(systemName: "star")!, extensionIdentifier: "com.x86sim.test.sdkcov.ext")
+                let vc = SFSafariViewController(url: URL(string: "https://example.com")!, configuration: c)
+                return "collapsing \(vc.configuration.barCollapsingEnabled) reader \(vc.configuration.entersReaderIfAvailable) button \(vc.configuration.activityButton?.extensionIdentifier ?? "nil")"
+            }
+            try expect(cfg == "collapsing false reader true button com.x86sim.test.sdkcov.ext", "configuration \(cfg)")
+            #if os(iOS)
+            let tok: SFSafariViewController.PrewarmingToken = await onMain { SFSafariViewController.prewarmConnections(to: [URL(string: "https://example.com")!]) }
+            tok.invalidate()
+            #endif
+            r["clear data"] = await p27sAnswer(10) { await SFSafariViewController.DataStore.default.clearWebsiteData(); return "cleared" }
+            let auth = SFAuthenticationSession(url: URL(string: "https://example.com/auth")!, callbackURLScheme: "sdkcov") { _, _ in }
+            auth.cancel()
+            let homeInfo: AnyClass? = NSClassFromString("SFAddToHomeScreenInfo")
+            let summary = r.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "; ")
+            try expect(!summary.contains("no answer") && homeInfo != nil, summary)
+            return "\(summary); \(cfg); prewarm token, authentication session made / cancelled; \(settings)"
+        })
+#endif
+#if canImport(CoreTelephony) && os(iOS)
+        c.append(check("CoreTelephony", "p27-subscribers-plans", timeout: 30) {
+            let center = CTCallCenter()
+            let calls: Set<CTCall>? = center.currentCalls
+            let subs: [CTSubscriber] = CTSubscriberInfo.subscribers()
+            let carriers: [String: CTCarrier]? = CTTelephonyNetworkInfo().serviceSubscriberCellularProviders
+            let req = CTCellularPlanProvisioningRequest(); req.address = "smdp.example.com"; req.matchingID = "p27"; req.confirmationCode = "1234"
+            let rq = try p27sRoundTrip(req) as? CTCellularPlanProvisioningRequest
+            try expect(rq?.address == "smdp.example.com" && rq?.matchingID == "p27", "provisioning request round trip")
+            // CTCellularPlanLifecycleProperties (Swift: CTCellularPlanProperties' nested type)
+            guard let lifeCls = NSClassFromString("CTCellularPlanLifecycleProperties") as? NSObject.Type else { throw Fail("no CTCellularPlanLifecycleProperties") }
+            let life = lifeCls.init(); life.setValue(DateComponents(year: 2027, month: 1, day: 1), forKey: "expirationDate")
+            let props = CTCellularPlanProperties(); props.associatedIccid = "8901"; props.setValue(life, forKey: "lifecycleProperties")
+            let pb = try p27sRoundTrip(props) as? CTCellularPlanProperties
+            let lifeBack = pb?.value(forKey: "lifecycleProperties") as? NSObject
+            try expect(pb?.associatedIccid == "8901" && (lifeBack?.value(forKey: "expirationDate") as? DateComponents)?.year == 2027, "plan properties round trip")
+            let tok = "\(CTCellularPlanStatus.self)"
+            let qs = await p27sAnswer(10) {
+                try await withCheckedThrowingContinuation { (k: CheckedContinuation<String, Error>) in
+                    CTQuickSwitchManager().getDeviceState { st, e in if let e { k.resume(throwing: e) } else { k.resume(returning: "state \(st.rawValue)") } }
+                }
+            }
+            // Apple's simulator: no calls, no SIM
+            try expect(calls == nil || calls!.isEmpty, "calls \(String(describing: calls))")
+            return "calls \(calls?.count ?? 0); \(subs.count) subscribers (SIM \(subs.map { $0.isSIMInserted })); carriers \(carriers?.count ?? 0); plan status \(tok); quick switch \(qs)"
+        })
+#endif
+#if canImport(PhotosUI) && canImport(MessageUI) && canImport(ContactsUI) && canImport(IntentsUI) && os(iOS)
+        c.append(check("PhotosUI", "p27-picker-config-shared-album") {
+            try await onMain {
+                let any = PHPickerFilter.any(of: [.images, .videos, .screenshots])
+                let all = PHPickerFilter.all(of: [.images, .not(.livePhotos)])
+                var cfg = PHPickerConfiguration(photoLibrary: .shared())
+                cfg.filter = any; cfg.mode = .compact; cfg.selectionLimit = 3
+                cfg.searchText = PHPickerSearchText("beach")
+                let mode: PHPickerMode = cfg.mode
+                var up = PHPickerConfiguration.Update(); up.searchText = PHPickerSearchText("sunset")
+                let picker = PHPickerViewController(configuration: cfg)
+                picker.updatePicker(using: up)
+                try expect(mode == .compact && picker.configuration.selectionLimit == 3 && all != any, "picker configuration")
+                let upType = NSClassFromString("PHPickerUpdateConfiguration").map { "\($0)" } ?? "no PHPickerUpdateConfiguration"
+                var shared = PHSharedAlbumCreationConfiguration(photoLibrary: .shared()); shared.defaultTitle = "P27"
+                let resType = "\(PHSharedAlbumCreationResult.self)"
+                let vcs: [AnyClass] = [PHSharedAlbumCreationViewController.self, PHSharedAlbumCustomizationViewController.self, PHSharedAlbumPostingViewController.self]
+                try expect(shared.defaultTitle == "P27" && vcs.allSatisfy { p27sIsSub($0, UIViewController.self) }, "shared album configuration")
+                return "picker any/all/not filters, compact mode, search text, update (\(upType)); shared album configuration (\(resType)); \(vcs.count) shared album view controllers"
+            }
+        })
+        c.append(check("MessageUI", "p27-mail-draft-assistant") {
+            try await onMain {
+                let draft = MFMailDraft(subject: "P27", body: NSAttributedString(string: "hello"), from: "a@example.com", to: ["b@example.com"], cc: [])
+                try expect(draft.subject == "P27" && draft.to == ["b@example.com"] && draft.body.string == "hello" && draft.from == "a@example.com", "draft")
+                let d = P27sComposeDelegate()
+                let vc = MFComposeAssistantViewController(delegate: d)
+                let wa = "\(WritingAssistant.self)"
+                return "draft \(draft.subject) to \(draft.to); compose assistant \(type(of: vc)); \(wa)"
+            }
+        })
+        c.append(check("ContactsUI", "p27-contact-access-button") {
+            try await onMain {
+                let b = ContactAccessButton(queryString: "Ada", ignoredEmails: ["a@example.com"], ignoredPhoneNumbers: nil) { ids in _ = ids }
+                    .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
+                let host = UIHostingController(rootView: b)
+                host.view.frame = CGRect(x: 0, y: 0, width: 320, height: 60); host.view.layoutIfNeeded()
+                let size = host.sizeThatFits(in: CGSize(width: 320, height: 200))
+                try expect(size.width > 0, "button size \(size)")
+                // INUIEditVoiceShortcutViewController edits a stored voice shortcut (none without Siri): its class
+                return "button fits \(Int(size.width))x\(Int(size.height)); \(INUIEditVoiceShortcutViewController.self)"
+            }
         })
 #endif
         return c
