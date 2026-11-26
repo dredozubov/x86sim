@@ -64,6 +64,7 @@ constexpr u64 kCacheHi = 0x300000000ull;
 // alone keeps every image chunk (tools/launcher x86sim-aot mirrors this value: core/src/key.rs).
 // Loading still checks what can be checked: the prelude size and handler layout, reloc kinds, the image UUID.
 // History (newest first):
+//   0x41 a guest load whose value is unused is kept (it may fault: RyuJIT's null check ldr wzr, [xN])
 //   0x40 Perf 22: every malloc_create_zone zone, malloc_size, kdebug, assert_owner, pthread_main_np as guest code
 //   0x3c Perf 21: CheckBit terminals branch on the IsZero ZF
 //   0x3b Perf 20: conditional branches on the live host flags after SetNZCV
@@ -91,7 +92,7 @@ constexpr u64 kCacheHi = 0x300000000ull;
 //   0x18 RSB on
 //   0x17 Swift scan steps found per runtime
 //   0x15 Speed 20: lock-free exclusive monitor
-constexpr u64 kCodegenVersion = 0x00000040ull;
+constexpr u64 kCodegenVersion = 0x00000041ull;
 // kCodegenVersion (bits 0-15), code-shaping env flags (16-18), placement table hash (32-63). The load base is not
 // part of it (relocations cover every base; a mapped image is keyed by its layout instead, see LoadPersistentCache).
 u64 g_build = kCodegenVersion;

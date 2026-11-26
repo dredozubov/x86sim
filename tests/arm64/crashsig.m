@@ -6,7 +6,8 @@
 // Modes: exit (handler _exits 42), skip (the handler moves the pc past a faulting instruction: RETURNED), reraise
 // (SIG_DFL + re-raise / return to re-fault: dies with that signal), none (no handler: x86Sim's own diagnostics),
 // redirect (.NET NativeAOT's: SA_SIGINFO | SA_RESTART, no altstack; the handler sends the pc to a throw helper with
-// x0 = code, x1 = faulting pc: REDIRECTED, exit 0).
+// x0 = code, x1 = faulting pc: REDIRECTED, exit 0). Case nullchk is RyuJIT's implicit null check, ldr wzr, [xN]: a
+// load whose value is unused must still fault.
 // Usage: crashsig.sim [exit|skip|reraise|none|redirect] [case...]
 //   tests/arm64/run.sh tests/arm64/crashsig.sim                       (Apple: xcrun simctl spawn <dev> crashsig.sim)
 #import <Foundation/Foundation.h>
@@ -23,7 +24,7 @@
 #include <unistd.h>
 
 extern char **environ;
-extern char pc_null[], pc_unmapped[], pc_prot[], pc_ro[], pc_align[], pc_brk[], pc_udf[];
+extern char pc_null[], pc_nullchk[], pc_unmapped[], pc_prot[], pc_ro[], pc_align[], pc_brk[], pc_udf[];
 
 static char *alt_lo, *alt_hi;
 static const char *g_case = "?", *g_mode = "exit";
@@ -107,6 +108,7 @@ static void install(void) {
                      :: "r"(addr), "r"(&g_sp), "r"(&g_fp) : "x9", "x10", "x11", "memory")
 
 __attribute__((noinline)) static void c_null(void) { g_addr = 0; g_exact = pc_null; FAULT(pc_null, "str x10, [x9]", (void *)0); }
+__attribute__((noinline)) static void c_nullchk(void) { g_addr = 0; g_exact = pc_nullchk; FAULT(pc_nullchk, "ldr wzr, [x9]", (void *)0); }
 __attribute__((noinline)) static void c_unmapped(void) {
     char *p = mmap(0, 0x4000, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     munmap(p, 0x4000);
@@ -161,9 +163,9 @@ static void c_stackovf(void) {
 }
 
 static const struct { const char *name; void (*fn)(void); } cases[] = {
-    {"abort", c_abort}, {"raise", c_raise}, {"null", c_null}, {"unmapped", c_unmapped}, {"prot", c_prot},
-    {"ro", c_ro}, {"align", c_align}, {"trap", c_trap}, {"brk", c_brk}, {"udf", c_udf}, {"fpe", c_fpe},
-    {"nsexc", c_nsexc}, {"stackovf", c_stackovf}, {"callnull", c_callnull}, {"strlen", c_strlen},
+    {"abort", c_abort}, {"raise", c_raise}, {"null", c_null}, {"nullchk", c_nullchk}, {"unmapped", c_unmapped},
+    {"prot", c_prot}, {"ro", c_ro}, {"align", c_align}, {"trap", c_trap}, {"brk", c_brk}, {"udf", c_udf},
+    {"fpe", c_fpe}, {"nsexc", c_nsexc}, {"stackovf", c_stackovf}, {"callnull", c_callnull}, {"strlen", c_strlen},
 };
 
 int main(int argc, char **argv) {
