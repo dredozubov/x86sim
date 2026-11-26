@@ -823,6 +823,38 @@ if [ -d "$DPREFIX/private/var/tmp/x86sim-a64" ]; then
 fi
 # the Darling pieces our build fixed (libsystem_kernel ...), also into a recreated prefix: cli/libexec/arm64/prefix-heal.sh
 [ "${A64_PREFIX_HEAL:-1}" != 0 ] && sh "$X/cli/libexec/arm64/prefix-heal.sh" "$DPREFIX"
+# RAM 14: the container's own macOS daemons (Darling's launchd jobs, x86_64) that the simulator never needs at load.
+# Mach-service daemons start on demand instead (a lookup from the guest still starts them); eventmonitor (launchd's
+# WatchPaths for the container's own jobs) and settingsd (the Linux desktop's appearance for macOS apps) not at all.
+# ~35 MB per phone. The copies in the prefix's upper layer are made from the installed ones at every boot.
+# A64_HOST_DAEMONS=all: every job as installed.
+if [ "${A64_HOST_DAEMONS:-}" != all ]; then
+	python3 -I - "${X86SIM_DARLING_ROOT:-$X/darling-prefix/libexec/darling}/System/Library/LaunchDaemons" "$DPREFIX/System/Library/LaunchDaemons" <<'PY' || true
+import os, plistlib, sys
+src, dst = sys.argv[1:3]
+ondemand = ["com.apple.usernoted", "com.apple.locationd", "com.apple.coreservices.launchservicesd", "com.apple.securityd",
+            "com.apple.aslmanager", "com.apple.diskarbitrationd"]
+off = ["org.darlinghq.eventmonitor", "com.darlinghq.settingsd"]
+os.makedirs(dst, exist_ok=True)
+for name in ondemand + off:
+    try:
+        with open(os.path.join(src, name + ".plist"), "rb") as f:
+            p = plistlib.load(f)
+    except OSError:
+        continue
+    if name in off:
+        p["Disabled"] = True
+    elif p.get("MachServices"):
+        p.pop("RunAtLoad", None)
+        p.pop("KeepAlive", None)
+    else:
+        continue
+    with open(os.path.join(dst, name + ".plist"), "wb") as f:
+        plistlib.dump(p, f)
+PY
+else
+	rm -f "$DPREFIX"/System/Library/LaunchDaemons/*.plist
+fi
 # Speed 27: frameworks a Mac host has in /System/Library/Frameworks that the simulator opens there by absolute path (not
 # under its runtime root): CoreSpotlight reads its localized strings
 # from [NSBundle bundleWithPath:@"/System/Library/Frameworks/CoreSpotlight.framework"]. Without it every CoreSpotlight string was nil (PHOTO_TOKEN) and
