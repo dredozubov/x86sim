@@ -24,7 +24,11 @@ x86sim device models                          # models; then: x86sim device crea
 x86sim-aot --device qa sim start              # boots in the background (stop / restart likewise)
 x86sim --phone qa wait home 300               # returns once the home screen is drawn
 x86sim device delete qa --stop                # when done: folder, state, prefix, ring (MCP sim_delete stop=true)
+x86sim gpu qa list                            # the host's GPUs; `x86sim gpu qa set amd|nvidia|cpu|auto` (MCP sim_gpu)
 ```
+
+Each device renders on its own GPU setting (auto by default; `cpu` = no GPU, lavapipe), applied at its next start.
+Devices on the same GPU share one GPU helper (mtlvk); `phones_list` says which GPU a running one renders on (`gpu_name`).
 
 `device delete` leaves the Darling overlay's root-owned work folder (`a64prefix-qa.workdir`) and prints the `pkexec rm`
 that removes it; `--privileged` runs it (a password dialog for the person at the desktop). The default device is never
@@ -335,7 +339,7 @@ up only if the app sets `isInspectable = true` (as on Apple's simulator); Safari
 ## MCP
 
 The same features are MCP tools (`x86sim-mcp`, stdio): `snapshot`, `tap`, `type`, `fill`, `set_value`, `drag`, `expect`, `batch`, `wait_for`, `sim_delete`, `app_state`, `sim_record_video` (`action=start|stop|status`), `screenshot`,
-`app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start`, `net_log` and the rest (101 tools;
+`app_install`, `app_launch` (`args`, `env`), `pinch`, `sim_location`, `sim_privacy`, `sim_push`, `sim_addmedia`, `xctest_run`, `web_eval`, `phone_take`, `share_start`, `sim_ui`, `app_logs`, `dev_run`, `ax_audit`, `profile_start`, `net_log`, `sim_gpu` and the rest (103 tools;
 README.md lists them by group). Every tool takes `phone`.
 
 ```sh
