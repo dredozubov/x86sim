@@ -14,6 +14,7 @@ mod conn;
 mod hang;
 mod memstat;
 mod proto;
+mod udmabuf;
 
 use metal2vulkan_runtime::Device;
 use std::os::unix::net::UnixListener;
