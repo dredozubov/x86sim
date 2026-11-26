@@ -22,6 +22,10 @@ import UniformTypeIdentifiers
 #if os(watchOS)
 import WatchKit
 #endif
+#if os(visionOS)
+import CompositorServices
+import _CompositorServices_SwiftUI
+#endif
 import Accessibility
 
 // MARK: helpers
@@ -261,9 +265,11 @@ private struct P28PresentRoot: View {
                 .actionSheet(isPresented: $action) {
                     ActionSheet(title: Text("P28 Sheet"), message: Text("m"), buttons: [.default(Text("A")), .cancel()])
                 }
+            #if os(iOS)   // (visionOS: popover's opaque type needs __isPlatformVersionAtLeast, which this toolchain doesn't link)
             Text("popover").popover(isPresented: $pop, attachmentAnchor: PopoverAttachmentAnchor.rect(.bounds), arrowEdge: .top) {
                 Text("pop").presentationCompactAdaptation(.popover)
             }
+            #endif
         }
         .onAppear { log.add("ready") }
         .modifier(P28PresentDriver(log: log, sheet: $sheet, dialog: $dialog, action: $action, pop: $pop))
@@ -1103,8 +1109,10 @@ private struct P28ToolbarValues: View {
                 .onPencilSqueeze { (phase: PencilSqueezeGesturePhase) in
                     if case .active(let v) = phase { let pv: PencilSqueezeGestureValue = v; let pose: PencilHoverPose? = pv.hoverPose; log.add("squeeze \(pose.map { "\($0.zDistance)" } ?? "nil")") }
                 }
-                .task { stored += 1; try? await Task.sleep(for: .milliseconds(300)); log.add("stored \(stored)") }
                 .onAppear {
+                    // (no .task {}: on visionOS its newer overload needs __isPlatformVersionAtLeast, which the Linux link lacks)
+                    stored += 1
+                    Task { @MainActor in try? await Task.sleep(for: .milliseconds(300)); log.add("stored \(stored)") }
                     log.add("env row \(rowSize) find \(find.map { "\($0.supportsReplace)" } ?? "nil") doc \(docCfg.map { "\($0.isEditable)" } ?? "nil")")
                 }
                 .environment(\.sidebarRowSize, SidebarRowSize.large)
@@ -1377,6 +1385,97 @@ private struct P28FocusReset: View {
 }
 #endif
 
+// MARK: visionOS: glass background effects (system + custom), ornaments (SwiftUI + UIKit), hover effect groups and
+// phase overrides, 3D geometry / alignment / insets, physical metrics, spatial environment values; scenes built as
+// values with window / immersive / world modifiers
+
+#if os(visionOS)
+/// a custom glass background effect: its body is another effect (plate), chosen from the configuration
+private final class P28GlassLog: @unchecked Sendable { static let log = P6Log() }
+private struct P28PlateGlass: GlassBackgroundEffect {
+    func makeBody(configuration: GlassBackgroundEffectConfiguration) -> PlateGlassBackgroundEffect {
+        let content: GlassBackgroundEffectConfiguration.Content = configuration.content
+        P28GlassLog.log.add("custom glass body \(type(of: content))")
+        return .plate
+    }
+}
+private func p28Glass<E: GlassBackgroundEffect>(_ e: E) -> String { "\(E.self)" }
+private struct P28VisionRoot: View {
+    let log: P6Log
+    @Namespace private var ns
+    @PhysicalMetric(from: .meters) private var oneMeter = 1.0
+    @Environment(\.physicalMetrics) private var metrics: PhysicalMetricsConverter
+    @Environment(\.pushWindow) private var push: PushWindowAction
+    @Environment(\.remoteDeviceIdentifier) private var remote: RemoteDeviceIdentifier?
+    @Environment(\.worldTrackingLimitations) private var limits: Set<WorldTrackingLimitation>
+    @Environment(\.surfaceSnappingInfo) private var snapping: SurfaceSnappingInfo
+    var body: some View {
+        VStack(spacing: 6) {
+            Text("auto").padding(4).glassBackgroundEffect(AutomaticGlassBackgroundEffect.automatic, displayMode: GlassBackgroundDisplayMode.always).fixedSize().p28Size("glass-auto", log)
+            Text("plate").padding(4).glassBackgroundEffect(PlateGlassBackgroundEffect.plate).fixedSize().p28Size("glass-plate", log)
+            Text("feathered").padding(4).glassBackgroundEffect(FeatheredGlassBackgroundEffect.feathered(padding: 4)).fixedSize().p28Size("glass-feathered", log)
+            Text("solid").padding(4).glassBackgroundEffect(P28PlateGlass(), displayMode: .always).fixedSize().p28Size("glass-custom", log)
+            Text("hover")
+                .hoverEffect(.highlight.hoverEffectPhaseOverride(HoverEffectPhaseOverride.active))
+                .hoverEffect(in: HoverEffectGroup(ns)) { (e: EmptyHoverEffectContent, active: Bool, _: GeometryProxy) in e.opacity(active ? 1 : 0.5) }
+                .hoverEffectGroup(id: "g", in: ns, behavior: .activatesGroup)
+                .breakthroughEffect(BreakthroughEffect.subtle)
+                .handPointerBehavior(HandPointerBehavior.drawing)
+                .p28Size("hover", log)
+            SpatialContainer(alignment: .bottomFront) { Color.red.frame(width: 30, height: 10); Color.blue.frame(width: 20, height: 20) }.fixedSize().p28Size("spatial", log)
+            GeometryReader3D { (g: GeometryProxy3D) in
+                Color.blue.onAppear {
+                    let space: GeometryProxyCoordinateSpace3D = g.coordinateSpace3D()
+                    _ = space
+                    let ins: EdgeInsets3D = g.safeAreaInsets
+                    log.add("geometry3d \(Int(g.size.width))x\(Int(g.size.height))x\(Int(g.size.depth)) insets \(Int(ins.front))")
+                }
+            }.frame(width: 80, height: 30)
+            Color.green.frame(width: 40, height: 20)
+                .spatialOverlay(alignment: Alignment3D(horizontal: .center, vertical: .center, depth: DepthAlignment.front)) { Color.red.frame(width: 10, height: 10) }
+                .p28Size("overlay3d", log)
+            Text("manip").manipulable().p28Size("manip", log)
+        }
+        .onVolumeViewpointChange(updateStrategy: VolumeViewpointUpdateStrategy.all) { (_: Viewpoint3D, new: Viewpoint3D) in log.add("viewpoint \(new.squareAzimuth)") }
+        .onImmersionChange { (_: ImmersionChangeContext, new: ImmersionChangeContext) in log.add("immersion \(new.amount.map { "\($0)" } ?? "nil")") }
+        .onWorldRecenter { (p: WorldRecenterPhase) in log.add("recenter \(p)") }
+        .preferredSurroundingsEffect(SurroundingsEffect.systemDark)
+        // (no SwiftUI .ornament: its opaque type needs __isPlatformVersionAtLeast, which this toolchain doesn't link; the
+        // check adds a UIKit UIHostingOrnament instead)
+        .onAppear {
+            log.add("metric 1 m \(Int(oneMeter)) pt; converter \(Int(metrics.convert(0.5, from: .meters))) pt; remote \(remote == nil ? "nil" : "set"); limits \(limits.count); snapped \(snapping.isSnapped); compensation \(metrics.worldScalingCompensation == WorldScalingCompensation.scaled ? "scaled" : "unscaled")")
+            _ = push
+        }
+    }
+}
+@MainActor @SceneBuilder private func p28VisionScenes() -> some Scene {
+    WindowGroup(id: "p28-vol") { Text("vol") }
+        .windowStyle(VolumetricWindowStyle.volumetric)
+        .volumeWorldAlignment(WorldAlignmentBehavior.adaptive)
+        .defaultWorldScaling(WorldScalingBehavior.dynamic)
+        .defaultLaunchBehavior(SceneLaunchBehavior.presented)
+    WindowGroup(id: "p28-plain") { Text("plain") }
+        .windowStyle(PlainWindowStyle.plain)
+        .defaultWindowPlacement { (root: WindowLayoutRoot, ctx: WindowPlacementContext) -> WindowPlacement in
+            if let w: WindowProxy = ctx.windows.first { return WindowPlacement(.trailing(w)) }
+            _ = root; return WindowPlacement(.utilityPanel)
+        }
+    WindowGroup(id: "p28-default") { Text("default") }.windowStyle(DefaultWindowStyle.automatic)
+    ImmersiveSpace(id: "p28-space") { p28SpaceContent() }
+        .immersionStyle(selection: .constant(ProgressiveImmersionStyle.progressive(aspectRatio: ProgressiveImmersionAspectRatio.landscape)), in: MixedImmersionStyle.mixed, FullImmersionStyle.full, ProgressiveImmersionStyle.progressive, AutomaticImmersionStyle.automatic)
+        .immersiveContentBrightness(ImmersiveContentBrightness.dim)
+        .immersiveEnvironmentBehavior(ImmersiveEnvironmentBehavior.coexist)
+}
+/// immersive content as an app writes it: a compositor layer, and a custom CompositorContent around one
+/// (built, never opened: opening it starts a Metal render loop)
+private struct P28Compositor: CompositorContent {
+    var body: some CompositorContent { CompositorLayer { _ in } }
+}
+@MainActor @ImmersiveSpaceContentBuilder private func p28SpaceContent() -> some ImmersiveSpaceContent { CompositorLayer { _ in } }
+@MainActor @CompositorContentBuilder private func p28CompositorContent() -> some CompositorContent { P28Compositor() }
+private func p28Immersion<S: ImmersionStyle>(_ s: S) -> String { "\(S.self)" }
+#endif
+
 // MARK: checks
 
 extension Registry {
@@ -1568,7 +1667,9 @@ extension Registry {
             // UIKit's 437 is 454 in SwiftUI's space (17 pt top margin); the behavior moves it to 500 = UIKit's 483
             try expect(snap.hasPrefix("snap from 454 velocity 0 container 200x283 content 200x3000 axes v") && r.hasPrefix("target 483 "), d)
             try expect(r.contains("inset 17") || r.contains("adjusted 17"), d)
+            #if !os(visionOS)   // (visionOS has no scroll edge effect styles)
             try expect(r.contains("edge hard"), d)
+            #endif
             // the view-aligned behavior
             let va = ViewAlignedScrollTargetBehavior(limitBehavior: ViewAlignedScrollTargetBehavior.LimitBehavior.alwaysByOne)
             _ = AnyScrollTargetBehavior(va)
@@ -2256,6 +2357,42 @@ extension Registry {
             _ = await p6Wait(4) { log.has("reset called") }
             try expect(log.has("reset called"), "\(log.all)")
             return "\(log.all)"
+        })
+        #endif
+
+
+        #if os(visionOS)
+        // MARK: visionOS SwiftUI + SwiftUICore spatial views: glass background effects (system + a custom effect whose
+        // body the system renders), hover effects / groups / phase overrides, a help link, GeometryReader3D, 3D overlays,
+        // manipulable content, physical metrics and spatial environment values, a UIKit ornament on the hosting
+        // controller; window / immersive scenes built as values
+        c.append(check("SwiftUI", "p28-vision-spatial", timeout: 25) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28VisionRoot(log: log)) }
+            defer { Task { @MainActor in close() } }
+            let keys = ["glass-auto", "glass-plate", "glass-feathered", "glass-custom", "hover", "spatial", "overlay3d", "manip"]
+            _ = await p6Wait(6) { keys.allSatisfy { p28Last(log, $0) != nil } && log.all.contains { $0.hasPrefix("geometry3d") } && log.all.contains { $0.hasPrefix("metric") } }
+            try await Task.sleep(for: .milliseconds(400))
+            let orn = await onMain { () -> String in
+                guard let vc = p6LastWindow?.rootViewController else { return "no vc" }
+                let o = UIHostingOrnament(sceneAnchor: .bottom, contentAlignment: .center) { Text("uikit ornament") }
+                let before = vc.ornaments.count
+                vc.ornaments.append(o)
+                let r = "ornaments \(before) -> \(vc.ornaments.count) \(vc.ornaments.last is UIOrnament)"
+                vc.ornaments.removeAll { $0 === o }
+                return r
+            }
+            let scenes = await onMain { String(describing: type(of: p28VisionScenes())) + " " + String(describing: type(of: p28CompositorContent())) }
+            let anchor = "\(OrnamentAttachmentAnchor.scene(.bottom))"
+            let d = keys.map { "\($0) \(p28Last(log, $0) ?? "-")" }.joined(separator: ", ") + "; \(log.all.filter { !keys.contains(String($0.split(separator: " ").first ?? "")) }); \(orn); scenes \(scenes.contains("ImmersiveSpace")) \(scenes.components(separatedBy: "WindowGroup").count - 1); styles \(p28Glass(AutomaticGlassBackgroundEffect.automatic)) \(p28Immersion(MixedImmersionStyle.mixed)); \(P28GlassLog.log.all.prefix(1)); anchor \(anchor)"
+            try expect(keys.allSatisfy { p28Last(log, $0) != nil } && log.all.contains { $0.hasPrefix("geometry3d 80x30") }, d)
+            try expect(orn.hasSuffix("true") && scenes.contains("ImmersiveSpace"), d)
+            // values
+            let az = SquareAzimuth(closestToAzimuth: .degrees(80))
+            try expect(az == .right && Viewpoint3D.standard.squareAzimuth == .front && Chirality.left != .right && SurfaceSnappingInfo.AuthorizationStatus.denied != .authorized
+                       && Edge3D.Set.all.contains(.front) && UnitPoint3D(x: 0.5, y: 0.5, z: 0.5) == .center && HandActivationBehavior.pinch != .automatic
+                       && ImmersiveContentBrightness.custom(0.3) != .dim && WorldTrackingLimitation.translation != .orientation, d)
+            return d
         })
         #endif
 
