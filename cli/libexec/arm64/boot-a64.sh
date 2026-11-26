@@ -129,7 +129,7 @@ stop_a64_mtlvk() {
 		sleep 0.2
 		[ -d "/proc/$old" ] && kill -9 "$old" 2>/dev/null || true
 	fi
-	rm -f "$b.pid" "$b.sock" "$b.gpu"
+	rm -f "$b.pid" "$b.sock" "$b.gpu" "$b.sock.state"
 }
 # a stop: every mtlvk this state dir started (one per GPU it was booted on), each unless another phone uses it
 stop_a64_mtlvks() {

@@ -11,6 +11,7 @@
 //!        mtlvk selftest-compute [metallib]  (stage 4: kernels of tests/metal/shaders/probe.metallib)
 //!        mtlvk --list-gpus   (every Vulkan device as JSON: name, type, driver, the id MTLVK_DEVICE_ID takes; gpus.rs)
 
+mod bufstate;
 mod conn;
 mod gpus;
 mod hang;
@@ -193,6 +194,8 @@ fn start_idle_exit(sock: String) {
             // another mtlvk may have taken the path over: leave its socket alone
             if mine.is_some() && ino(&sock) == mine {
                 let _ = std::fs::remove_file(&sock);
+                // its buffer state too (bufstate.rs): the launcher reads it as this helper's while the file is there
+                let _ = std::fs::remove_file(format!("{sock}.state"));
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
             if CONNS.load(std::sync::atomic::Ordering::SeqCst) == 0 {
@@ -292,6 +295,7 @@ fn main() {
         std::process::exit(1);
     });
     eprintln!("mtlvk: listening on {path}");
+    bufstate::init(&path, &name);
     start_idle_exit(path.clone());
     for (n, stream) in listener.incoming().enumerate() {
         match stream {

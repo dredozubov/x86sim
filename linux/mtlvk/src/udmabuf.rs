@@ -34,6 +34,7 @@ fn device() -> Option<&'static OwnedFd> {
         let path = match std::env::var("MTLVK_UDMABUF") {
             Ok(v) if v == "0" => {
                 eprintln!("mtlvk: udmabuf off (MTLVK_UDMABUF=0)");
+                crate::bufstate::set_udmabuf("off: MTLVK_UDMABUF=0".into());
                 return None;
             }
             Ok(v) if v.starts_with('/') => v,
@@ -43,9 +44,12 @@ fn device() -> Option<&'static OwnedFd> {
         // SAFETY: opening a path; the fd is owned below.
         let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
         if fd < 0 {
-            eprintln!("mtlvk: udmabuf: {path}: {}; a buffer whose import is refused is mirrored", std::io::Error::last_os_error());
+            let e = std::io::Error::last_os_error();
+            eprintln!("mtlvk: udmabuf: {path}: {e}; a buffer whose import is refused is mirrored");
+            crate::bufstate::set_udmabuf(format!("unavailable: {path}: {e}"));
             return None;
         }
+        crate::bufstate::set_udmabuf("on".into());
         // SAFETY: we just opened it.
         Some(unsafe { OwnedFd::from_raw_fd(fd) })
     })

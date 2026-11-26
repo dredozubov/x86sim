@@ -913,6 +913,7 @@ impl State {
             drop(fd);
             match r {
                 Ok((b, how)) => {
+                    crate::bufstate::imported(how == "a udmabuf");
                     if self.log {
                         eprintln!("mtlvk: buffer {id:#x}: {length} bytes imported without a copy, as {how}");
                     }
@@ -920,7 +921,12 @@ impl State {
                     self.kinds.insert(id, (Kind::BufImported, length));
                     return Ok(false);
                 }
-                Err(e) => eprintln!("mtlvk: buffer {id:#x}: import refused ({e}); mirroring it"),
+                // the reason in full the first time it comes up; later ones only count (mtlvk stats, <socket>.state)
+                Err(e) => {
+                    if crate::bufstate::mirrored(&e) {
+                        eprintln!("mtlvk: buffer {id:#x}: import refused ({e}); mirroring it (further buffers refused for the same reason are mirrored without a line)");
+                    }
+                }
             }
         }
         let b = own_buffer(&self.device, length)?;
