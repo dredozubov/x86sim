@@ -26,6 +26,24 @@ pub struct Target {
     pub main_rot: u32,
 }
 
+/// Which screen a stream shows: `Auto` the one in use (target), or a two-screen phone's inner or outer screen as it
+/// is, never turned by the device orientation (the web page's 3D model turns the phone instead, as duo3d.rs does)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Screen {
+    Auto,
+    Inner,
+    Outer,
+}
+
+/// The screen `which` shows (`Auto`: target's rule)
+pub fn target_of(inst: &Instance, which: Screen, orient: &mut u32) -> Target {
+    match (which, &inst.inner) {
+        (Screen::Inner, Some(d)) => Target { ring: d.ring.clone(), size: d.upright(), rot: d.rotation, display: Some((d.id, d.rotation)), main_rot: 0 },
+        (Screen::Outer, Some(_)) => Target { ring: inst.ring.clone(), size: inst.screen, rot: 0, display: None, main_rot: 0 },
+        _ => target(inst, orient),
+    }
+}
+
 /// The screen shown: a two-screen phone's inner one while the hinge is open; an iPhone / iPad turned to landscape is
 /// shown turned (`orient` keeps the last turn for faceUp / faceDown, as Apple's Simulator does)
 pub fn target(inst: &Instance, orient: &mut u32) -> Target {
@@ -170,6 +188,7 @@ pub struct StreamKey {
     /// 0 low, 1 medium, 2 high
     pub quality: u8,
     pub fps: u32,
+    pub screen: Screen,
 }
 
 /// A message to a viewer's socket writer
@@ -182,9 +201,12 @@ pub enum Out {
     Close,
 }
 
-/// The binary header of a video packet: kind (1 H.264 Annex B access unit, 2 JPEG; audio.rs: 3 Opus, 4 PCM), flags (1 key frame), width, height
+/// The binary header of a video packet: kind (1 H.264 Annex B access unit, 2 JPEG; audio.rs: 3 Opus, 4 PCM; a
+/// two-screen phone's outer screen beside the inner one: OUTER + 1 / 2), flags (1 key frame), width, height
 /// (u16 LE each), the capture time (u64 LE microseconds, unix), then the payload
 pub const HDR_LEN: usize = 14;
+/// added to a video packet's kind for the outer screen of a both-screens socket
+pub const OUTER: u8 = 16;
 pub fn packet(kind: u8, key: bool, w: u32, h: u32, t_us: u64, payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(HDR_LEN + payload.len());
     v.push(kind);
@@ -289,7 +311,9 @@ impl Streamer {
 
     fn run(self: Arc<Self>, inst: Instance) {
         let mut orient = 0u32;
-        let mut tgt = target(&inst, &mut orient);
+        let which = self.key.screen;
+        let kind_add = if which == Screen::Outer { OUTER } else { 0 };
+        let mut tgt = target_of(&inst, which, &mut orient);
         let mut ring = Ring::new(&tgt.ring);
         let mut enc: Option<(openh264::encoder::Encoder, (u32, u32))> = None;
         let mut sent_seq = 0u64;
@@ -318,7 +342,7 @@ impl Streamer {
             }
             if last_check.elapsed() > Duration::from_millis(400) {
                 last_check = Instant::now();
-                let t = target(&inst, &mut orient);
+                let t = target_of(&inst, which, &mut orient);
                 if t != tgt {
                     if t.ring != tgt.ring {
                         ring = Ring::new(&t.ring);
@@ -367,7 +391,7 @@ impl Streamer {
             let (pkt, key) = match codec {
                 Codec::Jpeg => {
                     let q = [55, 72, 88][self.key.quality.min(2) as usize];
-                    (packet(2, true, rgb.w, rgb.h, t_us, &rgb.jpeg(q)), true)
+                    (packet(2 + kind_add, true, rgb.w, rgb.h, t_us, &rgb.jpeg(q)), true)
                 }
                 Codec::H264 => {
                     if enc.as_ref().map(|e| e.1) != Some((rgb.w, rgb.h)) {
@@ -391,7 +415,7 @@ impl Streamer {
                                 continue;
                             }
                             let key = matches!(ft, openh264::encoder::FrameType::IDR | openh264::encoder::FrameType::I);
-                            (packet(1, key, rgb.w, rgb.h, t_us, &bs.to_vec()), key)
+                            (packet(1 + kind_add, key, rgb.w, rgb.h, t_us, &bs.to_vec()), key)
                         }
                         Err(_) => {
                             enc = None;

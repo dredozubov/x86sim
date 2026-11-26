@@ -362,10 +362,23 @@ function phoneView(id) {
   const canH264 = "VideoDecoder" in window && window.isSecureContext;
   let codec = prefs.codec === "jpeg" || !canH264 ? "jpeg" : "h264";
   let quality = prefs.quality ?? 1, fps = prefs.fps ?? 30;
+  // a two-screen phone in 3D (duo3d.js) where WebGL2 is there, else the flat stream
+  const duoOK = !!(window.Duo3D && Duo3D.supported());
+  let duo = null;
+  // the hinge panel's slider following the hinge as it is (hingePanel sets it)
+  let hingeSync = null;
+  // the stream width the socket asked for
+  let connW = 0;
 
   // --- sizing: the canvas keeps the stream's aspect inside the stage
   let fw = 0, fh = 0;
   function fit() {
+    if (duo) {
+      // the stage's content box less the tool column and its gap
+      const r = stage.getBoundingClientRect(), cs = getComputedStyle(stage), tw = tools.offsetWidth ? tools.offsetWidth + 14 : 0;
+      const px = (k) => parseFloat(cs[k]) || 0;
+      return duo.resize(r.width - px("paddingLeft") - px("paddingRight") - tw - 2, r.height - px("paddingTop") - px("paddingBottom") - 2);
+    }
     // before the first frame: the phone's shape from its screen size
     const scr = info?.screen;
     const w = fw || (scr && scr[0]), hh = fh || (scr && scr[1]);
@@ -391,6 +404,8 @@ function phoneView(id) {
     const aspect = fw && fh ? fw / fh : scr[0] / scr[1];
     const css = Math.min(r.width - 24, (r.height - 24) * aspect) * (window.devicePixelRatio || 1);
     const cap = [540, 900, 1400][quality];
+    // the 3D phone: the inner screen spans about the area's width
+    if (duo) return Math.max(240, Math.min(cap, Math.round(r.width * (window.devicePixelRatio || 1) / 16) * 16));
     return Math.max(240, Math.min(cap, Math.round(css / 16) * 16));
   }
 
@@ -582,7 +597,10 @@ function phoneView(id) {
     if (!alive) return;
     needKey = true;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const u = `${proto}//${location.host}/ws/${encodeURIComponent(id)}?codec=${codec}&w=${wantWidth()}&q=${quality}&fps=${fps}` + (TOKEN ? "&t=" + encodeURIComponent(TOKEN) : "");
+    // duo=1: a two-screen phone sends both screens (the 3D view); a one-screen phone ignores it
+    const w = connW = wantWidth();
+    if (duo) duo.reset();
+    const u = `${proto}//${location.host}/ws/${encodeURIComponent(id)}?codec=${codec}&w=${w}&q=${quality}&fps=${fps}` + (duoOK ? `&duo=1&w2=${Math.round(w * 0.6 / 16) * 16}` : "") + (TOKEN ? "&t=" + encodeURIComponent(TOKEN) : "");
     ws = new WebSocket(u);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => { retry = 0; if (soundOn) { nextT = 0; send({ t: "audio", on: true, codec: aCodec }); } };
@@ -595,6 +613,7 @@ function phoneView(id) {
       bytes += ev.data.byteLength;
       if (kind === 3 || kind === 4) return onAudio(kind, key, t, data);
       lat.push(Date.now() - t / 1000);
+      if (duo && (kind & 15) <= 2) return duo.packet(kind, key, w, hh, t, data);
       if (kind === 1) onH264(key, w, hh, t, data);
       else if (kind === 2) onJpeg(data);
     };
@@ -613,9 +632,12 @@ function phoneView(id) {
       document.title = m.name + " · x86Sim";
       canvas.classList.toggle("watch", m.platform === "watchos");
       canvas.classList.toggle("tv", m.platform === "tvos" || m.platform === "xros");
+      if (m.two_screens && duoOK && !duo) startDuo();
       buildSide();
     } else if (m.t === "state") {
       lastState = m;
+      if (duo) duo.state(m);
+      if (hingeSync && m.hinge != null) hingeSync(Number(m.hinge));
       if (!m.running) { overlay.hidden = false; overlay.textContent = "Off"; }
       updateSide();
     } else if (m.t === "expired") {
@@ -623,6 +645,23 @@ function phoneView(id) {
       overlay.hidden = false;
       overlay.textContent = "This link has expired.";
     } else if (m.t === "error") toast(m.error);
+  }
+
+  // --- the 3D phone (duo3d.js) in place of the flat canvas
+  function startDuo() {
+    duo = Duo3D.create({
+      control, send,
+      onFrame: (w, hh, s) => { frames++; overlay.hidden = true; if (s === "inner" || !fw) { fw = w; fh = hh; } },
+      onNoH264: () => { toast("This browser can't decode H.264: using JPEG"); codec = "jpeg"; connect(); },
+      onLost: () => { duo.close(); duo = null; canvas.hidden = false; connect(); },
+    });
+    if (!duo) return;
+    canvas.hidden = true;
+    wrap.prepend(duo.el);
+    duo.state({ ...info, ...lastState });
+    bindKeys(duo.canvas);
+    window.__x86simDuo = duo.debug;
+    fit();
   }
 
   // --- side panel
@@ -849,12 +888,14 @@ function phoneView(id) {
         show(v);
         // while dragged: a short move at most every 40 ms, the last value when let go
         clearTimeout(pend);
-        const go = () => { sentAt = performance.now(); send({ t: "hinge", deg: v, ms: 40 }); };
+        const go = () => { sentAt = performance.now(); send({ t: "hinge", deg: v, ms: 40 }); if (duo) duo.command(v); };
         if (performance.now() - sentAt >= 40) go(); else pend = setTimeout(go, 40);
       } });
     show(at);
+    // moved from elsewhere (a pose, the MCP, the CLI): the slider follows unless it was just used here
+    hingeSync = (deg) => { if (performance.now() - sentAt > 1500 && document.activeElement !== slider) { slider.value = deg; show(deg); } };
     return h("div", {}, h("div", { class: "hingerow" }, slider, val),
-      h("div", { class: "btns", style: "margin-top:8px" }, ...info.poses.map((ps) => btn(ps.label, "Hinge: " + ps.label, () => { send({ t: "hinge", pose: ps.key }); slider.value = ps.angle ?? slider.value; show(Number(slider.value)); }))));
+      h("div", { class: "btns", style: "margin-top:8px" }, ...info.poses.map((ps) => btn(ps.label, "Hinge: " + ps.label, () => { send({ t: "hinge", pose: ps.key }); if (duo && ps.angle != null) duo.command(ps.angle); slider.value = ps.angle ?? slider.value; show(Number(slider.value)); }))));
   }
   function updateSide() {
     head();
@@ -875,7 +916,7 @@ function phoneView(id) {
     const types = ["video/mp4;codecs=avc1", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
     const type = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
     if (!type) return toast("This browser can't record");
-    const stream = canvas.captureStream(30);
+    const stream = (duo ? duo.canvas : canvas).captureStream(30);
     rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8e6 });
     chunks = [];
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
@@ -895,7 +936,7 @@ function phoneView(id) {
   function openPaste() {
     const d = $("#pasteDlg");
     $("#pasteText").value = "";
-    d.onclose = () => { if (d.returnValue === "ok") typeText($("#pasteText").value); canvas.focus(); };
+    d.onclose = () => { if (d.returnValue === "ok") typeText($("#pasteText").value); (duo ? duo.canvas : canvas).focus(); };
     d.showModal();
   }
   function typeText(s) { if (s) { releaseMods(); send({ t: "text", s }); } }
@@ -1072,7 +1113,7 @@ function phoneView(id) {
   function releaseAll() { for (const u of held) send({ t: "key", u, d: false }); held.clear(); }
   const FKEYS = { F1: "home", F2: "lock", F3: "volup", F4: "voldown" };
   const FKEYS_TV = { F1: "tv", F2: "playpause", F3: "volup", F4: "voldown" };
-  canvas.addEventListener("keydown", (e) => {
+  function onKeyDown(e) {
     if (!control) return;
     if ((e.ctrlKey || e.metaKey) && e.code === "KeyV") return; // the paste event types the clipboard
     const fk = (isTv() ? FKEYS_TV : FKEYS)[e.code];
@@ -1085,18 +1126,23 @@ function phoneView(id) {
     syncMods(e);
     held.add(u);
     send({ t: "key", u, d: true });
-  });
-  canvas.addEventListener("keyup", (e) => {
+  }
+  function onKeyUp(e) {
     if (!control) return;
     const fk = (isTv() ? FKEYS_TV : FKEYS)[e.code];
     if (fk) { send({ t: "button", n: fk, d: false }); return; }
     const u = hidUsage(e.code);
     if (u !== undefined && held.has(u)) { held.delete(u); send({ t: "key", u, d: false }); }
     if (MODS[e.code]) syncMods(e);
-  });
-  canvas.addEventListener("blur", releaseAll);
+  }
+  function bindKeys(el) {
+    el.addEventListener("keydown", onKeyDown);
+    el.addEventListener("keyup", onKeyUp);
+    el.addEventListener("blur", releaseAll);
+  }
+  bindKeys(canvas);
   function onPaste(e) {
-    if (!control || document.activeElement !== canvas) return;
+    if (!control || (document.activeElement !== canvas && !(duo && document.activeElement === duo.canvas))) return;
     e.preventDefault();
     typeText(e.clipboardData.getData("text"));
   }
@@ -1105,7 +1151,8 @@ function phoneView(id) {
   connect();
   // a bigger window asks for a sharper stream (reconnect when the wanted width changes by a third)
   let lastW = 0;
-  const sizeIv = setInterval(() => { const w = wantWidth(); if (lastW && Math.abs(w - lastW) / lastW > 0.33) connect(); lastW = w; }, 2000);
+  // against the width the socket asked for too: the first connect, before the phone's shape (or its 3D view) was known
+  const sizeIv = setInterval(() => { const w = wantWidth(); if ((lastW && Math.abs(w - lastW) / lastW > 0.33) || (connW && Math.abs(w - connW) / connW > 0.33)) connect(); lastW = w; }, 2000);
   api("/api/phones").then((ps) => { const p = ps.find((x) => x.id === id || x.name === id); if (p) { info = { ...p, ...info }; lastW = wantWidth(); fit(); updateSide(); } }).catch(() => {});
   const pollIv = setInterval(poll, 3000);
   return () => {
@@ -1120,6 +1167,7 @@ function phoneView(id) {
     if (rec) rec.stop();
     if (ws) { ws.onclose = null; ws.close(); }
     if (dec && dec.state !== "closed") try { dec.close(); } catch {}
+    if (duo) duo.close();
     clearInterval(statIv); clearInterval(sizeIv); clearInterval(pollIv); ro.disconnect();
     $("#acts").replaceChildren();
     document.removeEventListener("paste", onPaste);

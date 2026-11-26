@@ -15,7 +15,7 @@
 //! (24 from one address other than loopback).
 use super::audio;
 use super::tunnel::{self, Kind, Tunnel};
-use super::video::{self, Codec, Out, StreamKey};
+use super::video::{self, Codec, Out, Screen, StreamKey};
 use super::ws;
 use super::{now_s, random_token, Options, Role, State, TokenRec};
 use crate::hid::{self, Hid};
@@ -35,6 +35,7 @@ const APP_CSS: &str = include_str!("web/app.css");
 const AX_JS: &str = include_str!("web/axinspect.js");
 const AX_CSS: &str = include_str!("web/axinspect.css");
 const MIC_JS: &str = include_str!("web/mic.js");
+const DUO_JS: &str = include_str!("web/duo3d.js");
 // the device page's panels the launcher has (device.rs)
 const PANELS_JS: &str = include_str!("web/panels.js");
 // the device page's tool icons: the launcher's Phosphor font (MIT), cut to the glyphs the page uses
@@ -612,6 +613,7 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         "/netpanel.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], NET_JS.as_bytes()),
         "/axinspect.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], AX_CSS.as_bytes()),
         "/mic.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], MIC_JS.as_bytes()),
+        "/duo3d.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], DUO_JS.as_bytes()),
         "/favicon.ico" => return respond(&mut s, 204, "image/x-icon", &[], b""),
         _ => {}
     }
@@ -652,7 +654,7 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
             json_resp(&mut s, 200, &Value::Array(v))
         }
         ("GET", ["api", "status"]) if owner => {
-            let streams: Vec<Value> = video::streams().into_iter().map(|(k, st)| json!({"phone": k.phone, "codec": format!("{:?}", k.codec), "width": k.width, "quality": k.quality, "fps": k.fps, "stats": st})).collect();
+            let streams: Vec<Value> = video::streams().into_iter().map(|(k, st)| json!({"phone": k.phone, "codec": format!("{:?}", k.codec), "width": k.width, "quality": k.quality, "fps": k.fps, "screen": format!("{:?}", k.screen), "stats": st})).collect();
             let mut st = serde_json::to_value(srv.state()).unwrap_or_default();
             st["control_token"] = Value::Null;
             st["view_token"] = Value::Null;
@@ -856,7 +858,11 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let width = q.get("w").and_then(|v| v.parse::<u32>().ok()).unwrap_or(720).clamp(160, 2048) / 16 * 16;
     let quality = q.get("q").and_then(|v| v.parse::<u8>().ok()).unwrap_or(1).min(2);
     let fps = q.get("fps").and_then(|v| v.parse::<u32>().ok()).unwrap_or(30).clamp(5, 60);
-    let (tx, rx) = mpsc::sync_channel::<Out>(6);
+    // a two-screen phone drawn in 3D (duo3d.js): both screens, the inner one as kind 1 / 2, the outer one as
+    // video::OUTER + 1 / 2, each at its own width (`w`, `w2`)
+    let both = q.get("duo").map(String::as_str) == Some("1") && inst.inner.is_some();
+    let width2 = q.get("w2").and_then(|v| v.parse::<u32>().ok()).unwrap_or(width / 2).clamp(160, 2048) / 16 * 16;
+    let (tx, rx) = mpsc::sync_channel::<Out>(if both { 10 } else { 6 });
     let w = match s.try_clone() {
         Ok(w) => w,
         Err(_) => return,
@@ -903,9 +909,11 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
                "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle})).collect::<Vec<_>>()})
         .to_string(),
     ));
-    let (streamer, sub) = video::join(&inst, StreamKey { phone: inst.id.clone(), codec, width, quality, fps }, tx.clone());
+    let key = |screen, width| StreamKey { phone: inst.id.clone(), codec, width, quality, fps, screen };
+    let (streamer, sub) = video::join(&inst, key(if both { Screen::Inner } else { Screen::Auto }, width), tx.clone());
+    let outer = both.then(|| video::join(&inst, key(Screen::Outer, width2), tx.clone()));
     let mut r = s;
-    let _ = r.set_read_timeout(Some(Duration::from_millis(1000)));
+    let _ = r.set_read_timeout(Some(Duration::from_millis(if inst.inner.is_some() { 250 } else { 1000 })));
     let mut input = Input::new(&inst);
     // the phone's sound once the page asks for it ({"t": "audio", "on": true, "codec": "opus" | "pcm"}), the viewer's
     // microphone once it sends one (control role)
@@ -915,7 +923,8 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let mut last_state = Value::Null;
     let mut last_check = Instant::now() - Duration::from_secs(5);
     loop {
-        if last_check.elapsed() >= Duration::from_millis(900) {
+        // a two-screen phone's hinge is drawn as it moves: its state is looked at more often
+        if last_check.elapsed() >= Duration::from_millis(if inst.inner.is_some() { 250 } else { 900 }) {
             last_check = Instant::now();
             let st = state(&inst);
             if st != last_state {
@@ -934,7 +943,13 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
             Ok(ws::Msg::Text(t)) => {
                 let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
                 match v["t"].as_str() {
-                    Some("key-frame") => streamer.request_key(),
+                    Some("key-frame") => {
+                        // {"s": "outer"}: the outer screen's stream of a both-screens socket
+                        match (&outer, v["s"].as_str()) {
+                            (Some((o, _)), Some("outer")) => o.request_key(),
+                            _ => streamer.request_key(),
+                        }
+                    }
                     Some("ping") => {
                         let _ = tx.send(Out::Text(json!({"t": "pong", "c": v["c"]}).to_string()));
                     }
@@ -979,6 +994,9 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     }
     input.release();
     streamer.leave(sub);
+    if let Some((o, id)) = &outer {
+        o.leave(*id);
+    }
     if let Some((a, id)) = sound.take() {
         a.leave(id);
     }
@@ -1018,6 +1036,23 @@ impl Input {
         self.size = t.size;
     }
 
+    /// Aims at the screen a touch names ("inner" / "outer": a two-screen phone drawn in 3D, x and y on that
+    /// screen's picture as streamed by video::target_of), else at the one shown
+    fn aim_at(&mut self, screen: Option<&str>) {
+        let which = match screen {
+            Some("inner") => Screen::Inner,
+            Some("outer") => Screen::Outer,
+            _ => return self.aim(),
+        };
+        if self.inst.inner.is_none() {
+            return self.aim();
+        }
+        let t = video::target_of(&self.inst, which, &mut self.orient);
+        self.hid.display = t.display;
+        self.hid.main_rot = t.main_rot;
+        self.size = t.size;
+    }
+
     /// lets go of anything held when the viewer goes away (a closed tab must not leave a button pressed)
     fn release(&mut self) {
         for b in std::mem::take(&mut self.down_buttons) {
@@ -1042,7 +1077,7 @@ impl Input {
             "touch" => {
                 let p = phase(v)?;
                 if p == "down" {
-                    self.aim();
+                    self.aim_at(v["s"].as_str());
                 }
                 let (x, y) = (f("x"), f("y"));
                 let edge = if p == "down" && v["edge"].as_bool() != Some(false) { hid::edge_at(x, y, self.size.0, self.size.1) } else { None };
@@ -1051,7 +1086,7 @@ impl Input {
             "touch2" => {
                 let p = phase(v)?;
                 if p == "down" {
-                    self.aim();
+                    self.aim_at(v["s"].as_str());
                 }
                 self.hid.touch2(p, f("x1"), f("y1"), f("x2"), f("y2"));
             }
