@@ -741,7 +741,7 @@ void main() {
       }
       return best;
     } };
-    return { el, canvas, packet, state, command, resize, reset, close, debug };
+    return { el, canvas, packet, state, command, resize, reset, resetView, close, debug };
   }
 
   window.Duo3D = { supported, create };

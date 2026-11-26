@@ -400,6 +400,16 @@ dialog::backdrop { background: var(--scrim); }
 .fbody .seg { align-self: flex-start; }
 .hingerow { display: flex; align-items: center; gap: 10px; }
 .hingerow .muted { white-space: nowrap; }
+.hscale { position: relative; height: 22px; margin: 2px 8px 6px; }
+.hscale .tk { position: absolute; top: 0; width: 1px; height: 4px; background: var(--ink-3); }
+.hscale .tk.big { height: 7px; }
+.hscale .tk.swap { width: 2px; height: 8px; background: var(--active); margin-left: -1px; }
+.hscale .lb { position: absolute; top: 9px; transform: translateX(-50%); font-size: 10px; color: var(--ink-3); }
+.hposes { display: flex; align-items: center; gap: 4px; }
+.hposes .tool.on { color: var(--hilite); background: var(--selected); }
+.hingepop { position: fixed; z-index: 20; width: 340px; max-width: calc(100vw - 16px); padding: 12px;
+  background: linear-gradient(var(--popup), var(--popup)) padding-box, var(--ring) border-box; border: 1px solid transparent; border-radius: var(--r); }
+@media (max-width: 760px) { .hingepop { width: auto; } }
 
 /* the tool column beside the screen (the launcher's screen toolbar): the device's buttons, then capture */
 @font-face { font-family: "x86sim-icons"; src: url("icons.ttf") format("truetype"); font-display: block; }

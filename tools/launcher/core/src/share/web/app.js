@@ -366,7 +366,8 @@ function phoneView(id) {
   const duoOK = !!(window.Duo3D && Duo3D.supported());
   let duo = null;
   // the hinge panel's slider following the hinge as it is (hingePanel sets it)
-  let hingeSync = null;
+  // every hinge panel on the page (the fold, the strip's popup) follows the hinge as it moves
+  const hingeSyncs = new Set();
   // the stream width the socket asked for
   let connW = 0;
 
@@ -637,7 +638,7 @@ function phoneView(id) {
     } else if (m.t === "state") {
       lastState = m;
       if (duo) duo.state(m);
-      if (hingeSync && m.hinge != null) hingeSync(Number(m.hinge));
+      if (m.hinge != null) for (const f of hingeSyncs) f(Number(m.hinge), m.orientation);
       if (!m.running) { overlay.hidden = false; overlay.textContent = "Off"; }
       updateSide();
     } else if (m.t === "expired") {
@@ -682,7 +683,8 @@ function phoneView(id) {
   const I = { home: "", lock: "", volup: "", voldown: "", siri: "", action: "", switcher: "",
     rotl: "", rotr: "", shake: "", pointer: "", type: "", soundOn: "", soundOff: "",
     camera: "", marks: "", record: "", stop: "", back: "", up: "", down: "",
-    tv: "", playpause: "", tap: "", wave: "", mute: "", press: "", share: "" };
+    tv: "", playpause: "", tap: "", wave: "", mute: "", press: "", share: "",
+    hingeOpen: "\uE0E6", hingeClosed: "\uE1E0", tablet: "\uE1E6", laptop: "\uE586", resetView: "\uE08A" };
   const icon = (c) => h("span", { class: "ic", text: c });
   function setIcon(b, c) { if (b && b.firstChild) b.firstChild.textContent = c; }
   // an icon button of the tool column beside the screen (the launcher's screen toolbar); held down for `up`
@@ -729,8 +731,10 @@ function phoneView(id) {
         }
         t.push(gap());
         if (p === "ios") {
-          t.push(tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })),
-            tool(I.shake, "Shake", () => send({ t: "shake" })));
+          t.push(tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })));
+          // a two-screen phone's hinge, as the launcher's strip: a popup with the slider, the poses and the view's reset
+          if (info.two_screens) t.push(hingeTool());
+          t.push(tool(I.shake, "Shake", () => send({ t: "shake" })));
           // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
           if (info.ipad) {
             const ptr = tool(I.pointer, "Pointer capture: the mouse drives the iPad's pointer", () => {
@@ -876,26 +880,74 @@ function phoneView(id) {
     catch (err) { toast(err.message); if (e && e.target) e.target.disabled = false; }
     poll();
   }
-  // the hinge of a two-screen phone, as the launcher's panel: a slider from folded to flat, and the poses
+  // the strip's Hinge button: its icon follows the hinge (open / closed); a click opens the hinge panel beside it
+  // (above the strip on a phone), closed by a click outside or Esc
+  function hingeTool() {
+    const at = Number(lastState.hinge ?? info.hinge ?? 180);
+    let pop = null;
+    const close = () => { if (pop) { pop.remove(); pop = null; document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", esc); } };
+    const outside = (e) => { if (pop && !pop.contains(e.target) && !b.contains(e.target)) close(); };
+    const esc = (e) => { if (e.key === "Escape") close(); };
+    const b = tool(at >= 10 ? I.hingeOpen : I.hingeClosed, "Hinge: fold, half open, unfold", () => {
+      if (pop) return close();
+      pop = h("div", { class: "hingepop", role: "dialog", "aria-label": "Hinge" }, hingePanel());
+      document.body.append(pop);
+      const r = b.getBoundingClientRect();
+      if (innerWidth <= 760) pop.style.cssText = `left:8px;right:8px;bottom:${innerHeight - r.top + 8}px`;
+      else pop.style.cssText = `left:${Math.max(8, Math.min(r.right + 8, innerWidth - pop.offsetWidth - 8))}px;top:${Math.max(8, Math.min(r.top, innerHeight - pop.offsetHeight - 8))}px`;
+      document.addEventListener("pointerdown", outside, true);
+      document.addEventListener("keydown", esc);
+    });
+    hingeSyncs.add((deg) => setIcon(b, deg >= 10 ? I.hingeOpen : I.hingeClosed));
+    return b;
+  }
+  // the hinge of a two-screen phone, as the launcher's panel: a slider from folded to flat over a degree scale (85°:
+  // where the inner screen takes over), the poses as icons (the current one lit) and the 3D view's reset
   function hingePanel() {
     const val = h("span", { class: "muted" });
     const show = (v) => { val.textContent = `${Math.round(v)}° · ${v < 10 ? "closed" : v < 85 ? "half open" : v < 170 ? "open" : "flat"}`; };
-    const at = Number(lastState.hinge ?? info.hinge ?? 180);
+    let cur = Number(lastState.hinge ?? info.hinge ?? 180), orient = lastState.orientation ?? info.orientation ?? null;
     let sentAt = 0, pend = null;
-    const slider = h("input", { type: "range", min: 0, max: 180, step: 1, value: at, class: "vol", "aria-label": "Hinge angle",
+    const icons = [I.hingeClosed, I.hingeOpen, I.laptop, I.tablet];
+    const poseBtns = (info.poses || []).map((ps, k) => {
+      const b = tool(icons[k] || I.hingeOpen, ps.label, () => {
+        send({ t: "hinge", pose: ps.key });
+        if (duo && ps.angle != null) duo.command(ps.angle);
+        if (ps.angle != null) { slider.value = ps.angle; cur = ps.angle; }
+        if (ps.orientation) orient = ps.orientation;
+        sentAt = performance.now();
+        show(Number(slider.value)); lit();
+      });
+      b.dataset.k = k;
+      return b;
+    });
+    const lit = () => (info.poses || []).forEach((ps, k) => poseBtns[k].classList.toggle("on", Math.abs(cur - ps.angle) < 1 && (!ps.orientation || !orient || ps.orientation === orient)));
+    const slider = h("input", { type: "range", min: 0, max: 180, step: 1, value: cur, class: "vol", "aria-label": "Hinge angle",
       oninput: (e) => {
         const v = Number(e.target.value);
-        show(v);
+        cur = v; show(v); lit();
         // while dragged: a short move at most every 40 ms, the last value when let go
         clearTimeout(pend);
         const go = () => { sentAt = performance.now(); send({ t: "hinge", deg: v, ms: 40 }); if (duo) duo.command(v); };
         if (performance.now() - sentAt >= 40) go(); else pend = setTimeout(go, 40);
       } });
-    show(at);
+    // the scale: a tick every 15°, labelled every 45°, the screen swap at 85° in the accent colour
+    const scale = h("div", { class: "hscale" });
+    for (let d = 0; d <= 180; d += 15) {
+      const tk = h("span", { class: "tk" + (d % 45 === 0 ? " big" : "") });
+      tk.style.cssText = `left:${(d / 180) * 100}%`;
+      scale.append(tk);
+      if (d % 45 === 0) { const lb = h("span", { class: "lb", text: d + "°" }); lb.style.cssText = `left:${(d / 180) * 100}%`; scale.append(lb); }
+    }
+    const swap = h("span", { class: "tk swap", title: "85°: the inner screen takes over above this, the outer one below" });
+    swap.style.cssText = `left:${(85 / 180) * 100}%`;
+    scale.append(swap);
+    show(cur); lit();
     // moved from elsewhere (a pose, the MCP, the CLI): the slider follows unless it was just used here
-    hingeSync = (deg) => { if (performance.now() - sentAt > 1500 && document.activeElement !== slider) { slider.value = deg; show(deg); } };
-    return h("div", {}, h("div", { class: "hingerow" }, slider, val),
-      h("div", { class: "btns", style: "margin-top:8px" }, ...info.poses.map((ps) => btn(ps.label, "Hinge: " + ps.label, () => { send({ t: "hinge", pose: ps.key }); if (duo && ps.angle != null) duo.command(ps.angle); slider.value = ps.angle ?? slider.value; show(Number(slider.value)); }))));
+    hingeSyncs.add((deg, o) => { if (o) orient = o; if (performance.now() - sentAt > 1500 && document.activeElement !== slider) { slider.value = deg; cur = deg; show(deg); lit(); } });
+    const reset = tool(I.resetView, "Reset the view", () => duo && duo.resetView && duo.resetView());
+    return h("div", { class: "hingepanel" }, h("div", { class: "hingerow" }, slider, val), scale,
+      h("div", { class: "hposes" }, ...poseBtns, h("span", { class: "grow" }), reset));
   }
   function updateSide() {
     head();

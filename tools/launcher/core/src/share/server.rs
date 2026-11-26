@@ -906,7 +906,7 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let state = |inst: &Instance| json!({"t": "state", "orientation": inst.orientation(), "hinge": inst.hinge(), "inner_active": inst.inner_active(), "running": crate::ring::Ring::new(&inst.ring).seq() != 0});
     let _ = tx.send(Out::Text(
         json!({"t": "hello", "role": g.role, "phone": inst.id, "name": inst.name, "model": inst.model, "platform": inst.platform, "two_screens": inst.inner.is_some(),
-               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle})).collect::<Vec<_>>()})
+               "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle, "orientation": p.orientation})).collect::<Vec<_>>()})
         .to_string(),
     ));
     let key = |screen, width| StreamKey { phone: inst.id.clone(), codec, width, quality, fps, screen };
