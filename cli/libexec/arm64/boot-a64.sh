@@ -78,16 +78,21 @@ rm -rf "$D"/data/var/log/*.log
 # sharing off, and every non-KEEP boot's exit did it.
 # A phone still booting has no darlingserver yet: its boot-a64.sh (A64_MTLVK_SOCKET from the launcher) counts too, or
 # stopping the mtlvk's owner in that window took the booting phone's Metal away.
+# RAM 14: socket paths compare resolved (realpath): a phone booted through another root naming the same state dir (a
+# worktree's mirror of symlinks) had a textually different path, was not counted, and its mtlvk was stopped under it.
 a64_mtlvk_users() {
-	local want="X86SIM_MTLVK_SOCKET=$1" n=0 p
+	local want n=0 p v
+	want=$(realpath -m "$1" 2>/dev/null || echo "$1")
 	for p in /proc/[0-9]*; do
 		case "$(cat "$p/comm" 2>/dev/null)" in
 		darlingserver)
 			tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q "darlingserver $DPREFIX " && continue
-			tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "$want" && n=$((n+1)) ;;
+			v=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^X86SIM_MTLVK_SOCKET=//p' | head -1)
+			[ -n "$v" ] && [ "$(realpath -m "$v" 2>/dev/null || echo "$v")" = "$want" ] && n=$((n+1)) ;;
 		boot-a64.sh)
 			tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF -e "A64_STOP_ONLY=1" -e "A64_DPREFIX=$DPREFIX" && continue
-			tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "A64_MTLVK_SOCKET=$1" && n=$((n+1)) ;;
+			v=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^A64_MTLVK_SOCKET=//p' | head -1)
+			[ -n "$v" ] && [ "$(realpath -m "$v" 2>/dev/null || echo "$v")" = "$want" ] && n=$((n+1)) ;;
 		esac
 	done
 	echo $n
