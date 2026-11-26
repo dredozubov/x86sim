@@ -664,6 +664,12 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
             }
             None => json_resp(&mut s, 404, &json!({"error": "no monospace font"})),
         },
+        // Apple's iPhone Duo model for the 3D phone (duo3d.js), when this machine has it (devicemodel.rs): for the token's
+        // holders only, never public (it is Apple's, from the user's own Xcode)
+        ("GET", ["devicemodel", "duo"]) => match crate::devicemodel::duo_web() {
+            Some(b) => respond(&mut s, 200, "application/octet-stream", &[], &b),
+            None => respond(&mut s, 404, "text/plain", &[], b"no device model: x86sim account download-xcode"),
+        },
         ("GET", ["api", "me"]) => json_resp(&mut s, 200, &json!({"role": g.role, "phone": g.phone, "expires": g.expires, "local": g.token.is_none(), "owner": owner, "server": {"started": srv.started, "version": env!("CARGO_PKG_VERSION")}})),
         ("GET", ["api", "phones"]) => {
             let all = srv.phones();

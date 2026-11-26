@@ -69,3 +69,9 @@ num-bigint = "0.4"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 base64 = "0.22"
 flate2 = "1"
+# Xcode's 3D device models (devicemodel.rs): Apple's .usdz read from the user's own Xcode.xip (never shipped); a pure Rust
+# USD reader, the package's zip, and JPEG textures decoded for the launcher
+openusd = "0.9"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+zune-jpeg = "0.5"
+zune-core = "0.5"

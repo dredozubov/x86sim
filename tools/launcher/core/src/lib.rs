@@ -12,6 +12,8 @@ pub mod appcache;
 pub mod apps;
 pub mod appstate;
 pub mod desktop;
+/// Xcode's 3D device models (the iPhone Duo's), read from the user's own Xcode.xip
+pub mod devicemodel;
 pub mod dev;
 pub mod devapp;
 pub mod devdelete;
