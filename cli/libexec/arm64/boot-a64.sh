@@ -324,6 +324,10 @@ MIN="com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.appl
 # shazamd (iOS, watchOS, visionOS; on demand, sdkcov P11): ShazamKit's library service (com.apple.shazamd). Without it
 # SHLibrary.default.addItems failed at once (com.apple.ShazamKit.ShazamLibrary 301), where Apple's 27.2 simulators
 # never answer it for a simctl-installed app.
+# merchantd (iOS, on demand, sdkcov P27): ProximityReader's daemon (com.apple.merchantd.*: Tap to Pay, store and
+# forward, mobile documents). Without it PaymentCardReader.fetchPaymentCardReaderStore() threw StoreError 0 and
+# prepareStoreAndForward() serviceConnectionError, where Apple's 27.2 simulator answers StoreError 1 and notAllowed
+# (no Tap to Pay entitlement) (P27_Data.swift func:ProximityReader.p27-requests-reader-answers).
 UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd com.apple.SpringBoard com.apple.sleepd com.apple.TextInput.kbd com.apple.FileCoordination
 	com.apple.usernotificationsd com.apple.InputUI com.apple.assistantd com.apple.assetsd com.apple.geod com.apple.navd com.apple.Maps.mapssyncd
 	com.apple.campo com.apple.FileProvider com.apple.DesktopServicesHelper com.apple.revisiond com.apple.PosterBoard com.apple.financed
@@ -342,7 +346,8 @@ UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd c
 	com.apple.homed
 	com.apple.linkd com.apple.mediaanalysisd com.apple.mediaanalysisd.service com.apple.translationd
 	com.apple.telephonyutilities.callservicesd com.apple.UsageTrackingAgent com.apple.ScreenTimeAgent com.apple.dmd
-	com.apple.videosubscriptionsd com.apple.managedappdistributiond com.apple.shazamd com.apple.backgroundassets.user"
+	com.apple.videosubscriptionsd com.apple.managedappdistributiond com.apple.shazamd com.apple.backgroundassets.user
+	com.apple.merchantd"
 UI_SLIM="com.apple.backboardd com.apple.SpringBoard com.apple.TextInput.kbd com.apple.FileCoordination com.apple.InputUI
 	com.apple.assistantd com.apple.sleepd"
 FULLUI="com.apple.chronod"
