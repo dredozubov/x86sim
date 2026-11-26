@@ -806,6 +806,11 @@ fn chunk_state(p: &Paths, m: &Manifest, c: &PlanChunk) -> (String, Vec<String>) 
         if !present {
             return ("missing".into(), vec!["chunk file deleted".into()]);
         }
+        // RAM 14: a chunk with training that came out empty is a builder fault, not "nothing to persist": builders with
+        // the cold-code interpreter on (2026-11-25 to 11-26) left every runtime's image with libsystem alone
+        if r.state == "empty" && r.blocks == 0 && c.hot.len() >= 32 {
+            return ("stale".into(), vec![format!("built empty although {} blocks are trained", c.hot.len())]);
+        }
         if c.src.kind == Kind::App && r.state == "truncated" && r.slot_size < c.want {
             return ("stale".into(), vec!["slot too small (app code is translated whole)".into()]);
         }
