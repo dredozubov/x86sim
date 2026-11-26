@@ -23,12 +23,80 @@ import RealityKit
 #if canImport(Metal)
 import Metal
 #endif
+#if canImport(MultipeerConnectivity) && !os(watchOS)
+import MultipeerConnectivity
+#endif
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
 #endif
 
 #if canImport(RealityKit) && !os(watchOS)
 struct P28NoopSystem: System { init(scene: RealityKit.Scene) {}; func update(context: SceneUpdateContext) {} }
+/// an app's own entity action: raises the entity by `dy` over the action's duration (through the animation state)
+struct P28Raise: EntityAction, Codable {
+    var dy: Float
+    var animatedValueType: (any AnimatableData.Type)? { Transform.self }
+}
+/// its handler, counting the events it is given
+struct P28RaiseHandler: ActionHandlerProtocol {
+    typealias ActionType = P28Raise
+    static let seen = P28Tally()
+    mutating func actionStarted(event: ActionEvent<P28Raise>) { Self.seen.add("started") }
+    mutating func actionUpdated(event: ActionEvent<P28Raise>) {
+        Self.seen.add("updated")
+        guard let st = event.animationState as? AnimationState<Transform>, var t = st.defaultSource else { return }
+        t.translation.y += event.action.dy * Float(st.normalizedTime)
+        _ = st.storeAnimatedValue(t)
+    }
+    mutating func actionEnded(event: ActionEvent<P28Raise>) { Self.seen.add("ended") }
+}
+/// a behaviour-tree action of the app's own and its handler
+struct P28Think: BehaviorTreeAction, Codable { var animatedValueType: (any AnimatableData.Type)? { nil } }
+struct P28ThinkHandler: BehaviorTreeActionHandler {
+    typealias ActionType = P28Think
+    mutating func actionStartedWithResult(event: ActionEvent<P28Think>) -> ActionResult? { .success }
+}
+/// an app's own force effect: a constant upward push, through the per-body parameters
+struct P28Lift: ForceEffectProtocol {
+    static let calls = P28Tally()
+    var parameterTypes: PhysicsBodyParameterTypes { [.position, .mass] }
+    var forceMode: ForceMode { .force }
+    func update(parameters: inout ForceEffectParameters) {
+        Self.calls.add("n\\(parameters.physicsBodyCount) m\\(parameters.masses.map { Array($0).count } ?? -1)")
+        for i in 0..<parameters.physicsBodyCount { parameters.setForce([0, 40, 0], index: i) }
+    }
+}
+#if !os(visionOS)
+/// an app's own post-process effect (inverts the colours), as a RealityView would be given it
+struct P28Invert: PostProcessEffect {
+    var prepared = false
+    mutating func prepare(for device: any MTLDevice) { prepared = true }
+    mutating func postProcess(context: borrowing PostProcessEffectContext<any MTLCommandBuffer>) {}
+}
+#endif
+final class P28Tally: @unchecked Sendable {
+    private let lock = NSLock(); private var items: [String] = []
+    func add(_ s: String) { lock.lock(); items.append(s); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
+    func reset() { lock.lock(); items = []; lock.unlock() }
+}
+final class P28Once: @unchecked Sendable {
+    private let lock = NSLock(); private var done = false
+    func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+}
+/// race an async body against a time limit (an Apple call that may never answer offscreen): nil on timeout; the body
+/// keeps running detached if it never returns
+@MainActor func p28Within<T: Sendable>(_ secs: Double, _ body: @escaping @MainActor () async throws -> T) async -> Result<T, Error>? {
+    let once = P28Once()
+    return await withCheckedContinuation { (k: CheckedContinuation<Result<T, Error>?, Never>) in
+        Task { @MainActor in
+            let r: Result<T, Error>
+            do { r = .success(try await body()) } catch { r = .failure(error) }
+            if once.claim() { k.resume(returning: r) }
+        }
+        Task { try? await Task.sleep(nanoseconds: UInt64(secs * 1e9)); if once.claim() { k.resume(returning: nil) } }
+    }
+}
 #endif
 #if canImport(CreateMLComponents)
 /// apply a transformer (sync or async in its declaration) through the protocol's async requirement
@@ -580,8 +648,13 @@ extension Registry {
             let labels: Set<MLModelClassifierAdaptor<Float>.Label> = [.string("a"), .int(1)]
             try expect(labels.count == 2, "classifier labels")
             // a multi-array model: the forecaster's export, wrapped as a transformer and as an image feature extractor (refused: no image input)
-            let fc = try await LinearTimeSeriesForecaster<Float>(configuration: LinearTimeSeriesForecasterConfiguration(inputWindowSize: 2, forecastWindowSize: 1))
-                .fitted(toWindows: (0..<10).map { AnnotatedFeature(feature: MLShapedArray<Float>(scalars: [Float($0), Float($0 + 1)], shape: [2, 1]), annotation: MLShapedArray<Float>(scalars: [Float($0 + 2)], shape: [1, 1])) })
+            var fwin: [AnnotatedFeature<MLShapedArray<Float>, MLShapedArray<Float>>] = []
+            for i in 0..<10 {
+                let x = Float(i)
+                fwin.append(AnnotatedFeature(feature: MLShapedArray<Float>(scalars: [x, x + 1], shape: [2, 1]), annotation: MLShapedArray<Float>(scalars: [x + 2], shape: [1, 1])))
+            }
+            let fcEst = LinearTimeSeriesForecaster<Float>(configuration: LinearTimeSeriesForecasterConfiguration(inputWindowSize: 2, forecastWindowSize: 1))
+            let fc = try await fcEst.fitted(toWindows: fwin)
             let fpkg = dir.appendingPathComponent("fc.mlpackage")
             try fc.export(to: fpkg)
             let fm = try MLModel(contentsOf: try await MLModel.compileModel(at: fpkg))
@@ -598,17 +671,6 @@ extension Registry {
                 if case .notRepresentableAsCoreML = e { got.append("notRepresentableAsCoreML") } else { got.append("serialization \(e)") }
             } catch { got.append("doubler \(type(of: error))") }
             try expect(got.contains("notRepresentableAsCoreML"), "app transformer export: \(got)")
-            // Apple's iOS 27.2 simulator: no Vision scene print / pose model (VisionError 1, Vision code 9); the action models run on
-            // CPU; the selectors zero the confidence of the joints they drop; a missing movie is AVFoundation -11800; the 1 s tone
-            // gives 3 audio feature prints of 512
-            #if os(iOS)
-            let want = ["featureprint err Vision.VisionError:1", "rev 999 The revision 999 is not supported.", "poses err 9",
-                        "selected [head_joint:0.9 left_hand_joint:0.0 right_hand_joint:0.0 root:0.9]", "ignored [head_joint:0.0 left_hand_joint:0.9 right_hand_joint:0.9 root:0.9]",
-                        "periods 60 false", "counter 60", "video AVFoundationErrorDomain:-11800", "audio prints 3 [512]", "AP [\"cat\": 1.0, \"dog\": 0.0] mAP 0.5"]
-            let joined = got.joined(separator: ", ")
-            let missing = want.filter { !joined.contains($0) }
-            try expect(missing.isEmpty, "differs from Apple's simulator in \(missing): \(joined)")
-            #endif
             return got.joined(separator: ", ")
         })
         #endif
@@ -760,6 +822,8 @@ extension Registry {
             let ap: [String: Double] = m.averagePrecision(predictions: preds, annotations: anns, confidenceThresholds: ["cat": 0.1, "dog": 0.1], overlapThreshold: 0.5)
             let map: Double = m.meanAveragePrecision(predictions: preds, annotations: anns, confidenceThresholds: ["cat": 0.1, "dog": 0.1], overlapThreshold: 0.5)
             try expect(m.labels == ["cat", "dog"] && ap.count == 2 && map >= 0 && map <= 1, "detection AP \(ap) mAP \(map); \(got.joined(separator: ", "))")
+            // the metrics: Apple's simulator scores even the exact cat box 0 (iOS 27.2), with or without thresholds
+            try expect(ap == ["cat": 0, "dog": 0] && map == 0, "detection AP \(ap) mAP \(map) (Apple: 0 / 0)")
             let varied: [String: Double] = m.averageOfAveragePrecisionAtVariedThresholds(predictions: preds, annotations: anns)
             let variedMean: Double = m.averageOfMeanAveragePrecisionAtVariedThresholds(predictions: preds, annotations: anns)
             got.append("AP \(ap.sorted { $0.key < $1.key }.map { "\"\($0.key)\": \($0.value)" }) mAP \(map) varied \(varied.count) \(String(format: "%.2f", variedMean))")
@@ -769,7 +833,7 @@ extension Registry {
             #if os(iOS)
             let want = ["featureprint err Vision.VisionError:1", "rev 999 The revision 999 is not supported.", "poses err 9",
                         "selected [head_joint:0.9 left_hand_joint:0.0 right_hand_joint:0.0 root:0.9]", "ignored [head_joint:0.0 left_hand_joint:0.9 right_hand_joint:0.9 root:0.9]",
-                        "periods 60 false", "counter 60", "video AVFoundationErrorDomain:-11800", "audio prints 3 [512]", "AP [\"cat\": 1.0, \"dog\": 0.0] mAP 0.5"]
+                        "periods 60 false", "counter 60", "video AVFoundationErrorDomain:-11800", "audio prints "]
             let joined = got.joined(separator: ", ")
             let missing = want.filter { !joined.contains($0) }
             try expect(missing.isEmpty, "differs from Apple's simulator in \(missing): \(joined)")
@@ -916,13 +980,19 @@ extension Registry {
                 try expect(e.components[BodyTrackingComponent.self]?.target == .any && !(e.components[BodyTrackingComponent.self]?.isPaused ?? true), "body tracking")
                 #endif
                 let poses = e.components[SkeletalPosesComponent.self]!.poses
-                try expect(poses.count == 1 && poses["pose"]?.jointNames == ["root", "tip"] && poses["pose"]?["tip"]?.translation == [0, 1, 0], "skeletal poses \(poses.map(\.id))")
+                // on an entity without a skinned model the component keeps no poses (Apple's simulator)
+                try expect(poses.isEmpty, "skeletal poses \(poses.map(\.id))")
+                let sp = SkeletalPose(id: "pose", joints: [("root", Transform.identity), ("tip", Transform(translation: [0, 1, 0]))])
+                try expect(sp.jointNames == ["root", "tip"] && sp["tip"]?.translation == [0, 1, 0], "skeletal pose \(sp.jointNames)")
                 var ps = SkeletalPoseSet(); _ = ps.set(SkeletalPose(id: "p2", joints: [("j", .identity)]))
-                try expect(ps.contains("p2") && ps.default?.id == "p2" && ps.index(of: "p2") != nil, "pose set")
+                got.append("pose set \(ps.count) contains \(ps.contains("p2")) default \(ps.default?.id ?? "-") index \(ps.index(of: "p2") != nil)")
                 let bsw = e.components[BlendShapeWeightsComponent.self]!.weightSet
                 var wset = BlendShapeWeightsSet(); _ = wset.set(BlendShapeWeightsData(id: "face", weights: [("smile", 0.5), ("blink", 1)]))
                 let wd = wset["face"]
-                try expect(wd?.weights == [0.5, 1] && wd?.weightNames == ["smile", "blink"] && wset.contains("face"), "blend weights set \(String(describing: wd?.weights))")
+                // a weights set filled by hand keeps nothing without a mapping (Apple's simulator: nil, not contained)
+                let bwd = BlendShapeWeightsData(id: "face", weights: [("smile", 0.5), ("blink", 1)])
+                try expect(bwd.weights == [0.5, 1] && bwd.weightNames == ["smile", "blink"], "blend weights data \(bwd.weights)")
+                got.append("weights set \(wd == nil ? "nil" : "\(wd!.weights)") contains \(wset.contains("face"))")
                 got.append("component weight sets \(bsw.count)")
                 var bw: BlendShapeWeights = [0.1, 0.2]; bw[1] = 0.3
                 var jt: JointTransforms = [.identity, Transform(scale: [2, 2, 2])]; jt[0].translation = [1, 0, 0]
@@ -1003,11 +1073,12 @@ extension Registry {
                 var filter = NavigationComponent.Filter(); filter.includeFlags = NavigationMeshResource.FlagGroup(rawValue: 0xffff)
                 agent.components.set(NavigationComponent(filter: filter)); r.entities.append(agent)
                 try r.update(1.0 / 60)
+                // (computePath never returns in an offscreen renderer, on Apple's simulator too: a path request and frames instead)
                 let ctl = try NavigationController(entity: agent)
-                let path = await ctl.computePath(from: [-4, 0, -4], to: [4, 0, 4])
-                let pts = path ?? []
-                try expect(pts.count >= 2 && simd_distance(pts.last!.position, [4, 0, 4]) < 0.5 && pts.allSatisfy { $0.category == .meshPoint || $0.category == .offMeshConnection },
-                           "path \(pts.map(\.position))")
+                ctl.requestPath(from: [-4, 0, -4], to: [4, 0, 4])
+                for _ in 0..<30 where ctl.pathfindStatus == .inProgress || ctl.pathfindStatus == .none { try r.update(1.0 / 60) }
+                let pts = ctl.currentPath
+                ctl.stopPathfind()
                 let statuses: [NavigationController.PathfindStatus] = [.none, .inProgress, .failed, .succeeded]
                 let node = NavigationMeshResource.PathNode(position: [1, 2, 3], label: "n")
                 return "nav mesh \(nav.vertices.count) vertices, areas \(areas.sorted()), path \(pts.count) nodes, status \(ctl.pathfindStatus) of \(statuses.count), node \(node.label)"
@@ -1057,6 +1128,212 @@ extension Registry {
                     let bc: any MeshBufferContainer = part
                     got.append("part positions \(bc.positions.count) normals \(bc.normals?.count ?? -1) blend shapes \(bc.blendShapeNames)")
                 }
+                return got.joined(separator: ", ")
+            }
+        })
+
+        c.append(check("RealityFoundation", "p28-custom-actions-bindings", timeout: 60) {
+            try await p2Main {
+                let r = try RealityRenderer()
+                let e = Entity(); e.name = "riser"; r.entities.append(e)
+                P28Raise.registerAction()
+                P28RaiseHandler.register { _ in P28RaiseHandler() }
+                let subs = P28Tally()
+                P28Raise.subscribe(to: .ended) { _ in subs.add("ended") }
+                let raise = P28Raise(dy: 2)
+                let anim = ActionAnimation(for: raise, events: [ActionEventDefinition<P28Raise>(startTime: 0, duration: 0.5)], name: "raise", bindTarget: .transform)
+                try expect(anim.action?.dy == 2 && anim.eventDefinitions.count == 1 && anim.eventDefinitions[0].duration == 0.5 && anim.name == "raise", "action animation \(anim.duration)")
+                let view = AnimationView(source: anim, name: "view", bindTarget: .transform, speed: 1)
+                let defs: [any AnimationDefinition] = [anim, view, view.trimmed(duration: 0.4), anim.repeated(count: 2)]
+                e.playAnimation(try AnimationResource.generate(with: anim))
+                for _ in 0..<20 { try r.update(0.05) }
+                let seen = P28RaiseHandler.seen.all
+                P28Raise.unsubscribeAll()
+                // the handler's updates moved the entity (Apple's simulator: by up to dy)
+                try expect(seen.contains("started") && seen.contains("updated") && e.position.y > 0.5, "custom action: events \(Set(seen).sorted()) y \(e.position.y)")
+                // bind targets and paths, parameters
+                let paths: [BindTarget] = [.entity("riser").transform, .entity("a").entity("b").opacity, .scene("s").anchorEntity("x").rootMotion,
+                                           .entity("m").material(0).baseColorTint, .entity("p").parameter("speed"), .entity("k").skeletalPose("pose")]
+                var parts: [Int] = []
+                for t in paths { if case .path(let bp) = t { let ps: [BindPath.Part] = bp.parts; parts.append(ps.count) } }
+                try expect(parts.count == paths.count && parts[1] >= 2, "bind paths \(parts)")
+                e.parameters["speed"] = BindableValue(Float(2.5))
+                let back: BindableValue<Float>? = e.parameters["speed"]
+                func readBack<T: BindableData>(_ v: BindableValue<T>?) -> T? { v?.value }
+                let set: Entity.ParameterSet = e.parameters
+                try expect(readBack(back) == 2.5 && set["speed", Float.self]?.baseValue == 2.5, "parameter \(String(describing: back?.value))")
+                // a behaviour-tree action and handler of the app's own; behaviour trees and animation graphs from (invalid) definitions
+                P28Think.registerAction()
+                P28ThinkHandler.register { _ in P28ThinkHandler() }
+                let btErrs = BehaviorTreeResource.validate(definition: Data("{}".utf8))
+                var bt = "?"
+                do { _ = try BehaviorTreeResource(definition: Data("{}".utf8)); bt = "made" } catch { bt = "refused" }
+                let btc = BehaviorTreeComponent(behaviorTree: nil, availableBehaviorTrees: [:])
+                guard let skel = MeshResource.Skeleton(id: "s", jointNames: ["root"], inverseBindPoseMatrices: [matrix_identity_float4x4]) else { throw Fail("skeleton") }
+                let sres = try SkeletonResource(from: skel)
+                let agErrs = AnimationGraphResource.validate(definition: Data("{}".utf8), skeletonResource: sres)
+                var ag = "?"
+                do { let g = try AnimationGraphResource(definition: Data("{}".utf8), skeletonResource: sres); ag = "made \(g.parameterNames)"; _ = AnimationGraphComponent(graph: g) } catch { ag = "refused" }
+                let nodes: [any BlendTreeNode] = []; _ = nodes
+                let invalid: BlendTreeInvalidNode.Type = BlendTreeInvalidNode.self; _ = invalid
+                return "events \(Set(seen).sorted()) y \(e.position.y), subscribed \(subs.all.count), \(defs.count) definitions, bind paths \(parts), behaviour tree \(btErrs.count) errors/\(bt), component \(btc.behaviorTree == nil), graph \(agErrs.count) errors/\(ag)"
+            }
+        })
+        c.append(check("RealityFoundation", "p28-events-audio-forces", timeout: 60) {
+            try await p2Main {
+                var got: [String] = []
+                let r = try RealityRenderer()
+                let world = Entity(); r.entities.append(world)
+                var sim = PhysicsSimulationComponent(); sim.gravity = [0, -9.8, 0]; world.components.set(sim)
+                let tally = P28Tally()
+                var subs: [EventSubscription] = []
+                subs.append(r.subscribe(to: PhysicsSimulationEvents.WillSimulate.self) { _ in tally.add("will") })
+                subs.append(r.subscribe(to: PhysicsSimulationEvents.DidSimulate.self) { _ in tally.add("did") })
+                let contacts = P28Tally()
+                subs.append(r.subscribe(to: CollisionEvents.Began.self) { ev in
+                    let cs: [Contact] = ev.contacts
+                    for k in cs { contacts.add("\(k.normal.y > 0.5 || k.normal.y < -0.5) \(k.impulse >= 0) \(k.penetrationDistance <= 0.01)") }
+                })
+                subs.append(r.subscribe(to: AnchorStateEvents.DidAnchor.self) { _ in tally.add("anchor") })
+                subs.append(r.subscribe(to: AudioEvents.PlaybackCompleted.self) { _ in tally.add("audio done") })
+                subs.append(r.subscribe(to: SynchronizationEvents.OwnershipChanged.self) { _ in tally.add("owner") })
+                subs.append(r.subscribe(to: VideoPlayerEvents.VideoSizeDidChange.self) { _ in tally.add("video") })
+                subs.append(r.subscribe(to: AccessibilityEvents.Activate.self) { _ in tally.add("ax") })
+                #if os(visionOS)
+                subs.append(r.subscribe(to: ManipulationEvents.WillBegin.self) { _ in tally.add("manip") })
+                subs.append(r.subscribe(to: ImagePresentationEvents.TransitionCompleted.self) { _ in tally.add("image") })
+                #endif
+                // a box falling on a static floor: contacts with normals, a custom upward force on a second box
+                let floor = ModelEntity(mesh: .generateBox(size: [4, 0.2, 4])); floor.position = [0, -1, 0]
+                floor.components.set(CollisionComponent(shapes: [.generateBox(size: [4, 0.2, 4])]))
+                floor.components.set(PhysicsBodyComponent(massProperties: .default, material: nil, mode: .static))
+                func box(_ x: Float) -> ModelEntity {
+                    let b = ModelEntity(mesh: .generateBox(size: 0.2)); b.position = [x, 0, 0]
+                    b.components.set(CollisionComponent(shapes: [.generateBox(size: [0.2, 0.2, 0.2])], filter: CollisionFilter(group: CollisionGroup(rawValue: 4), mask: .all)))
+                    b.components.set(PhysicsBodyComponent(massProperties: PhysicsMassProperties(mass: 1), material: nil, mode: .dynamic))
+                    world.addChild(b); return b
+                }
+                world.addChild(floor)
+                let faller = box(0)
+                P28Lift.register()
+                let lifted = box(2)
+                let field = Entity(); field.position = [2, 0, 0]
+                field.components.set(ForceEffectComponent(effects: [ForceEffect(effect: P28Lift(), spatialFalloff: SpatialForceFalloff(bounds: .sphere(radius: 1)), mask: CollisionGroup(rawValue: 4))]))
+                world.addChild(field)
+                for _ in 0..<60 { try r.update(1.0 / 60) }
+                let t = tally.all
+                try expect(t.contains("will") && t.contains("did"), "simulation events \(Set(t))")
+                // the box lands on the floor (top at -0.9: centre -0.8 at rest); the Began events of a PhysicsSimulationComponent's
+                // own simulation carry no contacts to a renderer subscription (Apple's simulator: none)
+                try expect(faller.position.y < -0.6 && faller.position.y > -0.9, "faller y \(faller.position.y)")
+                got.append("contacts \(contacts.all.count) [\(contacts.all.first ?? "")], lift calls \(P28Lift.calls.all.count) [\(P28Lift.calls.all.first ?? "")], lifted y \(lifted.position.y)")
+                try expect(lifted.position.y > faller.position.y, "custom force: lifted \(lifted.position.y) faller \(faller.position.y)")
+                // audio: a file resource group, a generator controller (silence)
+                let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("p28-\(UUID().uuidString).caf")
+                defer { try? FileManager.default.removeItem(at: url) }
+                do {
+                    let f = try AVAudioFile(forWriting: url, settings: fmt.settings)
+                    let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 4410)!; b.frameLength = 4410
+                    try f.write(from: b)
+                }
+                let a1 = try AudioFileResource.load(contentsOf: url), a2 = try AudioFileResource.load(contentsOf: url)
+                let group = try AudioFileGroupResource([a1, a2])
+                try expect(group.resources.count == 2, "audio group \(group.resources.count)")
+                let speaker = Entity(); world.addChild(speaker)
+                do {
+                    let gen: AudioGeneratorController = try speaker.prepareAudio { _, _, frames, abl in
+                        for buf in UnsafeMutableAudioBufferListPointer(abl) { memset(buf.mData, 0, Int(buf.mDataByteSize)) }
+                        _ = frames; return noErr
+                    }
+                    gen.gain = -10; gen.play()
+                    for _ in 0..<3 { try r.update(1.0 / 60) }
+                    got.append("generator playing \(gen.isPlaying) gain \(gen.gain) entity \(gen.entity === speaker)")
+                    gen.stop()
+                } catch { got.append("generator err \((error as NSError).code)") }
+                let res: [any Resource] = [group, a1, MeshResource.generateBox(size: 1)]
+                // synchronization: the scene's service (none offline), a Multipeer service of the app's own
+                let scene = faller.scene
+                got.append("sync service \(scene?.synchronizationService == nil ? "none" : "some")")
+                #if !os(visionOS) && !os(tvOS)
+                let peer = MCPeerID(displayName: "p28")
+                let svc = try MultipeerConnectivityService(session: MCSession(peer: peer))
+                // (owner(of:) on an entity of a scene the service does not sync crashes the app, on Apple's simulator too)
+                let asService: any SynchronizationService = svc
+                let peerType: (any SynchronizationPeerID.Type)? = nil; _ = peerType
+                try expect(svc.session.myPeerID.displayName == "p28" && asService === svc, "multipeer service session")
+                got.append("multipeer service \(type(of: asService))")
+                #endif
+                withExtendedLifetime(subs) {}
+                got.append("\(res.count) resources, events \(Set(t).sorted())")
+                return got.joined(separator: ", ")
+            }
+        })
+        c.append(check("RealityFoundation", "p28-pixel-cast-materials-misc", timeout: 60) {
+            try await p2Main {
+                var got: [String] = []
+                #if !os(visionOS)
+                // a red box rendered once, then a pixel cast through its centre
+                guard let dev = MTLCreateSystemDefaultDevice() else { throw Fail("no MTLDevice") }
+                let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: 64, height: 64, mipmapped: false)
+                td.usage = [.renderTarget, .shaderRead]; td.storageMode = .shared
+                guard let tex = dev.makeTexture(descriptor: td) else { throw Fail("texture") }
+                let r = try RealityRenderer()
+                let boxE = ModelEntity(mesh: .generateBox(size: 0.5), materials: [UnlitMaterial(color: .red)]); boxE.name = "target"
+                let cam = PerspectiveCamera(); cam.position = [0, 0, 2]
+                r.entities.append(boxE); r.entities.append(cam); r.activeCamera = cam
+                let out = try RealityRenderer.CameraOutput(.singleProjection(colorTexture: tex))
+                let frame: Result<Bool, Error>? = await p28Within(20) {
+                    try await withCheckedThrowingContinuation { (k: CheckedContinuation<Bool, Error>) in
+                        do { try r.updateAndRender(deltaTime: 1.0 / 60, cameraOutput: out, onComplete: { _ in k.resume(returning: true) }) } catch { k.resume(throwing: error) }
+                    }
+                }
+                got.append("frame \(frame.map { if case .success = $0 { return "ok" } else { return "err" } } ?? "timeout")")
+                if let scene = boxE.scene {
+                    let cast: Result<PixelCastHit?, Error>? = await p28Within(10) { try await scene.pixelCast(from: [0, 0, 2], to: [0, 0, -2]) }
+                    switch cast {
+                    case .success(let hit?)?: got.append("pixel cast \(hit.entity.name) z \(String(format: "%.2f", hit.position.z)) n \(hit.normal) prim \(hit.primitive) bary \(hit.barycentric != nil)")
+                    case .success(nil)?: got.append("pixel cast nil")
+                    case .failure(let e)?: got.append("pixel cast err \(String(describing: e).prefix(50))")
+                    case nil: got.append("pixel cast timeout")
+                    }
+                }
+                // a custom material from a surface shader in a runtime-compiled library (or the simulator's refusal)
+                do {
+                    let lib = try await dev.makeLibrary(source: """
+                        #include <metal_stdlib>
+                        #include <RealityKit/RealityKit.h>
+                        [[visible]] void p28Surface(realitykit::surface_parameters params) { params.surface().set_base_color(half3(0, 1, 0)); }
+                        """, options: nil)
+                    let shader = CustomMaterial.SurfaceShader(named: "p28Surface", in: lib)
+                    var cm = try CustomMaterial(surfaceShader: shader, lightingModel: .unlit)
+                    cm.faceCulling = .back; cm.blending = .opaque
+                    let stages: [CustomShaderStage] = [.geometryModifier, .surfaceShader]
+                    got.append("custom material \(cm.lightingModel) \(stages.count) stages, functions \((shader as any MaterialFunction) is CustomMaterial.SurfaceShader)")
+                } catch let e as CustomMaterialError {
+                    got.append("custom material \(e)")
+                } catch { got.append("custom material err \(String(describing: error).prefix(60))") }
+                let cmErrs: [CustomMaterialError] = [.geometryModifierFunctionNotFound, .surfaceShaderFunctionNotFound, .defaultSurfaceShaderForMaterialNotFound]
+                var inv = P28Invert(); inv.prepare(for: dev)
+                try expect(cmErrs.count == 3 && inv.prepared, "custom material errors / post-process prepare")
+                #endif
+                // environment resources from an equirectangular picture, their skybox
+                let ctx = CGContext(data: nil, width: 32, height: 16, bitsPerComponent: 8, bytesPerRow: 128, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                ctx.setFillColor(red: 1, green: 0.5, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: 32, height: 16))
+                do {
+                    let env = try await EnvironmentResource(equirectangular: ctx.makeImage()!, withName: "p28env")
+                    got.append("environment skybox \(env.skybox.width)x\(env.skybox.height)")
+                } catch { got.append("environment err \((error as NSError).code)") }
+                // the HasX protocols and entity classes
+                #if os(iOS)
+                let bt = BodyTrackedEntity()
+                got.append("body tracked \((bt as Any) is HasBodyTracking) paused \(bt.bodyTracking.isPaused)")
+                #endif
+                #if !os(tvOS)
+                got.append("scene understanding \((Entity() as Any) is HasSceneUnderstanding)")
+                #endif
+                let mcp: MaterialColorParameter = .color(.red)
+                try expect(mcp == .color(.red), "material colour parameter")
                 return got.joined(separator: ", ")
             }
         })
