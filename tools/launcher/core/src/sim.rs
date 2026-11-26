@@ -45,9 +45,19 @@ pub fn devices() -> Vec<(String, PathBuf)> {
 /// unsupported. The profile is a binary plist whose strings are plain ASCII: the model ids in a profile with that
 /// key are its restriction (a restricted profile has no unsupportedDeviceTypes).
 pub fn runtime_restricted_to(runtime_root: &Path) -> Vec<String> {
+    profile_models(runtime_root, b"restrictedToDeviceTypes")
+}
+
+/// The device types a runtime's profile lists as unsupported (unsupportedDeviceTypes): iOS 27.2 24B8117 leaves out
+/// the iPhone Duo, which has a build of its own. Same reading as runtime_restricted_to (a profile has one or the other).
+pub fn runtime_unsupported(runtime_root: &Path) -> Vec<String> {
+    profile_models(runtime_root, b"unsupportedDeviceTypes")
+}
+
+fn profile_models(runtime_root: &Path, key: &[u8]) -> Vec<String> {
     let Some(profile) = std::fs::canonicalize(runtime_root).ok().and_then(|r| r.parent().map(|p| p.join("profile.plist"))) else { return vec![] };
     let Ok(b) = std::fs::read(profile) else { return vec![] };
-    if !b.windows(23).any(|w| w == b"restrictedToDeviceTypes") {
+    if !b.windows(key.len()).any(|w| w == key) {
         return vec![];
     }
     let mut out = vec![];
@@ -68,6 +78,11 @@ pub fn runtime_restricted_to(runtime_root: &Path) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// A model id's name ("iPhone19,4" -> "iPhone Duo"), else the id itself
+pub fn model_name(model_id: &str) -> String {
+    models().into_iter().find(|m| m.1 == model_id).map(|m| m.0).unwrap_or_else(|| model_id.to_string())
 }
 
 /// Whether a phone of `model_id` can run on this runtime (restriction only; families are not checked)

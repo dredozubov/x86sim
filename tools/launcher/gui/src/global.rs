@@ -343,14 +343,22 @@ impl App {
                 let partial = host::partial_download(r);
                 let n = phones_on(&r.dir);
                 let size = self.sizes.lock().unwrap().get(&r.jc).copied();
+                // two builds of one version (iOS 27.2 and the iPhone Duo's 27.2) are told apart by build and by the
+                // devices each is for (their profiles)
+                let scope = runtime_scope(r);
+                let twin = runtimes.iter().filter(|o| o.label() == r.label()).count() > 1;
+                let rtitle = if twin { format!("{} ({})", r.label(), r.build) } else { r.label() };
                 let mut line = format!("Build {} · {} device{}", r.build, n, if n == 1 { "" } else { "s" });
+                if !scope.is_empty() {
+                    line = format!("{scope} · {line}");
+                }
                 if let Some(b) = size {
                     line += &format!(" · {:.1} GB translated code", b as f64 / 1e9);
                 }
                 // a badge only for what needs attention: the section says these are installed, the progress row below
                 // that one is downloading
                 let warn = if fetching.is_some() || r.present { None } else if partial.is_some() { Some("Stopped") } else { Some("Files missing") };
-                list_row(ui, icon::STACK, &r.label(), &line, |ui| {
+                list_row(ui, icon::STACK, &rtitle, &line, |ui| {
                     if r.present {
                         // the row's trailing side is laid out right to left: Delete ends up rightmost
                         if self.rt_delete.busy(&r.build) {
@@ -442,7 +450,7 @@ impl App {
                 });
             }
             Some(v) => {
-                let is_beta = |c: &host::Catalogue| c.name.contains("beta") || c.name.contains("Release Candidate");
+                let is_beta = |c: &host::Catalogue| c.beta;
                 let mut v: Vec<&host::Catalogue> = v.iter().filter(|c| !runtimes.iter().any(|r| r.build == c.build)).collect();
                 // newest first; releases before betas of the same version
                 v.sort_by(|a, b| ver_key(&b.version).cmp(&ver_key(&a.version)).then(is_beta(a).cmp(&is_beta(b))).then(b.build.cmp(&a.build)));
@@ -461,10 +469,18 @@ impl App {
                         hline(ui);
                     }
                     let fetching = self.fetching.get(&c.build).cloned();
-                    let short = c.name.trim_end_matches(" Simulator Runtime").trim().replace("Release Candidate", "RC");
-                    let t = if !short.is_empty() { short } else if c.version.is_empty() { c.build.clone() } else { format!("{} {}", x86sim_core::sim::platform_name(&c.platform), c.version) };
+                    let mut t = c.title();
+                    // the same name twice (a general build and one for particular devices): the build tells them apart
+                    if v.iter().filter(|o| o.title() == t).count() > 1 {
+                        t = format!("{t} ({})", c.build);
+                    }
                     let need = phones_need(&c.build);
+                    let all = cat.as_deref().unwrap_or_default();
+                    let scope = catalogue_scope(c, all, &runtimes);
                     let mut detail = format!("Build {} · {:.1} GB download", c.build, c.gb);
+                    if !scope.is_empty() {
+                        detail = format!("{scope} · {detail}");
+                    }
                     if need > 0 {
                         detail += &format!(" · {need} device{} need{} it", if need == 1 { "" } else { "s" }, if need == 1 { "s" } else { "" });
                     }
@@ -490,6 +506,18 @@ impl App {
                 }
             }
         });
+        // why the newest iOS on a phone (27.2.1) or in the news (27.3) may not be here
+        if let Some(c) = cat.as_ref().filter(|c| !c.is_empty()) {
+            ui.add_space(S2);
+            for line in catalogue_notes(c, show_betas) {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = S2;
+                    ui.label(egui::RichText::new(icon::INFO).family(icons()).size(14.0).color(pal().ink_3));
+                    ui.add(egui::Label::new(muted(line)).wrap());
+                });
+                ui.add_space(S1);
+            }
+        }
         if let Some((b, l)) = fetch {
             self.download(&b, &l);
         }
@@ -1010,6 +1038,79 @@ pub(crate) fn note(ui: &mut egui::Ui, text: &str) {
     egui::Frame::new().inner_margin(egui::Margin { left: 58, right: 14, top: 0, bottom: 10 }).show(ui, |ui| {
         ui.add(egui::Label::new(muted(text)).wrap());
     });
+}
+
+/// Which devices an installed runtime is for, from its profile: "iPhone Duo only" (restrictedToDeviceTypes), "Every
+/// device but iPhone Duo" (unsupportedDeviceTypes: those have a build of their own); empty when it takes them all.
+fn runtime_scope(r: &host::Runtime) -> String {
+    let names = |ids: &[String]| ids.iter().map(|m| sim::model_name(m)).collect::<Vec<_>>().join(", ");
+    if !r.restricted_to.is_empty() {
+        format!("For {} only", names(&r.restricted_to))
+    } else if !r.unsupported.is_empty() {
+        format!("Every device but {}", names(&r.unsupported))
+    } else {
+        String::new()
+    }
+}
+
+/// Which devices a build in Apple's catalogue is for. Apple's list doesn't name them (the runtime's profile does,
+/// once downloaded): a build beside a general one (alt_of) is for the devices the general build leaves out, named
+/// when that one is on this computer; the general one says a build for some devices sits beside it.
+fn catalogue_scope(c: &host::Catalogue, all: &[host::Catalogue], have: &[host::Runtime]) -> String {
+    let names = |ids: &[String]| ids.iter().map(|m| sim::model_name(m)).collect::<Vec<_>>().join(", ");
+    // another release's build is named with its version ("iOS 27.0 24A434"), one of the same release by build alone
+    let other = |o: &host::Catalogue| if o.version == c.version { o.build.clone() } else { format!("{} {} {}", sim::platform_name(&o.platform), o.version, o.build) };
+    if !c.alt_of.is_empty() {
+        match have.iter().find(|r| r.build == c.alt_of && !r.unsupported.is_empty()) {
+            Some(g) => format!("For {} only", names(&g.unsupported)),
+            None => format!("For particular devices (beside {})", all.iter().find(|o| o.build == c.alt_of).map(other).unwrap_or(c.alt_of.clone())),
+        }
+    } else if let Some(o) = all.iter().filter(|o| o.alt_of == c.build).min_by_key(|o| (o.beta, o.version != c.version)) {
+        match have.iter().find(|r| r.build == o.build && !r.restricted_to.is_empty()) {
+            Some(d) => format!("Every device but {}", names(&d.restricted_to)),
+            None => format!("Most devices ({} is for particular ones)", other(o)),
+        }
+    } else {
+        String::new()
+    }
+}
+
+/// The notes under Apple's list: a version that only has betas so far, and why a device-only update (27.2.1) never
+/// shows up. Simulator runtimes come with Xcode, so they follow Xcode's releases, not every iOS update.
+fn catalogue_notes(cat: &[host::Catalogue], show_betas: bool) -> Vec<String> {
+    let mut out = vec![];
+    let mut beta_only = vec![];
+    for p in sim::PLATFORMS {
+        let mine: Vec<&host::Catalogue> = cat.iter().filter(|c| c.platform == p).collect();
+        let Some(newest) = mine.iter().map(|c| ver_key(&c.version)).max() else { continue };
+        if mine.iter().filter(|c| ver_key(&c.version) == newest).all(|c| c.beta) {
+            if let Some(c) = mine.iter().find(|c| ver_key(&c.version) == newest) {
+                beta_only.push(format!("{} {}", sim::platform_name(p), c.version));
+            }
+        }
+    }
+    if !beta_only.is_empty() {
+        let list = match beta_only.len() {
+            1 => beta_only[0].clone(),
+            n => format!("{} and {}", beta_only[..n - 1].join(", "), beta_only[n - 1]),
+        };
+        let verb = if beta_only.len() == 1 { "is" } else { "are" };
+        out.push(if show_betas {
+            format!("{list} {verb} beta-only so far. The release shows here once Apple publishes its simulator runtime.")
+        } else {
+            format!("{list} {verb} beta-only so far: turn on Show betas to see {}. The release shows here once Apple publishes its simulator runtime.", if beta_only.len() == 1 { "it" } else { "them" })
+        });
+    }
+    let newest_ios = cat.iter().filter(|c| c.platform == "ios" && !c.beta).map(|c| c.version.as_str()).max_by_key(|v| ver_key(v));
+    let example = newest_ios.map(|v| {
+        let (a, b, c) = ver_key(v);
+        format!(" (iOS {a}.{b}.{}, say)", c + 1)
+    });
+    out.push(format!(
+        "Simulator runtimes come with Xcode releases, not with every iOS update: Apple makes none for most updates that only phones get{}, so a phone can be on a newer version than any here.",
+        example.unwrap_or_default()
+    ));
+    out
 }
 
 /// "27.2" -> (27, 2, 0) for sorting
