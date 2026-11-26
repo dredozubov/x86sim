@@ -34,7 +34,13 @@ const XR_HUD: &str = "com.apple.RealityHUD";
 const TV_SYSTEM_UI: &str = "com.apple.TVSystemUIService";
 
 fn is_shell(bundle: &str) -> bool {
-    SHELLS.contains(&bundle) || [TV_HOME, TV_SYSTEM_UI, WATCH_FACE, XR_HOME, XR_HUD].contains(&bundle)
+    SHELLS.contains(&bundle) || [TV_HOME, TV_SYSTEM_UI, WATCH_FACE, XR_HOME, XR_HUD].contains(&bundle) || is_wallpaper(bundle)
+}
+
+/// A wallpaper's process: iOS 27's home and lock screen poster extensions (com.apple.MercuryPoster, PosterBoard, the
+/// photo / emoji / gradient posters) draw under SpringBoard with a foreground scene of their own; never the app in front
+fn is_wallpaper(bundle: &str) -> bool {
+    bundle.contains("Poster")
 }
 
 fn is_false(b: &bool) -> bool {
@@ -991,7 +997,7 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
             fronts.push((pid, bundle.clone(), state == "active"));
         }
         if let Some(sp) = proc_space {
-            let rank = if bundle != SPRINGBOARD && has_app_content && state == "active" { 0 } else if bundle == SPRINGBOARD { 1 } else { 2 };
+            let rank = if bundle != SPRINGBOARD && !is_wallpaper(&bundle) && has_app_content && state == "active" { 0 } else if bundle == SPRINGBOARD { 1 } else { 2 };
             spaces.push((rank, bundle.clone(), sp));
         }
     }
