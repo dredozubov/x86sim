@@ -150,8 +150,23 @@ fn exe_of(name: &str) -> Option<&str> {
     (j > i).then(|| &name[i + 1..j])
 }
 
-/// Descriptor -> number of executables that ran it, over .bin / .live files (each executable counted once).
+/// RAM 14: a program that runs at idle on every boot (aot/resident.txt, written by the boot's upkeep) counts as this many
+/// programs. Its private live translations cost RAM all the time (code + block metadata in every boot: SpringBoard ~40 MB),
+/// where a block a few test apps ran costs only while they run; with one vote each, an iPad's SpringBoard-only code lost
+/// the slab to blocks three sdkcov apps shared.
+pub const RESIDENT_WEIGHT: u32 = 4;
+
+/// The programs listed in `<aot>/resident.txt` (one executable name per line).
+pub fn resident(aot: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(aot.join("resident.txt")).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+}
+
+/// Descriptor -> number of executables that ran it, over .bin / .live files (each executable counted once; a resident
+/// one RESIDENT_WEIGHT times).
 fn merge_counts(files: &[PathBuf]) -> HashMap<u64, u32> {
+    merge_counts_weighted(files, &Default::default())
+}
+fn merge_counts_weighted(files: &[PathBuf], resident: &std::collections::HashSet<String>) -> HashMap<u64, u32> {
     let mut per_exe: HashMap<String, Vec<u64>> = HashMap::new();
     for f in files {
         let n = f.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -161,11 +176,12 @@ fn merge_counts(files: &[PathBuf]) -> HashMap<u64, u32> {
         }
     }
     let mut m: HashMap<u64, u32> = HashMap::new();
-    for (_, mut v) in per_exe {
+    for (exe, mut v) in per_exe {
+        let w = if resident.contains(&exe) { RESIDENT_WEIGHT } else { 1 };
         v.sort_unstable();
         v.dedup();
         for d in v {
-            *m.entry(d).or_default() += 1;
+            *m.entry(d).or_default() += w;
         }
     }
     m
@@ -296,6 +312,9 @@ pub fn load(dirs: &[PathBuf], uuid: &str, cache_file: &Path, until: Option<u64>,
     // "R2J1": the rank format (a hot.bin of the old per-file counts is never reused)
     let mut sig_files = all.clone();
     sig_files.extend(shipped.map(Path::to_path_buf));
+    let res_file = cache_file.with_file_name("resident.txt");
+    sig_files.push(res_file.clone());
+    let res = cache_file.parent().map(resident).unwrap_or_default();
     let sig = signature(&sig_files) ^ 0x5232_4a31_0000_0001;
     // RAM 14: streamed (the whole 160 MB file and the vector built from it were both resident at once)
     let cached = (|| -> Option<Vec<(u64, u32)>> {
@@ -323,7 +342,7 @@ pub fn load(dirs: &[PathBuf], uuid: &str, cache_file: &Path, until: Option<u64>,
         Some(b) => b,
         None => {
             // descriptors per executable (its .bin files and its .live), then one count per executable
-            let mut m = merge_counts(&all);
+            let mut m = merge_counts_weighted(&all, &res);
             if let Some(sp) = shipped {
                 for (d, c) in read_shipped(sp, uuid) {
                     *m.entry(d).or_default() += c;

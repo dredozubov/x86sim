@@ -1092,6 +1092,16 @@ if [ -x "$AOTBIN" ]; then
 	 # AOT cache 1: upkeep first (x86sim-aot maintain, skipped while a build / install holds the cache): an image for
 	 # the current placement if it has none (assembled from the chunks that are up to date), then the cleanup of
 	 # images, chunks and per-process caches nothing uses any more (appcache.rs). No user command needed.
+	 # RAM 14: the programs running now (home reached, CPU quiet) are this runtime's residents: x86sim-aot ranks their
+	 # code higher for the image (hot.rs RESIDENT_WEIGHT). The union over boots, by executable name as the
+	 # translator names its training files.
+	 if [ -d "$JC/aot" ]; then
+		{ cat "$JC/aot/resident.txt" 2>/dev/null
+		  for p in /proc/[0-9]*; do
+			grep -qsazF "__mldr_sockpath=$DPREFIX/.darlingserver.sock" "$p/environ" || continue
+			a0=$(tr '\0' '\n' < "$p/cmdline" 2>/dev/null | head -1); [ -n "$a0" ] && echo "${a0##*/}"
+		  done; } | sort -u > "$JC/aot/resident.txt.$$" && mv -f "$JC/aot/resident.txt.$$" "$JC/aot/resident.txt"
+	 fi
 	 nice -n 19 ionice -c 3 "$AOTBIN" --jc "$JC" --device "$D" maintain > "$ST/aot-maintain.log" 2>&1
 	 nice -n 19 ionice -c 3 "$AOTBIN" --jc "$JC" --device "$D" status > "$ST/aot-status.txt" 2>&1
 	 if [ "${X86SIM_AOT_AUTOUPDATE:-0}" = 1 ] && grep -q "need rebuilding" "$ST/aot-status.txt"; then
