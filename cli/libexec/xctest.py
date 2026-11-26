@@ -17,7 +17,9 @@ Inputs: an .xctestrun (what `xcodebuild build-for-testing` writes next to the pr
 explicit bundles (--app / --test-bundle / --ui-test-runner), or a Swift package (--spm DIR: swift build --build-tests
 for the simulator, then its logic bundle). XCTest's own frameworks are Xcode's, not the runtime's: --platform DIR,
 $X86SIM_XCTEST_PLATFORMS, sdks/<Platform>.platform, or the xtool SDK from `x86sim dev setup` (an Xcode .xip).
-Results: per-test lines while it runs, a summary as xcodebuild prints it, results.json and junit.xml in the output dir;
+Results: per-test lines while it runs, a summary as xcodebuild prints it, results.json and junit.xml in the output dir,
+and the tests' XCTest attachments (screenshots, strings, data; libsimshim saves them) in attachments/<Class>.<test>/,
+listed per test in results.json (deleteOnSuccess ones of passed tests are dropped, as Xcode does);
 exit status 0 when every test passed (or was skipped), 1 when one failed, 2 when nothing could run.
 """
 import fcntl
@@ -184,7 +186,7 @@ def configuration(bundle, module, target_path=None, target_bid=None, target_args
         "runAsMultiDeviceRemoteRunner": False,
         "runtimeDiagnosticsPolicy": Obj(["XCTRuntimeDiagnosticsPolicy", "NSObject"], {}),
         "sessionIdentifier": None, "shouldExtractMultiDeviceRequirements": False, "symbolicationImageNames": None,
-        "systemAttachmentLifetime": 0,
+        "systemAttachmentLifetime": 1,   # deleteOnSuccess, as Xcode: failure screenshots are kept (#50)
         "targetApplicationArguments": list(target_args) if target_path else None,
         "targetApplicationBundleID": target_bid,
         "targetApplicationEnvironment": dict(target_env or {}) if target_path else None,
@@ -719,6 +721,10 @@ class Runner:
         parser = Parser(name)
         log = os.path.join(self.out, name + ".log")
         res["log"] = log
+        # issue #50: libsimshim (simshim_xct.c) writes every XCTest attachment of the test process here
+        att = os.path.join(self.out, "attachments", ".raw-" + name)
+        shutil.rmtree(att, ignore_errors=True)
+        os.makedirs(att, exist_ok=True)
         outf = os.path.join(self.work, name + ".out")
         open(outf, "w").close()
         module = t.get("ProductModuleName") or name
@@ -731,6 +737,7 @@ class Runner:
                 agent = os.path.join(self.pdev, "Library/Xcode/Agents/xctest")
                 agent = dv(agent) if os.path.exists(agent) else dv(os.path.join(self.rtroot, "Developer/usr/bin/xctest"))
                 env = self.environment(t, None, products)
+                env["X86SIM_XCTEST_ATTACHMENTS"] = dv(att)
                 env["XCTestConfigurationFilePath"] = self.write_config(name, configuration(bundle, module, only=only or None, skip=skip))
                 env["XCTestBundlePath"] = bundle
                 rel = os.path.relpath(outf, self.data)
@@ -755,6 +762,7 @@ class Runner:
                 if not bundle.startswith(DV):
                     bundle = dv(bundle)
                 env = self.environment(t, host, products)
+                env["X86SIM_XCTEST_ATTACHMENTS"] = dv(att)
                 if kind == "ui":
                     tenv = {k: self.subst(str(v), host) for k, v in t.get("UITargetAppEnvironmentVariables", {}).items()}
                     for k in [k for k in tenv if k.startswith("DYLD_")]:
@@ -801,12 +809,62 @@ class Runner:
         except SystemExit as e:   # simctl's die(): no answer from the phone
             res["error"] = "the device did not answer (%s)" % e
         res["tests"] = parser.tests
+        res["attachments"] = self.attachments(att, parser.tests)
         res["duration"] = round(time.monotonic() - t0, 3)
         failed = any(x["result"] == "failed" for x in parser.tests) or "error" in res
         res["result"] = "failed" if failed else "passed"
         if "error" in res:
             print("x86sim test: %s: %s" % (name, res["error"]), file=sys.stderr)
         return res
+
+    def attachments(self, raw, tests):
+        """Issue #50: the attachments libsimshim saved during a target's run, moved to attachments/<Class>.<test>/ and
+        listed in each test's "attachments" (deleteOnSuccess ones of passed tests are dropped, as Xcode does). Those
+        added outside a test (class setUp) go to attachments/_run/ and are returned for the target."""
+        base = os.path.dirname(raw)
+        loose = []
+        try:
+            lines = open(os.path.join(raw, "index.jsonl")).read().splitlines()
+        except OSError:
+            lines = []
+        used = set()
+        for ln in lines:
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            if not e.get("file"):
+                continue
+            src = os.path.join(raw, e["file"])
+            m = re.match(r"-\[(\S+) (\S+)\]$", e.get("test") or "")
+            t = None
+            if m:
+                cls, tn = m.group(1).split(".")[-1], m.group(2)
+                t = next((x for x in tests if x["name"] == tn and x["class"].split(".")[-1] == cls), None)
+            if t and t["result"] == "passed" and e.get("lifetime") == 1:
+                continue
+            folder = "%s.%s" % (t["class"].split(".")[-1], t["name"]) if t else "_run"
+            stem = re.sub(r"[^A-Za-z0-9._-]+", "_", e.get("name") or "") or "attachment-%d" % e.get("seq", 0)
+            ext = os.path.splitext(e["file"])[1]
+            dst = os.path.join(base, folder, stem + ext)
+            k = 1
+            while dst in used or os.path.exists(dst):
+                k += 1
+                dst = os.path.join(base, folder, "%s-%d%s" % (stem, k, ext))
+            used.add(dst)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            try:
+                shutil.move(src, dst)
+            except OSError:
+                continue
+            item = {"name": e.get("name"), "path": dst, "type": e.get("uti"), "from": e.get("from")}
+            (t.setdefault("attachments", []) if t else loose).append(item)
+        shutil.rmtree(raw, ignore_errors=True)
+        try:
+            os.rmdir(base)   # nothing was kept
+        except OSError:
+            pass
+        return loose
 
     def run(self, root, targets):
         self.root = root
