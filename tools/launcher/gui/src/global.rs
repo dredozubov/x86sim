@@ -562,23 +562,28 @@ impl App {
                 if present.iter().filter(|o| o.label() == r.label()).count() > 1 { format!("{} ({})", r.label(), r.build) } else { r.label() }
             }).collect();
             let sel = present.iter().position(|r| Some(&r.root) == self.aot.runtime_root.as_ref());
-            // more versions than fit as segments (a narrow window, many versions): a list instead of a clipped row
-            let seg_w: f32 = labels.iter().map(|l| ui.painter().layout_no_wrap(l.clone(), font_m(T_SMALL), pal().ink).size().x + 20.0).sum::<f32>() + 4.0;
+            // a list, not a row of segments: versions add up (several builds, every platform); grouped by platform
+            // (runtimes() already orders them so), with a heading when there is more than one
             let mut pick = None;
-            let as_segments = seg_w <= page_w;
-            if as_segments {
-                pick = segmented(ui, &labels.iter().map(|s| s.as_str()).collect::<Vec<_>>(), sel, !building);
-            } else {
-                ui.add_enabled_ui(!building, |ui| {
-                    egui::ComboBox::from_id_salt("aotver").icon(caret).width(220.0_f32.min(ui.available_width() - S2)).selected_text(body(sel.map(|i| labels[i].clone()).unwrap_or_default())).show_ui(ui, |ui| {
-                        for (i, l) in labels.iter().enumerate() {
-                            if ui.selectable_label(sel == Some(i), l).clicked() {
-                                pick = Some(i);
+            let several = present.iter().any(|r| r.platform != present[0].platform);
+            let ver_w = 240.0_f32.min(page_w - S2);
+            ui.add_enabled_ui(!building, |ui| {
+                egui::ComboBox::from_id_salt("aotver").icon(caret).width(ver_w).height(420.0).selected_text(body(sel.map(|i| labels[i].clone()).unwrap_or_default())).show_ui(ui, |ui| {
+                    for (i, l) in labels.iter().enumerate() {
+                        if several && (i == 0 || present[i - 1].platform != present[i].platform) {
+                            if i > 0 {
+                                ui.add_space(S1);
                             }
+                            ui.label(muted(sim::platform_name(&present[i].platform)));
                         }
-                    });
-                });
-            }
+                        if ui.selectable_label(sel == Some(i), l).clicked() {
+                            pick = Some(i);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Version to pre-translate");
+            });
             if let Some(i) = pick {
                 self.aot.select(present[i].root.clone(), None);
             }
@@ -586,10 +591,10 @@ impl App {
                 self.aot.select(present[0].root.clone(), None);
             }
             // "Apps from" and its list move to a second row when the first has no room (a combo box doesn't wrap itself)
-            if page_w - if as_segments { seg_w } else { 250.0 } < 290.0 {
+            if page_w - ver_w - S2 < 290.0 {
                 ui.end_row();
             } else {
-                ui.add_space(S2);
+                ui.add_space(S3);
             }
             ui.label(sub("Apps from"));
             let phones: Vec<(String, PathBuf)> = self.insts.iter().filter(|i| Some(&i.runtime_root) == self.aot.runtime_root.as_ref()).map(|i| (i.name.clone(), i.dir.clone())).collect();
