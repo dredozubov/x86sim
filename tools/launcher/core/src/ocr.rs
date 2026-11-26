@@ -339,9 +339,18 @@ pub fn worth_a_look(inst: &crate::instance::Instance, t: &crate::ax::Target) -> 
         }
 }
 
+/// The numbers in a text, in order (runs of digits)
+fn numbers(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_ascii_digit()).filter(|n| !n.is_empty()).map(str::to_string).collect()
+}
+
 /// Close enough for text read from pixels: the same after dropping what is not a letter or digit, or at most one
-/// edit per six characters
+/// edit per six characters, in letters only: the numbers must be the same ("Taps: 0" is not "Taps: 1", a counter
+/// one step behind)
 pub fn near(label: &str, want: &str) -> bool {
+    if numbers(label) != numbers(want) {
+        return false;
+    }
     let a: Vec<char> = label.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
     let b: Vec<char> = want.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
     if b.len() < 3 {
@@ -458,6 +467,36 @@ fn cached(inst: &crate::instance::Instance, frame: &str, part: &str, read: impl 
     Ok((v, false, ms))
 }
 
+fn norm(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// A view drawing its own pixels already has its text said by elements: one of its app's elements, or a home screen's
+/// labelled element (an icon over the wallpaper, whichever process draws that), sits inside it and is not the view
+/// itself. Status bar elements sit over everything and hold nothing.
+fn held(r: &Region, els: &[crate::ax::El]) -> bool {
+    els.iter().any(|e| {
+        !e.ocr
+            && e.layer != "status"
+            && !e.offscreen
+            && (e.app == r.app || (e.layer == "home" && e.label.as_deref().is_some_and(|l| !l.is_empty())))
+            && inside(&r.frame, center(&e.frame))
+            && area(&e.frame) < 0.8 * area(&r.frame)
+    })
+}
+
+/// Text read from pixels that an element near it says already (its label or value): an icon's name under the icon,
+/// a button's caption
+fn said_near(p: &Phrase, els: &[crate::ax::El]) -> bool {
+    let pn = norm(&p.text);
+    let c = center(&p.rect);
+    !pn.is_empty()
+        && els.iter().any(|e| {
+            let l = norm(e.label.as_deref().unwrap_or("")) + &norm(e.value.as_deref().unwrap_or(""));
+            !e.ocr && l.contains(&pn) && (center(&e.frame).0 - c.0).abs() < 60.0 && (center(&e.frame).1 - c.1).abs() < 40.0
+        })
+}
+
 /// Adds text read from the pixels to a snapshot: in each large view (a quarter of the screen or more) that draws its own
 /// pixels and has no elements inside, and, with `whole`, the text of the whole screen that no element says already.
 /// A web page's canvas elements (simax role `canvas`) become such views (one with an accessible name stays, as an
@@ -494,7 +533,7 @@ pub fn augment(inst: &crate::instance::Instance, snap: &mut crate::ax::Snapshot,
         if r.rot != snap.rot || area(&r.frame) < area(&scr) / 4.0 {
             continue;
         }
-        let holds = snap.elements.iter().any(|e| e.app == r.app && e.layer != "status" && !e.offscreen && inside(&r.frame, center(&e.frame)) && area(&e.frame) < 0.8 * area(&r.frame));
+        let holds = held(&r, &snap.elements);
         // nested views (an SKView in a Metal-backed container): the inner one
         if !holds && !targets.iter().any(|t| t.app == r.app && inside(&t.frame, center(&r.frame)) && area(&t.frame) <= area(&r.frame)) {
             targets.retain(|t| !(t.app == r.app && inside(&r.frame, center(&t.frame))));
@@ -565,13 +604,8 @@ pub fn augment(inst: &crate::instance::Instance, snap: &mut crate::ax::Snapshot,
                 }
                 // already an element's text: inside a labelled element that is not a big container, or the label of
                 // one near it
-                let n = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
-                let pn = n(&p.text);
-                let said = snap.elements.iter().any(|e| {
-                    let l = n(e.label.as_deref().unwrap_or("")) + &n(e.value.as_deref().unwrap_or(""));
-                    (inside(&e.frame, c) && !l.is_empty() && area(&e.frame) < area(&scr) / 4.0)
-                        || (!pn.is_empty() && l.contains(&pn) && (center(&e.frame).0 - c.0).abs() < 60.0 && (center(&e.frame).1 - c.1).abs() < 40.0)
-                });
+                let said = said_near(&p, &snap.elements)
+                    || snap.elements.iter().any(|e| inside(&e.frame, c) && !norm(e.label.as_deref().unwrap_or("")).is_empty() && area(&e.frame) < area(&scr) / 4.0);
                 if said {
                     continue;
                 }
@@ -589,7 +623,8 @@ pub fn augment(inst: &crate::instance::Instance, snap: &mut crate::ax::Snapshot,
             }
         } else {
             for t in &targets {
-                for p in part(&t.frame)?.into_iter().filter(|p| !in_status(p)) {
+                // (an element's label drawn over the view, as an icon's name over a wallpaper: the element says it)
+                for p in part(&t.frame)?.into_iter().filter(|p| !in_status(p) && !said_near(p, &snap.elements)) {
                     out.push(el(&p, &t.app, t.pid, &t.layer, &t.window, t.rot));
                 }
             }
@@ -628,6 +663,47 @@ mod tests {
         assert!(near("Settings", "Settings!"));
         assert!(!near("Start", "Stop"));
         assert!(!near("ab", "ac"));
+    }
+
+    #[test]
+    fn near_numbers_exact() {
+        // a counter one step behind is not the text waited for (wait_for "Taps: 1" while the screen says "Taps: 0")
+        assert!(!near("Taps: 0", "Taps: 1"));
+        assert!(!near("Taps: 1", "Taps: 0"));
+        assert!(!near("Score: 10", "Score: 1"));
+        assert!(!near("Level 12", "Level 21"));
+        assert!(!near("Taps: O", "Taps: 0"));
+        // letters may still be read wrong around the right number
+        assert!(near("Tsps: 1", "Taps: 1"));
+        assert!(near("Score: 42", "score 42"));
+    }
+
+    fn el(app: &str, layer: &str, label: &str, frame: [f64; 4]) -> crate::ax::El {
+        crate::ax::El { role: "icon".into(), app: app.into(), layer: layer.into(), label: Some(label.into()), frame, ..Default::default() }
+    }
+
+    #[test]
+    fn wallpaper_under_icons_is_not_read() {
+        // iOS 27's home screen: the poster extension's Metal view covers the screen, SpringBoard's icons sit over it
+        let wall = Region {
+            frame: [0.0, 0.0, 402.0, 874.0],
+            layer: "app".into(),
+            kind: "metal".into(),
+            class: "MercuryPosterExtension.WallpaperMetalView".into(),
+            app: "com.apple.MercuryPoster".into(),
+            pid: 300,
+            window: String::new(),
+            rot: 0,
+        };
+        let icons = vec![el("com.apple.springboard", "home", "Settings", [304.0, 189.0, 72.0, 90.7]), el("com.apple.springboard", "status", "9:19 PM", [30.0, 15.0, 60.0, 20.0])];
+        assert!(held(&wall, &icons));
+        // a game's view under SpringBoard's status bar only: read
+        assert!(!held(&wall, &icons[1..]));
+        // the icon's name, read off the pixels under it, is the icon's
+        let p = |t: &str, x: f64, y: f64| Phrase { text: t.into(), rect: [x - 25.0, y - 7.0, 50.0, 14.0] };
+        assert!(said_near(&p("Settings", 340.0, 266.0), &icons));
+        assert!(!said_near(&p("Settings", 340.0, 600.0), &icons));
+        assert!(!said_near(&p("Taps: 0", 340.0, 266.0), &icons));
     }
 
     #[test]

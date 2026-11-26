@@ -1,7 +1,8 @@
 // x86Sim: simax, views that draw their own pixels (the host reads their text with OCR when they hold no elements).
 //
 // While the tree walk passes a view, simax_pixels_note() records it when it renders without UIKit's views: a Metal or
-// OpenGL layer (CAMetalLayer, CAEAGLLayer: MTKView, GLKView, game engines such as Unity's UnityView, Flutter) or a
+// OpenGL layer (CAMetalLayer, CAEAGLLayer: MTKView, GLKView, game engines such as Unity's UnityView, Flutter; or as a
+// sublayer covering the view: Godot's GDTView) or a
 // SpriteKit / SceneKit view, and it covers at least 1/16 of its window's screen. The answer's `pixels` lists them:
 // `frame` (screen points, as the elements'), `class` (the view's), `kind` (metal, opengl, spritekit, scenekit),
 // `win`, `oid`. The host decides what counts as large and empty (docs/protocols/SIMAX.md, core/src/ocr.rs).
@@ -30,6 +31,15 @@ NSString* simax_pixel_kind(UIView* v) {
 	// classes that make their layer later or host it as a sublayer
 	if (kind_of_class(c, @"MTKView")) return @"metal";
 	if (kind_of_class(c, @"GLKView")) return @"opengl";
+	// a plain view whose drawing layer is a sublayer covering it (Godot's GDTView: GDTMetalLayer / GDTOpenGLLayer)
+	CGRect b = v.layer.bounds;
+	for (CALayer* l in v.layer.sublayers) {
+		if (l.hidden || l.opacity < 0.01) continue;
+		CGRect on = CGRectIntersection(l.frame, b);
+		if (CGRectIsNull(on) || on.size.width * on.size.height < 0.5 * b.size.width * b.size.height) continue;
+		if (kind_of_class([l class], @"CAMetalLayer")) return @"metal";
+		if (kind_of_class([l class], @"CAEAGLLayer")) return @"opengl";
+	}
 	return nil;
 }
 
