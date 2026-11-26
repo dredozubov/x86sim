@@ -693,8 +693,9 @@ pub fn remember(dir: &Path, phone: Option<&str>) {
 pub struct Project {
     pub dir: PathBuf,
     pub name: String,
-    /// xtool (Package.swift + xtool.yml: builds here), flutter, expo / reactnative (package.json: CocoaPods workspace
-    /// built by the fork's xcbuild.py), swiftpm (no xtool.yml), xcodeproj (convert it first)
+    /// xtool (Package.swift + xtool.yml: builds here), dotnet (a net*-ios .csproj: builds here), flutter, expo /
+    /// reactnative (package.json: CocoaPods workspace built by the fork's xcbuild.py), swiftpm (no xtool.yml), xcodeproj
+    /// (convert it first)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
@@ -718,11 +719,16 @@ pub fn project(dir: &Path) -> Result<Project> {
         k
     } else if dir.join("Package.swift").exists() {
         "swiftpm"
+    } else if crate::devdotnet::csproj(&dir).is_some() {
+        "dotnet"
     } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj")) {
         "xcodeproj"
     } else {
-        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml or .xcodeproj)", dir.display());
+        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml, net*-ios .csproj or .xcodeproj)", dir.display());
     };
+    if let Some((name, bundle_id, app)) = (kind == "dotnet").then(|| crate::devdotnet::describe(&dir)).flatten() {
+        return Ok(Project { name, kind: kind.into(), bundle_id, app, dir });
+    }
     let y = yml.unwrap_or_default();
     let name = yml_value(&y, "product").unwrap_or(base);
     let app = if matches!(kind, "expo" | "reactnative") {
@@ -804,6 +810,7 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
     let p = project(dir)?;
     match p.kind.as_str() {
         "xtool" => {}
+        "dotnet" => anyhow::ensure!(o.platform == "ios", "{}: .NET for iOS apps build for iOS phones only", p.dir.display()),
         "expo" | "reactnative" => {
             anyhow::ensure!(o.platform == "ios", "React Native and Expo apps build for iPhone and iPad devices here (not {})", o.platform);
             let _lock = BuildLock::take(say)?;
@@ -836,8 +843,15 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
     let mut log = std::fs::File::create(&log_path).ok();
     let t = triple(&o.platform);
     say(&format!("== build {} for {t} ({})", p.name, if o.release { "release" } else { "debug" }));
-    let mut c = command("bash");
-    c.arg(fork_dir().join("ship.sh")).arg("--simulator").current_dir(&p.dir).env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
+    let mut c = if p.kind == "dotnet" {
+        crate::devdotnet::sim_build_command(&p.dir, o.release)
+    } else {
+        let mut c = command("bash");
+        // a Kotlin Multiplatform app (xtool.env: KMP_GRADLE_ROOT) builds its shared framework first: kmp/build-app.sh
+        c.arg(crate::devkmp::sim_build_script(&p.dir)).arg("--simulator").current_dir(&p.dir);
+        c
+    };
+    c.env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
     let mut app_line = None;
     let rc = stream(c, &mut |l: &str| {
         if let Some(f) = log.as_mut() {
