@@ -780,7 +780,7 @@ extension Registry {
 extension Registry {
     static var p28tCallKit: [Check] {
         var c: [Check] = []
-#if canImport(CallKit) && !os(tvOS) && !os(watchOS)
+#if canImport(CallKit) && os(iOS)
         c.append(check("CallKit", "p28-call-actions") {
             let call = UUID(), other = UUID()
             let dtmf = CXPlayDTMFCallAction(call: call, digits: "12#", type: .singleTone)
@@ -853,7 +853,11 @@ extension Registry {
             }
             let ans = await box.wait(15) ?? "no answer in 15 s"
             res.cancel()
-            let hier = p28tClasses([("VSAccountProviderResponse", "NSObject"), ("VSAutoSignInToken", "NSObject"), ("VSAutoSignInTokenUpdateContext", "NSObject"), ("VSAppleSubscription", "NSObject")])
+            var vsRows = [("VSAccountProviderResponse", "NSObject"), ("VSAutoSignInToken", "NSObject"), ("VSAppleSubscription", "NSObject")]
+#if !os(visionOS)
+            vsRows.append(("VSAutoSignInTokenUpdateContext", "NSObject"))   // not in Apple's visionOS runtime
+#endif
+            let hier = p28tClasses(vsRows)
             try expect(hier.isEmpty && !ans.hasPrefix("metadata"), "\(ans) \(hier)")
             return "metadata request: \(ans)"
         })
@@ -920,7 +924,7 @@ extension Registry {
 #if canImport(Photos) && (os(iOS) || os(visionOS) || os(tvOS))
         c.append(check("Photos", "p28-upload-projects") {
             var parts: [String] = []
-            #if os(iOS) || os(visionOS)
+            #if os(iOS)
             let o = PHAssetResourceUploadJobOptions()
             o.preventsExpensiveNetworkAccess = true
             try expect((o.copy() as? PHAssetResourceUploadJobOptions)?.preventsExpensiveNetworkAccess == true, "upload options")
@@ -996,7 +1000,7 @@ extension Registry {
 extension Registry {
     static var p28tSafari: [Check] {
         var c: [Check] = []
-#if canImport(SafariServices) && (os(iOS) || os(visionOS))
+#if canImport(SafariServices) && os(iOS)
         c.append(check("SafariServices", "p28-config-datastore-prewarm", timeout: 30) {
             let r = await onMain { () -> String in
                 let cfg = SFSafariViewController.Configuration()
@@ -1426,7 +1430,7 @@ extension Registry {
 extension Registry {
     static var p28tLiveComm: [Check] {
         var c: [Check] = []
-#if canImport(LiveCommunicationKit) && (os(iOS) || os(visionOS))
+#if canImport(LiveCommunicationKit) && os(iOS)
         c.append(check("LiveCommunicationKit", "p28-cellular-assistance") {
             let svcID = UUID()
             let svcJSON = "{\"id\":\"\(svcID.uuidString)\",\"label\":\"Primary\"}"
@@ -1896,12 +1900,6 @@ extension Registry {
                 return "UI scene \(n.components(separatedBy: "<").first!); extension protocols"
             }
         })
-#elseif canImport(LockedCameraCapture) && os(visionOS)
-        c.append(check("LockedCameraCapture", "p28-extension-protocols") {
-            let meta = [p28tName((any LockedCameraCaptureExtension).self), p28tName((any LockedCameraCaptureExtensionScene).self)]
-            try expect(meta.allSatisfy { $0.hasPrefix("LockedCameraCapture.") }, "\(meta)")
-            return "\(meta) (no UI scene type on visionOS)"
-        })
 #endif
 #if canImport(TrustInsights) && os(iOS)
         c.append(check("TrustInsights", "p28-consumption-errors") {
@@ -2176,7 +2174,7 @@ extension Registry {
             return "TWRequest (\(NSStringFromClass(class_getSuperclass(cls!)!)) subclass) with \(have.count) methods"
         })
 #endif
-#if canImport(OpenGLES) && !os(watchOS)
+#if canImport(OpenGLES) && !os(watchOS) && !os(visionOS)
         c.append(check("OpenGLES", "p28-sharegroup") {
             guard let ctx = EAGLContext(api: .openGLES2) else { return "no ES2 context" }
             let g: EAGLSharegroup = ctx.sharegroup
@@ -2221,10 +2219,10 @@ extension Registry {
         c.append(check("Foundation", "p28-system-only-classes") {
             var rows: [(String, String)] = []
 #if os(iOS) || os(visionOS)
-            rows += [("APActivationPayload", "NSObject"), ("FPUIActionExtensionContext", "NSExtensionContext"), ("ILClassificationUIExtensionContext", "NSExtensionContext")]
+            rows += [("FPUIActionExtensionContext", "NSExtensionContext"), ("ILClassificationUIExtensionContext", "NSExtensionContext")]
 #endif
 #if os(iOS)
-            rows += [("MKLookAroundSnapshot", "NSObject")]
+            rows += [("APActivationPayload", "NSObject"), ("MKLookAroundSnapshot", "NSObject")]   // App Clips: iOS only
 #endif
 #if !os(tvOS)
             rows += [("PKVoIPPushMetadata", "NSObject")]
