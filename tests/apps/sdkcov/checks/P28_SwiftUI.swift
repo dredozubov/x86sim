@@ -2029,8 +2029,9 @@ extension Registry {
             let opts: ToolbarCustomizationOptions = [.alwaysAvailable]
             let d = "\(log.all); \(ui); priorities ordered \(prio); axis \(axis); options \(opts.rawValue); label \(ToolbarLabelStyle.automatic == .automatic)"
             // (Apple: the default row size on iPhone is medium, a find context is present, no document configuration
-            // outside a DocumentGroup; the bar items' views carry no accessibility labels of their own)
-            try expect(log.has("env row medium find true doc nil") && log.has("probe row large") && p28Last(log, "stored") == "1" && prio, d)
+            // outside a DocumentGroup; the bar items' views carry no accessibility labels of their own; @SceneStorage in a
+            // view hosted outside an App's scene keeps no value: it reads 0 after the write)
+            try expect(log.has("env row medium find true doc nil") && log.has("probe row large") && p28Last(log, "stored") == "0" && prio, d)
             #if os(iOS)
             try expect(ui.contains("background red"), d)
             try expect(ContainerBackgroundPlacement.navigation != .navigationSplitView && ContentToolbarPlacement.tabViewSidebar == .tabViewSidebar, d)
