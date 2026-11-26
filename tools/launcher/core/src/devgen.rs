@@ -1,20 +1,17 @@
 //! Dependency managers and project generators for `x86sim dev`, each built and run on Linux by the dev toolchain
 //! (omarchy-apple-dev): Carthage (a Cartfile next to the Xcode project), XcodeGen (project.yml), Tuist (Project.swift:
-//! its manifests evaluated with Tuist's own ProjectDescription built for Linux, the project written by XcodeGen). They
-//! prepare the Xcode project that devxcode then builds with Swift Build. Their tools are optional setup pieces (`x86sim
-//! dev setup carthage`, `xcodegen`, `tuist`). Bazel rules_apple workspaces are recognised and explained: they do not
-//! build on Linux yet (the dev toolchain's bazel/README.md says where they stop).
+//! its manifests evaluated with Tuist's own ProjectDescription built for Linux, the project written by XcodeGen). The
+//! fork's tools/build-project runs them before the Xcode build; here they are optional setup pieces (`x86sim dev setup
+//! carthage`, `xcodegen`, `tuist`): their status and install.
 use crate::dev;
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-/// A tool of the dev toolchain: its setup id, title, install script (relative to the fork), runner, what it is for
+/// A tool of the dev toolchain: its setup id, title, install script (relative to the fork), what it is for
 struct Tool {
     id: &'static str,
     title: &'static str,
     install: &'static str,
-    bin: &'static str,
     needed_for: &'static str,
 }
 
@@ -23,21 +20,18 @@ const TOOLS: &[Tool] = &[
         id: "carthage",
         title: "Carthage",
         install: "carthage/install.sh",
-        bin: "carthage/bin/carthage",
         needed_for: "apps with a Cartfile need it; built here from source, about 12 MB",
     },
     Tool {
         id: "xcodegen",
         title: "XcodeGen",
         install: "xcodegen/install.sh",
-        bin: "xcodegen/bin/xcodegen",
         needed_for: "apps with a project.yml need it; built here from source, about 30 MB",
     },
     Tool {
         id: "tuist",
         title: "Tuist",
         install: "tuist/install.sh",
-        bin: "tuist/bin/tuist",
         needed_for: "apps with a Tuist Project.swift need it (and XcodeGen); about 10 MB",
     },
 ];
@@ -87,94 +81,4 @@ pub fn install(id: &str, say: &mut dyn FnMut(&str)) -> Result<i32> {
     let mut c = dev::command("bash");
     c.arg(dev::fork_dir().join(t.install));
     dev::stream(c, say)
-}
-
-fn runner(id: &str) -> Result<PathBuf> {
-    let t = tool(id).with_context(|| format!("unknown tool {id}"))?;
-    let check = dev::command("bash").arg(dev::fork_dir().join(t.install)).arg("--check").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
-    anyhow::ensure!(check.is_ok_and(|s| s.success()), "{} is not installed: x86sim dev setup {id}", t.title);
-    Ok(dev::fork_dir().join(t.bin))
-}
-
-/// The kind of project in DIR this module prepares, if any: tuist (a Project.swift written against
-/// ProjectDescription), xcodegen (a project.yml), carthage (a Cartfile and an Xcode project)
-pub fn kind(dir: &Path) -> Option<&'static str> {
-    if is_bazel_apple(dir) {
-        return Some("bazel");
-    }
-    if is_tuist(dir) {
-        return Some("tuist");
-    }
-    if is_xcodegen(dir) {
-        return Some("xcodegen");
-    }
-    let has_xcode = std::fs::read_dir(dir).ok()?.flatten().any(|e| {
-        let n = e.file_name().to_string_lossy().into_owned();
-        n.ends_with(".xcodeproj") || n.ends_with(".xcworkspace")
-    });
-    (dir.join("Cartfile").is_file() && has_xcode).then_some("carthage")
-}
-
-/// A Bazel workspace that uses rules_apple
-fn is_bazel_apple(dir: &Path) -> bool {
-    ["MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"].iter().any(|f| std::fs::read_to_string(dir.join(f)).is_ok_and(|s| s.contains("rules_apple")))
-}
-
-/// Why a Bazel rules_apple app does not build here (the error `x86sim dev build` gives)
-pub fn bazel_blocker() -> String {
-    format!(
-        "Bazel rules_apple apps do not build on Linux yet: apple_support registers its Apple C/Swift toolchains for macOS hosts only and its tools run /usr/bin/xcrun; where it stops and what a Linux path needs: {}",
-        dev::fork_dir().join("bazel/README.md").display()
-    )
-}
-
-/// A Tuist project: Project.swift importing ProjectDescription
-fn is_tuist(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join("Project.swift")).is_ok_and(|s| s.contains("import ProjectDescription"))
-}
-
-/// A project.yml that is an XcodeGen spec (it names targets)
-fn is_xcodegen(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join("project.yml")).is_ok_and(|y| y.lines().any(|l| l.starts_with("targets:") || l.starts_with("include:")))
-}
-
-/// Carthage's name for a phone's platform
-fn carthage_platform(platform: &str) -> &'static str {
-    match platform {
-        "tvos" => "tvOS",
-        "watchos" => "watchOS",
-        "xros" => "visionOS",
-        _ => "iOS",
-    }
-}
-
-/// Gets the project ready for Swift Build: `carthage bootstrap` when there is a Cartfile (xcframeworks, cached builds:
-/// a dependency is built again only when its version changes), then `xcodegen generate` for a project.yml (after
-/// Carthage: XcodeGen's Carthage dependencies look at Carthage/Build)
-pub fn prepare(dir: &Path, platform: &str, say: &mut dyn FnMut(&str)) -> Result<()> {
-    if dir.join("Cartfile").is_file() {
-        let carthage = runner("carthage")?;
-        say(&format!("== carthage bootstrap ({})", carthage_platform(platform)));
-        let mut c = dev::command("bash");
-        c.arg(&carthage).args(["bootstrap", "--use-xcframeworks", "--cache-builds", "--platform", carthage_platform(platform)]).current_dir(dir);
-        let rc = dev::stream(c, say)?;
-        anyhow::ensure!(rc == 0, "carthage bootstrap failed (exit {rc}; its xcodebuild log is named above)");
-    }
-    if is_tuist(dir) {
-        let tuist = runner("tuist")?;
-        runner("xcodegen")?;
-        say("== tuist generate");
-        let mut c = dev::command("bash");
-        c.arg(&tuist).args(["generate", "--no-open"]).current_dir(dir);
-        let rc = dev::stream(c, say)?;
-        anyhow::ensure!(rc == 0, "tuist generate failed (exit {rc})");
-    } else if is_xcodegen(dir) {
-        let xcodegen = runner("xcodegen")?;
-        say("== xcodegen generate");
-        let mut c = dev::command("bash");
-        c.arg(&xcodegen).arg("generate").current_dir(dir);
-        let rc = dev::stream(c, say)?;
-        anyhow::ensure!(rc == 0, "xcodegen generate failed (exit {rc})");
-    }
-    Ok(())
 }

@@ -9,8 +9,10 @@
 //!     checks (tools/sdk-state.sh: the SDK's darwin-sdk-version.txt against the pinned xtool's stamp);
 //!   - setup jobs: one background installer run at a time (log, step, exit code in $X86SIM_SCRATCH/dev), so the GUI and
 //!     MCP see the same progress; x86Sim never runs sudo for it (--user-only; system packages are shown as a command);
-//!   - build(): an xtool project for the simulator (ship.sh --simulator: Xcode's app layout, icon catalog), the
-//!     triple from the phone's platform; run(): build, start the phone if asked, install and launch (the key loop);
+//!   - project discovery and build(): the fork's tools/build-project detects a project's kind and runs every step its
+//!     build needs (ship.sh, Swift Build, CocoaPods, Carthage, the shells' CLIs...); x86Sim holds the build lock,
+//!     keeps the log and checks what `x86sim dev setup` installs; run(): build, start the phone if asked, install and
+//!     launch (the key loop);
 //!   - pass-throughs for device runs, App Store builds and Xcode project conversion.
 use crate::aot::{repo_root, scratch};
 use crate::instance::Instance;
@@ -700,73 +702,65 @@ pub fn remember(dir: &Path, phone: Option<&str>) {
     let _ = save_settings(&s);
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub dir: PathBuf,
     pub name: String,
-    /// xtool (Package.swift + xtool.yml: builds here), dotnet (a net*-ios .csproj: builds here), flutter, expo /
-    /// reactnative (package.json: CocoaPods workspace built by the fork's xcbuild.py), rust (a cargo package: builds
-    /// here with rust/build.py), carthage / xcodegen / tuist / bazel (devgen.rs), swiftpm (no xtool.yml), xcodeproj
-    /// (an .xcodeproj / .xcworkspace: Swift Build), capacitor, cordova, nativescript, godot, unity (shell apps and
-    /// engine exports: their tool writes the Xcode project, devweb.rs)
+    /// The fork's tools/build-project detects it (its buildproject/detect.py has the rules): xtool (Package.swift +
+    /// xtool.yml), dotnet (a net*-ios .csproj), flutter, expo / reactnative, rust (a cargo package), carthage /
+    /// xcodegen / tuist / bazel, swiftpm (no xtool.yml), xcodeproj (an .xcodeproj / .xcworkspace), capacitor,
+    /// cordova, nativescript, godot, unity (shell apps and engine exports)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
     pub app: Option<PathBuf>,
 }
 
-fn yml_value(text: &str, key: &str) -> Option<String> {
-    text.lines().find_map(|l| l.strip_prefix(&format!("{key}:"))).map(|v| v.trim().trim_matches('"').trim_matches('\'').to_string()).filter(|v| !v.is_empty())
+/// The fork's build entry point: detects a project's kind and runs every step its build needs
+pub fn build_project() -> PathBuf {
+    fork_dir().join("tools/build-project")
+}
+
+/// `build-project ARGS` (python3 -I: the script finds its own modules)
+fn build_project_command() -> Command {
+    let mut c = command("python3");
+    c.arg("-I").arg(build_project()).env("OAD_SETUP_HINT", "x86sim dev setup {}");
+    c
+}
+
+/// build-project --describe for every dir (one run: a project list costs one Python start)
+fn describe(dirs: &[PathBuf]) -> Vec<Result<Project>> {
+    if dirs.is_empty() {
+        return vec![];
+    }
+    let out = build_project_command().arg("--describe").args(dirs).stdin(Stdio::null()).stderr(Stdio::piped()).output();
+    let out = match out {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => return dirs.iter().map(|_| Err(anyhow::anyhow!("build-project --describe: {}", String::from_utf8_lossy(&o.stderr).trim()))).collect(),
+        Err(e) => return dirs.iter().map(|_| Err(anyhow::anyhow!("running {}: {e}", build_project().display()))).collect(),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).with_context(|| format!("build-project --describe said {l:?}"))?;
+            if let Some(e) = v["error"].as_str() {
+                bail!("{e}");
+            }
+            Ok(serde_json::from_value::<Project>(v)?)
+        })
+        .collect()
 }
 
 pub fn project(dir: &Path) -> Result<Project> {
     let dir = dir.canonicalize().with_context(|| format!("{} not found", dir.display()))?;
     anyhow::ensure!(dir.is_dir(), "{} is not a directory", dir.display());
-    let base = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let yml = std::fs::read_to_string(dir.join("xtool.yml")).ok();
-    let kind = if yml.is_some() && dir.join("Package.swift").exists() {
-        "xtool"
-    } else if dir.join("pubspec.yaml").exists() {
-        "flutter"
-    } else if let Some(k) = crate::devweb::detect(&dir) {
-        k
-    } else if let Some(k) = crate::devpods::js_kind(&dir) {
-        k
-    } else if let Some(r) = crate::devrust::detect(&dir) {
-        return Ok(Project { name: r.name, kind: "rust".into(), bundle_id: r.bundle_id, app: r.app, dir });
-    } else if let Some(k) = crate::devgen::kind(&dir) {
-        // Cartfile, project.yml, Project.swift, MODULE.bazel: before the .xcodeproj a Carthage app also has
-        k
-    } else if crate::devdotnet::csproj(&dir).is_some() {
-        "dotnet"
-    } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj") || e.file_name().to_string_lossy().ends_with(".xcworkspace")) {
-        // before a bare Package.swift: libraries ship one next to the Xcode project of their demo app
-        "xcodeproj"
-    } else if dir.join("Package.swift").exists() {
-        "swiftpm"
-    } else {
-        bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml, net*-ios .csproj, Cargo.toml, Cartfile, project.yml, Project.swift or .xcodeproj)", dir.display());
-    };
-    if let Some((name, bundle_id, app)) = (kind == "dotnet").then(|| crate::devdotnet::describe(&dir)).flatten() {
-        return Ok(Project { name, kind: kind.into(), bundle_id, app, dir });
-    }
-    let y = yml.unwrap_or_default();
-    let name = yml_value(&y, "product").unwrap_or(base);
-    let app = if matches!(kind, "expo" | "reactnative") {
-        crate::devpods::last_app(&dir)
-    } else if matches!(kind, "xcodeproj" | "carthage" | "xcodegen" | "tuist") {
-        crate::devxcode::last_app(&dir)
-    } else if crate::devweb::is_shell(kind) {
-        crate::devweb::last_app(&dir, kind)
-    } else {
-        std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"))
-    };
-    Ok(Project { name, kind: kind.into(), bundle_id: yml_value(&y, "bundleID").unwrap_or_default(), app, dir })
+    describe(&[dir]).pop().unwrap_or_else(|| Err(anyhow::anyhow!("build-project --describe gave no answer")))
 }
 
 /// The recent projects that still exist
 pub fn recent() -> Vec<Project> {
-    load_settings().recent.iter().filter_map(|d| project(d).ok()).collect()
+    let dirs: Vec<PathBuf> = load_settings().recent.iter().filter_map(|d| d.canonicalize().ok()).filter(|d| d.is_dir()).collect();
+    describe(&dirs).into_iter().filter_map(Result::ok).collect()
 }
 
 /// `xtool new NAME` in PARENT (a SwiftUI app); its platforms are widened to every simulator x86Sim runs (the template
@@ -801,13 +795,6 @@ pub struct BuildOpts {
     pub release: bool,
 }
 
-pub fn triple(platform: &str) -> String {
-    match platform {
-        "tvos" | "watchos" | "xros" => format!("arm64-apple-{platform}-simulator"),
-        _ => "arm64-apple-ios-simulator".into(),
-    }
-}
-
 /// One Swift build at a time on this computer (they are heavy): an flock on the work dir's build.lock
 struct BuildLock(std::fs::File);
 impl BuildLock {
@@ -829,102 +816,72 @@ impl Drop for BuildLock {
     }
 }
 
-/// Builds an xtool project for the simulator with ship.sh --simulator. Output goes to `say` and to
-/// work_dir()/build-<name>.log. Returns the .app.
+/// Builds a project for the simulator with the fork's tools/build-project (every kind: it detects the project and
+/// runs its steps). Output goes to `say` and to work_dir()/build-<name>.log. Returns the .app.
 pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
     let p = project(dir)?;
+    // what x86sim dev setup installs, checked here so the error names the setup step
     match p.kind.as_str() {
-        "xtool" => {}
-        "dotnet" => anyhow::ensure!(o.platform == "ios", "{}: .NET for iOS apps build for iOS phones only", p.dir.display()),
-        "expo" | "reactnative" => {
-            anyhow::ensure!(o.platform == "ios", "React Native and Expo apps build for iPhone and iPad devices here (not {})", o.platform);
-            let _lock = BuildLock::take(say)?;
-            let log_path = work_dir().join(format!("build-{}.log", p.name));
-            let mut log = std::fs::File::create(&log_path).ok();
-            let r = crate::devpods::build(&p.dir, &p.kind, "iphonesimulator", o.release, &mut |l: &str| {
-                if let Some(f) = log.as_mut() {
-                    let _ = writeln!(f, "{l}");
-                }
-                say(l);
-            });
-            let app = r.with_context(|| format!("log: {}", log_path.display()))?;
-            remember(&p.dir, None);
-            say(&format!("app: {}", app.display()));
-            return Ok(app);
-        }
-        "rust" if o.platform != "ios" => bail!("{}: Rust apps build for iOS phones here (aarch64-apple-ios-sim); this phone runs {}", p.dir.display(), o.platform),
-        "rust" => {}
-        "bazel" => bail!("{}: {}", p.dir.display(), crate::devgen::bazel_blocker()),
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
-        k if matches!(k, "xcodeproj" | "carthage" | "xcodegen" | "tuist") || crate::devweb::is_shell(k) => {
-            let _lock = BuildLock::take(say)?;
-            let log_path = work_dir().join(format!("build-{}.log", p.name));
-            let mut log = std::fs::File::create(&log_path).ok();
-            let mut out = |l: &str| {
-                if let Some(f) = log.as_mut() {
-                    let _ = writeln!(f, "{l}");
+        "rust" if o.platform == "ios" => {
+            let mut why = crate::devrust::missing();
+            why.extend(status().pieces.iter().filter(|x| x.id == "sdk" && x.state != "ok").map(|x| format!("{}: {}", x.title, x.detail)));
+            anyhow::ensure!(why.is_empty(), "the Rust iOS build is not ready ({}); see x86sim dev status", why.join("; "));
+        }
+        "xtool" | "dotnet" => {
+            let st = status();
+            if !st.ready_sim {
+                let why: Vec<String> = st.pieces.iter().filter(|x| matches!(x.id, "swift" | "xtool" | "sdk" | "fork") && x.state != "ok" && x.state != "warn").map(|x| format!("{}: {}", x.title, x.detail)).collect();
+                if !why.is_empty() {
+                    bail!("the toolchain is not ready ({}); see x86sim dev status", why.join("; "));
                 }
-                say(l);
-            };
-            // shell apps and engine exports: their own tool writes the Xcode project (devweb.rs); Cartfile: the
-            // dependencies first (carthage bootstrap), then the project with Swift Build
-            let r = if crate::devweb::is_shell(k) {
-                crate::devweb::build(&p.dir, k, &o.platform, o.release, &mut out)
-            } else {
-                crate::devgen::prepare(&p.dir, &o.platform, &mut out).and_then(|_| crate::devxcode::build(&p.dir, &o.platform, o.release, &mut out))
-            };
-            let app = r.with_context(|| format!("log: {}", log_path.display()))?;
-            remember(&p.dir, None);
-            say(&format!("app: {}", app.display()));
-            return Ok(app);
+            }
         }
-        _ => bail!("{}: a SwiftPM package without xtool.yml (add one: `version: 1` and `bundleID: com.you.App`)", p.dir.display()),
+        _ => {}
     }
-    let st = status();
-    if p.kind == "rust" {
-        let mut why = crate::devrust::missing();
-        why.extend(st.pieces.iter().filter(|x| x.id == "sdk" && x.state != "ok").map(|x| format!("{}: {}", x.title, x.detail)));
-        anyhow::ensure!(why.is_empty(), "the Rust iOS build is not ready ({}); see x86sim dev status", why.join("; "));
-    } else if !st.ready_sim {
-        let why: Vec<String> = st.pieces.iter().filter(|x| matches!(x.id, "swift" | "xtool" | "sdk" | "fork") && x.state != "ok" && x.state != "warn").map(|x| format!("{}: {}", x.title, x.detail)).collect();
-        if !why.is_empty() {
-            bail!("the toolchain is not ready ({}); see x86sim dev status", why.join("; "));
-        }
+    let mut c = build_project_command();
+    c.arg(&p.dir).args(["--platform", &o.platform, "--simulator"]).current_dir(&p.dir);
+    if o.release {
+        c.arg("--release");
     }
+    let app = run_build_project(c, &p.name, say)?;
+    remember(&p.dir, None);
+    Ok(app)
+}
+
+/// An unsigned device build (React Native / Expo: what `x86sim dev device` signs and installs with xtool)
+pub fn device_build(dir: &Path, release: bool, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
+    let p = project(dir)?;
+    let mut c = build_project_command();
+    c.arg(&p.dir).args(["--platform", "ios", "--device"]).current_dir(&p.dir);
+    if release {
+        c.arg("--release");
+    }
+    run_build_project(c, &p.name, say)
+}
+
+/// Runs build-project under the build lock, its output to `say` and to work_dir()/build-<name>.log: the .app of its
+/// last `app: ` line, or its `error: ` line
+fn run_build_project(c: Command, name: &str, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
     let _lock = BuildLock::take(say)?;
-    let log_path = work_dir().join(format!("build-{}.log", p.name));
+    let log_path = work_dir().join(format!("build-{name}.log"));
     let mut log = std::fs::File::create(&log_path).ok();
-    let t = triple(&o.platform);
-    say(&format!("== build {} for {t} ({})", p.name, if o.release { "release" } else { "debug" }));
-    let mut c = if p.kind == "dotnet" {
-        crate::devdotnet::sim_build_command(&p.dir, o.release)
-    } else if p.kind == "rust" {
-        crate::devrust::build_command(&p.dir, o.release)
-    } else {
-        let mut c = command("bash");
-        // a Kotlin Multiplatform app (xtool.env: KMP_GRADLE_ROOT) builds its shared framework first: kmp/build-app.sh
-        c.arg(crate::devkmp::sim_build_script(&p.dir)).arg("--simulator").current_dir(&p.dir);
-        c
-    };
-    // rust/build.py takes its target from the build command itself
-    if p.kind != "rust" {
-        c.env("TRIPLE", &t).env("CONFIGURATION", if o.release { "release" } else { "debug" });
-    }
-    let mut app_line = None;
+    let (mut app, mut err) = (None, None);
     let rc = stream(c, &mut |l: &str| {
         if let Some(f) = log.as_mut() {
             let _ = writeln!(f, "{l}");
         }
-        if let Some(a) = l.strip_prefix("simulator app ready: ") {
-            app_line = Some(a.trim().to_string());
+        if let Some(a) = l.strip_prefix("app: ") {
+            app = Some(PathBuf::from(a.trim()));
+        } else if let Some(e) = l.strip_prefix("error: ") {
+            err = Some(e.trim().to_string());
         }
         say(l);
     })?;
-    anyhow::ensure!(rc == 0, "build failed (exit {rc}); log: {}", log_path.display());
-    let app = app_line.map(|a| p.dir.join(a)).or(project(&p.dir)?.app).context("the build wrote no .app")?;
-    remember(&p.dir, None);
-    say(&format!("app: {}", app.display()));
-    Ok(app)
+    if rc != 0 {
+        bail!("{} (log: {})", err.unwrap_or_else(|| format!("build failed (exit {rc})")), log_path.display());
+    }
+    app.with_context(|| format!("the build named no .app (log: {})", log_path.display()))
 }
 
 #[derive(Debug, Clone)]
