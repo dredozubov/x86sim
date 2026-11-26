@@ -375,3 +375,23 @@ dialog::backdrop { background: var(--scrim); }
 .fbody .seg { align-self: flex-start; }
 .hingerow { display: flex; align-items: center; gap: 10px; }
 .hingerow .muted { white-space: nowrap; }
+
+/* the tool column beside the screen (the launcher's screen toolbar): the device's buttons, then capture */
+@font-face { font-family: "x86sim-icons"; src: url("icons.ttf") format("truetype"); font-display: block; }
+.tools { display: none; }
+.tool { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0;
+  border-radius: var(--r); background: transparent; color: var(--ink-2); cursor: pointer; text-decoration: none; touch-action: manipulation; }
+.tool .ic, .btn .ic { font-family: "x86sim-icons"; font-size: 18px; line-height: 1; font-style: normal; }
+.tool:hover { background: var(--hover); color: var(--ink); }
+.tool:active { background: var(--pressed); }
+.tool.on { color: var(--accent-ink); background: var(--selected); }
+.tool.rec { color: var(--crit); }
+.tool:focus-visible { outline: 1px solid var(--active); outline-offset: -1px; }
+.tgap { height: 10px; }
+@media (min-width: 761px) {
+  .stage { gap: 14px; }
+  .tools { display: flex; flex-direction: column; align-items: center; gap: 2px; align-self: center; }
+}
+/* the accessibility panel inside its fold: no empty rows */
+.axpanel > :empty { display: none; }
+.side > .overview { padding-bottom: 14px; }

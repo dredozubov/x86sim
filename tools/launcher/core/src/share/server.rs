@@ -37,6 +37,8 @@ const AX_CSS: &str = include_str!("web/axinspect.css");
 const MIC_JS: &str = include_str!("web/mic.js");
 // the device page's panels the launcher has (device.rs)
 const PANELS_JS: &str = include_str!("web/panels.js");
+// the device page's tool icons: the launcher's Phosphor font (MIT), cut to the glyphs the page uses
+const ICONS_TTF: &[u8] = include_bytes!("web/icons.ttf");
 // the Network section (netapi.rs)
 const NET_JS: &str = include_str!("web/netpanel.js");
 
@@ -567,6 +569,7 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         "/axinspect.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], AX_JS.as_bytes()),
 
         "/panels.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], PANELS_JS.as_bytes()),
+        "/icons.ttf" => return respond(&mut s, 200, "font/ttf", &[], ICONS_TTF),
         "/netpanel.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], NET_JS.as_bytes()),
         "/axinspect.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], AX_CSS.as_bytes()),
         "/mic.js" => return respond(&mut s, 200, "text/javascript; charset=utf-8", &[], MIC_JS.as_bytes()),

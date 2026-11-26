@@ -292,7 +292,9 @@ function phoneView(id) {
   const overlay = h("div", { class: "overlay", text: "Connecting…" });
   const dots = h("div", { class: "dots" });
   const wrap = h("div", { class: "screenwrap" }, canvas, dots, overlay);
-  const stage = h("div", { class: "stage" }, wrap);
+  // the tool column beside the screen (buildSide fills it)
+  const tools = h("div", { class: "tools" });
+  const stage = h("div", { class: "stage" }, wrap, tools);
   const side = h("aside", { class: "side" });
   // a narrow screen (a phone's browser): the most used controls right under the screen, the rest below
   const quick = h("div", { class: "quick" });
@@ -314,7 +316,9 @@ function phoneView(id) {
     if (!w) return;
     // the stage's padding and the bezel drawn around the canvas (app.css) on both sides
     const r = stage.getBoundingClientRect(), m = innerWidth <= 760 ? 28 : 64;
-    const s = Math.min((r.width - m) / w, (r.height - m) / hh);
+    // the tool column beside the screen takes its width and the gap
+    const tw = tools.offsetWidth ? tools.offsetWidth + 14 : 0;
+    const s = Math.min((r.width - m - tw) / w, (r.height - m) / hh);
     canvas.style.width = Math.max(50, Math.floor(w * s)) + "px";
     canvas.style.height = Math.max(50, Math.floor(hh * s)) + "px";
   }
@@ -341,7 +345,8 @@ function phoneView(id) {
     lastStats = now;
     const l = lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length : null;
     curFps = Math.round(frames / dt);
-    statLine = `${codec.toUpperCase()} ${fw}×${fh}\n${(frames / dt).toFixed(0)} fps · ${(bytes * 8 / dt / 1e6).toFixed(2)} Mbit/s` + (l !== null && l >= 0 && l < 5000 ? `\nframe age ${l.toFixed(0)} ms` : "");
+    // nothing to say before the first frame (a device that is off)
+    statLine = !fw ? "" : `${codec.toUpperCase()} ${fw}×${fh}\n${(frames / dt).toFixed(0)} fps · ${(bytes * 8 / dt / 1e6).toFixed(2)} Mbit/s` + (l !== null && l >= 0 && l < 5000 ? `\nframe age ${l.toFixed(0)} ms` : "");
     if (soundOn && actx && aLat.length) {
       // packet age on arrival + what is queued + the output's own latency
       const net = aLat.reduce((a, b) => a + b, 0) / aLat.length;
@@ -444,7 +449,8 @@ function phoneView(id) {
     updateSound();
   }
   function updateSound() {
-    for (const b of [soundBtn, quickSound]) if (b) { b.textContent = soundOn ? "Sound on" : "Sound off"; b.classList.toggle("on", soundOn); }
+    if (soundBtn) { setIcon(soundBtn, soundOn ? I.soundOn : I.soundOff); soundBtn.classList.toggle("on", soundOn); }
+    if (quickSound) { quickSound.textContent = soundOn ? "Sound on" : "Sound off"; quickSound.classList.toggle("on", soundOn); }
     if (micBtn) { micBtn.textContent = mic ? "Mic on" : "Mic off"; micBtn.classList.toggle("on", !!mic); }
   }
   function schedule(planes, n) {
@@ -578,42 +584,73 @@ function phoneView(id) {
   const hold = (n, label, title) => btn(label, title || label, () => send({ t: "button", n, d: true }), () => send({ t: "button", n, d: false }));
   const keyHold = (u, label, title) => btn(label, title || label, () => send({ t: "key", u, d: true }), () => send({ t: "key", u, d: false }));
   function group(title, ...kids) { return h("div", {}, h("h4", { text: title }), h("div", { class: "btns" }, ...kids)); }
+  // the launcher's Phosphor icons (icons.ttf, the glyphs used here)
+  const I = { home: "", lock: "", volup: "", voldown: "", siri: "", action: "", switcher: "",
+    rotl: "", rotr: "", shake: "", pointer: "", type: "", soundOn: "", soundOff: "",
+    camera: "", marks: "", record: "", stop: "", back: "", up: "", down: "",
+    tv: "", playpause: "", tap: "", wave: "", mute: "", press: "" };
+  const icon = (c) => h("span", { class: "ic", text: c });
+  function setIcon(b, c) { if (b && b.firstChild) b.firstChild.textContent = c; }
+  // an icon button of the tool column beside the screen (the launcher's screen toolbar); held down for `up`
+  function tool(c, title, down, up) {
+    const b = h("button", { class: "tool", type: "button", title, "aria-label": title }, icon(c));
+    if (up) {
+      b.addEventListener("pointerdown", (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); down(); });
+      b.addEventListener("pointerup", up);
+      b.addEventListener("pointercancel", up);
+    } else b.addEventListener("click", down);
+    return b;
+  }
+  const holdT = (n, c, title) => tool(c, title, () => send({ t: "button", n, d: true }), () => send({ t: "button", n, d: false }));
+  const link = (c, title, href) => h("a", { class: "tool", href, download: "", title, "aria-label": title }, icon(c));
+  const gap = () => h("span", { class: "tgap" });
   function buildSide() {
     const p = info.platform;
     // the launcher's panels (panels.js): overview, Features, Logs, Performance, Simulate
     if (!pan && window.PANELS) pan = PANELS.attach({ id, control, platform: p, api, h, toast, fmtMem, fmtUp, send, fps: () => curFps, restart,
       onDetail: (d) => { needsRestart = !!d.needs_restart; head(); } });
-    const parts = [pan ? pan.overview : null].filter(Boolean);
+    const fold = (key, title, body, open) => pan ? pan.fold(key, title, body, null, open) : h("div", {}, h("h4", { text: title }), body);
+
+    // ---- the tool column beside the screen: the device's buttons, then capture (as the launcher)
+    const t = [];
     if (control) {
       if (p === "tvos") {
-        parts.push(h("div", {}, h("h4", { text: "Siri Remote" }), h("div", { class: "remote" },
-          h("span"), keyHold(0x52, "▲", "Up"), h("span"),
-          keyHold(0x50, "◀", "Left"), keyHold(0x28, "●", "Select"), keyHold(0x4f, "▶", "Right"),
-          h("span"), keyHold(0x51, "▼", "Down"), h("span"))));
-        parts.push(group("Buttons", hold("menu", "Back"), hold("tv", "TV"), hold("playpause", "Play/Pause", "Play / Pause"), hold("siri", "Siri"), hold("volup", "Vol +"), hold("voldown", "Vol −"), hold("mute", "Mute")));
+        t.push(holdT("menu", I.back, "Back (Esc)"), holdT("tv", I.tv, "TV / home (F1)"), holdT("playpause", I.playpause, "Play / Pause"),
+          holdT("siri", I.siri, "Siri"), gap(), holdT("volup", I.volup, "Volume up"), holdT("voldown", I.voldown, "Volume down"), holdT("mute", I.mute, "Mute"));
       } else if (p === "watchos") {
-        parts.push(group("Digital Crown", btn("▲", "Turn up", () => send({ t: "crown", d: -120 })), btn("▼", "Turn down", () => send({ t: "crown", d: 120 })), hold("home", "Press")));
-        parts.push(group("Buttons", hold("side", "Side"), btn("Double tap", "Hand gesture", () => send({ t: "sys", a: "double_tap" })), btn("Wrist flick", "Hand gesture", () => send({ t: "sys", a: "wrist_flick" }))));
+        t.push(tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })), holdT("home", I.press, "Digital Crown: press"),
+          tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Side button"), gap(),
+          tool(I.tap, "Double tap (hand gesture)", () => send({ t: "sys", a: "double_tap" })), tool(I.wave, "Wrist flick (hand gesture)", () => send({ t: "sys", a: "wrist_flick" })));
       } else if (p === "xros") {
-        parts.push(group("Buttons", hold("home", "Crown press"), btn("Crown ▲", "", () => send({ t: "crown", d: -120 })), btn("Crown ▼", "", () => send({ t: "crown", d: 120 })), hold("side", "Top button")));
+        t.push(holdT("home", I.press, "Digital Crown: press"), tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })),
+          tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Top button"));
       } else {
-        parts.push(group("Buttons", hold("home", "Home"), hold("lock", "Lock"), hold("volup", "Vol +"), hold("voldown", "Vol −"), hold("siri", "Siri"), hold("action", "Action"),
-          btn("Switcher", "App Switcher", () => send({ t: "sys", a: "app_switcher" }))));
+        t.push(holdT("home", I.home, "Home (F1)"), holdT("lock", I.lock, "Lock: the side button (F2)"), holdT("volup", I.volup, "Volume up (F3)"),
+          holdT("voldown", I.voldown, "Volume down (F4)"), holdT("siri", I.siri, "Siri"), holdT("action", I.action, "Action button"),
+          tool(I.switcher, "App Switcher", () => send({ t: "sys", a: "app_switcher" })), gap(),
+          tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })),
+          tool(I.shake, "Shake", () => send({ t: "shake" })));
         // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
-        const ptr = info.ipad ? btn(pointerMode ? "Pointer on" : "Pointer", "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll). Again: back to touches", () => {
-          pointerMode = !pointerMode;
-          if (!pointerMode) send({ t: "pointer", a: "remove" });
-          ptr.textContent = pointerMode ? "Pointer on" : "Pointer";
+        if (info.ipad) {
+          const ptr = tool(I.pointer, "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll). Again: back to touches", () => {
+            pointerMode = !pointerMode;
+            if (!pointerMode) send({ t: "pointer", a: "remove" });
+            ptr.classList.toggle("on", pointerMode);
+          });
           ptr.classList.toggle("on", pointerMode);
-        }) : null;
-        if (ptr) ptr.classList.toggle("on", pointerMode);
-        parts.push(group("Device", btn("Rotate ←", "Rotate left", () => send({ t: "rotate", dir: "left" })), btn("Rotate →", "Rotate right", () => send({ t: "rotate", dir: "right" })),
-          btn("Shake", "Device > Shake", () => send({ t: "shake" })), ptr, btn("Paste…", "Type text into the device", openPaste)));
-        if (info.two_screens) parts.push(hingePanel());
+          t.push(ptr);
+        }
       }
-      if (p !== "ios") parts.push(group("Text", btn("Paste…", "Type text into the device", openPaste)));
+      t.push(tool(I.type, "Type text into the device (Ctrl+V pastes)", openPaste));
     }
-    soundBtn = btn("", "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
+    soundBtn = tool(I.soundOff, "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
+    recBtn = tool(I.record, "Record the screen to a video file", toggleRec);
+    t.push(gap(), soundBtn, link(I.camera, "Screenshot (PNG)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`)),
+      link(I.marks, "Screenshot with every element outlined and its @ref beside it (the refs agents use)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)),
+      recBtn);
+    tools.replaceChildren(...t);
+
+    // ---- a narrow screen: the most used controls under the screen (the tool column is hidden there)
     quickSound = btn("", "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
     const q = [];
     if (control && (p === "ios" || p === "xros")) q.push(hold("home", "Home"));
@@ -623,34 +660,45 @@ function phoneView(id) {
     if (control) q.push(btn("Type…", "Type text into the device", openPaste));
     q.push(quickSound);
     quick.replaceChildren(...q);
+
+    // ---- the inspector: the overview, then folds (open ones remembered), as the launcher's right panel
+    const parts = [pan ? pan.overview : null];
+    if (control && p === "tvos") parts.push(fold("remote", "Siri Remote", h("div", { class: "remote" },
+      h("span"), keyHold(0x52, "▲", "Up"), h("span"),
+      keyHold(0x50, "◀", "Left"), keyHold(0x28, "●", "Select"), keyHold(0x4f, "▶", "Right"),
+      h("span"), keyHold(0x51, "▼", "Down"), h("span")), true));
+    if (control && p === "ios" && info.two_screens) parts.push(fold("hinge", "Hinge", hingePanel(), true));
+    if (pan) parts.push(pan.features, pan.logs);
+    // the Network section (netpanel.js): an app's requests, control links only
+    if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast }); parts.push(netp.panel); }
+    if (axi) {
+      const ax = axi.panel();
+      const h4 = ax.querySelector(":scope > h4");
+      if (h4) h4.remove();
+      parts.push(fold("ax", "Accessibility", ax));
+    }
+    if (control && p !== "watchos") parts.push(fold("web", "Web Inspector", webPanel()));
+    if (pan && pan.perf) {
+      // x86sim profile: 5 s CPU profile of the app in front, downloaded as speedscope JSON (control links only)
+      if (control && !pan.perf.querySelector(".profile")) pan.perf.querySelector(".fbody").prepend(h("div", { class: "btns profile" },
+        h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/profile.json?secs=5`), download: "",
+          title: "CPU profile of the app in front for 5 seconds (speedscope JSON: open it at speedscope.app)", text: "Profile 5 s" })));
+      parts.push(pan.perf);
+    }
+    if (pan) parts.push(pan.simulate);
     const volIn = h("input", { type: "range", min: 0, max: 1, step: 0.05, value: volume, title: "Volume (this browser only)", class: "vol", oninput: (e) => setVolume(Number(e.target.value)) });
     micBtn = control ? btn("", canMic ? "Your microphone into the device (asks the browser for it)" : "The microphone needs HTTPS (or localhost) and a browser with AudioWorklet", () => (mic ? micStop() : micStart())) : null;
     if (micBtn && !canMic) micBtn.disabled = true;
-    if (pan) parts.push(...[pan.features, pan.logs].filter(Boolean));
-    // the Network section (netpanel.js): an app's requests, control links only
-    if (control && p === "ios" && window.NETPANEL) { if (!netp) netp = NETPANEL.attach({ id, api, h, toast }); parts.push(netp.panel); }
-    if (axi) parts.push(axi.panel());
-    if (pan) parts.push(...[pan.perf, pan.simulate].filter(Boolean));
-    parts.push(group("Sound", soundBtn, volIn, micBtn));
-    updateSound();
-    recBtn = btn("Record", "Record the screen to a video file", toggleRec);
-    // x86sim profile: 5 s CPU profile of the app in front, downloaded as speedscope JSON (control links only)
-    const profBtn = control ? h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/profile.json?secs=5`), download: "",
-      title: "CPU profile of the app in front for 5 seconds (speedscope JSON: open it at speedscope.app)", text: "Profile 5 s" }) : null;
-    const capture = [h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`), download: "", text: "Screenshot" }),
-      // with marks: each element outlined with its @ref (as the agents' screenshot marks=true), in points
-      h("a", { class: "btn small", href: withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`), download: "",
-        title: "Screenshot with every element outlined and its @ref beside it (the refs agents use)", text: "With marks" }), recBtn, profBtn];
     const qSel = h("select", { onchange: (e) => { quality = Number(e.target.value); save(); connect(); } }, ["Low", "Medium", "High"].map((l, i) => h("option", { value: i, selected: i === quality, text: l })));
     const cSel = h("select", { onchange: (e) => { codec = e.target.value; save(); connect(); } },
       h("option", { value: "h264", text: "H.264" + (canH264 ? "" : " (needs HTTPS)"), selected: codec === "h264", disabled: !canH264 }), h("option", { value: "jpeg", text: "JPEG", selected: codec === "jpeg" }));
     const fSel = h("select", { onchange: (e) => { fps = Number(e.target.value); save(); connect(); } }, [15, 30, 60].map((f) => h("option", { value: f, selected: f === fps, text: f + " fps" })));
-    parts.push(h("div", {}, h("h4", { text: "Stream" }), h("div", { class: "btns" }, qSel, cSel, fSel), stats));
-    parts.push(group("Capture", ...capture));
-    if (control) parts.push(h("div", { class: "kbd" }, ...keyHelp(p)));
-    if (control) parts.push(group("Share", btn("Share this device…", "", () => openShare(id))));
-    if (control && p !== "watchos") parts.push(webPanel());
-    side.replaceChildren(...parts);
+    parts.push(fold("av", "Sound and stream", [
+      h("div", { class: "sfield" }, h("div", { class: "sl", text: "Volume (this browser)" }), h("div", { class: "btns" }, volIn, micBtn)),
+      h("div", { class: "sfield" }, h("div", { class: "sl", text: "Picture" }), h("div", { class: "btns" }, qSel, cSel, fSel), stats)]));
+    if (control) parts.push(fold("keys", "Keyboard and mouse", h("div", { class: "kbd" }, ...keyHelp(p).slice(1))));
+    side.replaceChildren(...parts.filter(Boolean));
+    updateSound();
     updateSide();
   }
   // Web Inspector: the phone's inspectable pages (Safari, WKWebViews with isInspectable), each with an Inspect link
@@ -671,7 +719,7 @@ function phoneView(id) {
           h("span", { text: ` ${pg.title || "(untitled)"} · ${pg.app}`, title: pg.url }))));
       } catch (e) { list.replaceChildren(h("div", { class: "muted", text: "Web Inspector: " + e.message })); }
     };
-    return h("div", {}, h("h4", { text: "Web Inspector" }), h("div", { class: "btns" }, btn("Web pages…", "Safari's pages and apps' inspectable web views, to open in WebKit's Web Inspector", find)), list);
+    return h("div", {}, h("div", { class: "btns" }, btn("Find web pages", "Safari's pages and apps' inspectable web views, to open in WebKit's Web Inspector", find)), list);
   }
   function keyHelp(p) {
     if (p === "xros") return [h("h4", { text: "Keys" }), ...[["Mouse", "the system pointer: hover, click, drag"], ["Wheel", "scroll where it points"], ["Keys", "the keyboard (click the screen first)"], ["Ctrl+V", "paste"]].flatMap(([a, b]) => [h("b", { text: a }), h("span", { text: b })])];
@@ -726,7 +774,7 @@ function phoneView(id) {
         if (performance.now() - sentAt >= 40) go(); else pend = setTimeout(go, 40);
       } });
     show(at);
-    return h("div", {}, h("h4", { text: "Fold" }), h("div", { class: "hingerow" }, slider, val),
+    return h("div", {}, h("div", { class: "hingerow" }, slider, val),
       h("div", { class: "btns", style: "margin-top:8px" }, ...info.poses.map((ps) => btn(ps.label, "Hinge: " + ps.label, () => { send({ t: "hinge", pose: ps.key }); slider.value = ps.angle ?? slider.value; show(Number(slider.value)); }))));
   }
   function updateSide() {
@@ -758,11 +806,11 @@ function phoneView(id) {
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       rec = null;
-      recBtn.textContent = "Record";
+      setIcon(recBtn, I.record);
       recBtn.classList.remove("rec");
     };
     rec.start(1000);
-    recBtn.textContent = "● Stop";
+    setIcon(recBtn, I.stop);
     recBtn.classList.add("rec");
   }
 

@@ -15,10 +15,11 @@ window.PANELS = (() => {
     const timers = [];
 
     // ---- pieces (theme.rs's fold, segmented, toggle, kv)
-    function fold(key, title, body, onToggle) {
+    function fold(key, title, body, onToggle, dflt) {
       const sum = h("span", { class: "sum" });
       const d = h("details", { class: "fold" }, h("summary", {}, h("span", { class: "ft", text: title }), sum), h("div", { class: "fbody" }, body));
-      d.open = !!opened()[key];
+      const o = opened();
+      d.open = key in o ? !!o[key] : !!dflt;
       d.addEventListener("toggle", () => { setOpen(key, d.open); if (onToggle) onToggle(d.open); });
       d.sum = sum;
       return d;
@@ -210,7 +211,7 @@ window.PANELS = (() => {
     if (feat && !feat.open) api(base + "features").then((f) => { features = f; drawFeatSummary(); }).catch(() => {});
     drawOverview();
     return {
-      overview, features: feat, logs, perf, simulate,
+      overview, features: feat, logs, perf, simulate, fold,
       refresh: pollDetail,
       close() { alive = false; timers.forEach(clearInterval); },
     };
