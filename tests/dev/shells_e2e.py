@@ -13,6 +13,9 @@ snapshot must show the app's UI and one tap must change it.
              "Ionic on x86Sim" in the snapshot; tapping the IonButton "Tap me" shows "Taps: 1".
   cordova    shells/samples/cordova-hello: Cordova (cordova-ios 8). `cordova prepare ios` on Linux. The page shows
              "Cordova 8.2.0 on ios" once cordova.js fired deviceready (the native bridge works); the same tap.
+  nativescript  shells/samples/nativescript-hello: NativeScript 9 (hello-world-ts template). The dev toolchain's
+             shells/nativescript/ns prepares platforms/ios on Linux with its Linux-built metadata generator; native
+             UIKit views: the action bar "NativeScript on x86Sim", tapping "TAP" turns "42 taps left" into "41 taps left".
 
 Usage: tests/dev/shells_e2e.py --phone NAME [--start] [--mcp PATH] [--only capacitor,...] [--out DIR]
   --start boots the phone when it is off and stops it at the end. X86SIM_OAD picks the dev toolchain checkout (default:
@@ -37,9 +40,10 @@ SAMPLES = {
     "capacitor": ("shells/samples/capacitor-hello", "Capacitor on x86Sim", "Tap me", "Taps: 1", False),
     "ionic": ("shells/samples/ionic-hello", "Ionic on x86Sim", "Tap me", "Taps: 1", False),
     "cordova": ("shells/samples/cordova-hello", "Cordova 8.2.0 on ios", "Tap me", "Taps: 1", False),
+    "nativescript": ("shells/samples/nativescript-hello", "NativeScript on x86Sim", "TAP", "41 taps left", False),
 }
 # what a copy of a sample leaves out (each run starts from the sources)
-GENERATED = ("node_modules", "ios", "platforms", "plugins", "build", "dist", ".godot", "package-lock.json")
+GENERATED = ("node_modules", "ios", "platforms", "plugins", "hooks", "build", "dist", ".godot", "package-lock.json")
 
 
 class Run:

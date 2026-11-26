@@ -6,6 +6,9 @@
 //!   gets @capacitor/ios added as `ionic capacitor add ios` would). The web build (`npm run build`, when the app has
 //!   one), then `npx cap add ios` once and `npx cap sync ios`; the Xcode project is ios/App (Swift packages, or a
 //!   CocoaPods workspace when the app uses pods).
+//! - nativescript: package.json with @nativescript/ios or @nativescript/core and a nativescript.config.*. The dev
+//!   toolchain's shells/nativescript/ns runs `ns prepare ios` with the CLI's macOS gates lifted, then puts its Linux
+//!   build of NativeScript's metadata generator into platforms/ios (the Xcode project; its link step runs it).
 //! - cordova: package.json with cordova-ios (config.xml beside it). `cordova prepare ios` (the app's own cordova CLI,
 //!   else npx's) adds the platform and copies www/; the Xcode project is platforms/ios (App.xcworkspace).
 use crate::{dev, devxcode};
@@ -31,16 +34,20 @@ pub fn detect(dir: &Path) -> Option<&'static str> {
     if has_dep(&pj, "cordova-ios") && dir.join("config.xml").exists() {
         return Some("cordova");
     }
+    let ns_config = ["nativescript.config.ts", "nativescript.config.js"].iter().any(|f| dir.join(f).exists());
+    if has_dep(&pj, "@nativescript/ios") || (has_dep(&pj, "@nativescript/core") && ns_config) {
+        return Some("nativescript");
+    }
     None
 }
 
 pub fn is_shell(kind: &str) -> bool {
-    matches!(kind, "capacitor" | "cordova")
+    matches!(kind, "capacitor" | "cordova" | "nativescript")
 }
 
 /// The generated Xcode project's directory (where its .xcodeproj / .xcworkspace is)
 fn native_dir(dir: &Path, kind: &str) -> PathBuf {
-    if kind == "cordova" {
+    if kind == "cordova" || kind == "nativescript" {
         return dir.join("platforms/ios");
     }
     // capacitor.config.json's ios.path moves ios/ (capacitor.config.ts: the default)
@@ -125,6 +132,11 @@ pub fn prepare(dir: &Path, kind: &str, say: &mut dyn FnMut(&str)) -> Result<()> 
         c.args(["prepare", "ios", "--no-telemetry"]);
         with_pod(&mut c);
         step(c, dir, "cordova prepare ios", say)?;
+    }
+    if kind == "nativescript" {
+        let mut c = dev::command(dev::fork_dir().join("shells/nativescript/ns"));
+        c.args(["prepare", "ios"]).env("POD_HOME", crate::devpods::pod_home());
+        step(c, dir, "ns prepare ios (shells/nativescript/ns)", say)?;
     }
     Ok(())
 }
