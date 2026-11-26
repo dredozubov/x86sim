@@ -207,8 +207,9 @@ impl App {
             let r = ui.horizontal_top(|ui| {
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                 let start = ui.cursor().min.x;
-                // Models 2: a two-screen phone is shown as its 3D model while it runs, its screens live on it and
-                // touchable through it (duo3d::DuoMap); the right (or middle) button, or Alt, turns and zooms it
+                // Models 2: a two-screen phone is shown as its 3D model while it runs (when this machine has Apple's
+                // model, else flat), its screens live on it and touchable through it (duo3d::DuoMap); the right (or
+                // middle) button, or Alt, turns and zooms it
                 let ctx = ui.ctx().clone();
                 let three_d = live && self.duo(id, &ctx).is_some();
                 let case = if three_d {
