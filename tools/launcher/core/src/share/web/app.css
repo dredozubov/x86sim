@@ -217,7 +217,11 @@ canvas.screen.readonly { cursor: default; }
 .dots { position: absolute; inset: 0; pointer-events: none; }
 .dots i { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: rgba(255,255,255,.35); border: 2px solid rgba(255,255,255,.8); }
 /* a narrow screen: the most used controls right under the screen, the inspector scrolls below */
-.quick { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; padding: 8px; flex: none; border-top: 1px solid var(--line); background: var(--window); }
+.quick { display: flex; gap: 2px; justify-content: safe center; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 6px 8px;
+  flex: none; border-top: 1px solid var(--line); background: var(--window); }
+.quick::-webkit-scrollbar { display: none; }
+.quick .tool { flex: none; width: 40px; height: 40px; }
+.quick .tool .ic { font-size: 20px; }
 /* the inspector (the GUI's right panel): stat tiles, then groups split by hairlines */
 .side { background: var(--canvas); border-top: 1px solid var(--line); padding: 12px 12px max(16px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; }
 .side > * { padding: 12px 0; border-top: 1px solid var(--line); }

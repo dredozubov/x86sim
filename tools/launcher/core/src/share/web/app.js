@@ -416,7 +416,7 @@ function phoneView(id) {
   const canOpus = "AudioDecoder" in window && window.isSecureContext;
   const canMic = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext && "AudioWorkletNode" in window;
   let actx = null, gain = null, adec = null, aCodec = "", nextT = 0, soundOn = false, volume = prefs.volume ?? 0.8;
-  let aLat = [], aLost = 0, aUnder = 0, aMin = 1, aN = 0, soundBtn = null, quickSound = null, micBtn = null, mic = null;
+  let aLat = [], aLost = 0, aUnder = 0, aMin = 1, aN = 0, soundBtns = [], recBtns = [], micBtn = null, mic = null;
   async function soundStart() {
     try {
       actx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: "interactive" });
@@ -449,8 +449,7 @@ function phoneView(id) {
     updateSound();
   }
   function updateSound() {
-    if (soundBtn) { setIcon(soundBtn, soundOn ? I.soundOn : I.soundOff); soundBtn.classList.toggle("on", soundOn); }
-    if (quickSound) { quickSound.textContent = soundOn ? "Sound on" : "Sound off"; quickSound.classList.toggle("on", soundOn); }
+    for (const b of soundBtns) { setIcon(b, soundOn ? I.soundOn : I.soundOff); b.classList.toggle("on", soundOn); }
     if (micBtn) { micBtn.textContent = mic ? "Mic on" : "Mic off"; micBtn.classList.toggle("on", !!mic); }
   }
   function schedule(planes, n) {
@@ -571,7 +570,7 @@ function phoneView(id) {
   }
 
   // --- side panel
-  let fold = null, recBtn = null;
+  let fold = null;
   function btn(label, title, down, up) {
     const b = h("button", { class: "btn small", text: label, title, type: "button" });
     if (up) {
@@ -588,7 +587,7 @@ function phoneView(id) {
   const I = { home: "", lock: "", volup: "", voldown: "", siri: "", action: "", switcher: "",
     rotl: "", rotr: "", shake: "", pointer: "", type: "", soundOn: "", soundOff: "",
     camera: "", marks: "", record: "", stop: "", back: "", up: "", down: "",
-    tv: "", playpause: "", tap: "", wave: "", mute: "", press: "" };
+    tv: "", playpause: "", tap: "", wave: "", mute: "", press: "", share: "" };
   const icon = (c) => h("span", { class: "ic", text: c });
   function setIcon(b, c) { if (b && b.firstChild) b.firstChild.textContent = c; }
   // an icon button of the tool column beside the screen (the launcher's screen toolbar); held down for `up`
@@ -611,55 +610,54 @@ function phoneView(id) {
       onDetail: (d) => { needsRestart = !!d.needs_restart; head(); } });
     const fold = (key, title, body, open) => pan ? pan.fold(key, title, body, null, open) : h("div", {}, h("h4", { text: title }), body);
 
-    // ---- the tool column beside the screen: the device's buttons, then capture (as the launcher)
-    const t = [];
-    if (control) {
-      if (p === "tvos") {
-        t.push(holdT("menu", I.back, "Back (Esc)"), holdT("tv", I.tv, "TV / home (F1)"), holdT("playpause", I.playpause, "Play / Pause"),
-          holdT("siri", I.siri, "Siri"), gap(), holdT("volup", I.volup, "Volume up"), holdT("voldown", I.voldown, "Volume down"), holdT("mute", I.mute, "Mute"));
-      } else if (p === "watchos") {
-        t.push(tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })), holdT("home", I.press, "Digital Crown: press"),
-          tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Side button"), gap(),
-          tool(I.tap, "Double tap (hand gesture)", () => send({ t: "sys", a: "double_tap" })), tool(I.wave, "Wrist flick (hand gesture)", () => send({ t: "sys", a: "wrist_flick" })));
-      } else if (p === "xros") {
-        t.push(holdT("home", I.press, "Digital Crown: press"), tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })),
-          tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Top button"));
-      } else {
-        t.push(holdT("home", I.home, "Home (F1)"), holdT("lock", I.lock, "Lock: the side button (F2)"), holdT("volup", I.volup, "Volume up (F3)"),
-          holdT("voldown", I.voldown, "Volume down (F4)"), holdT("siri", I.siri, "Siri"), holdT("action", I.action, "Action button"),
-          tool(I.switcher, "App Switcher", () => send({ t: "sys", a: "app_switcher" })), gap(),
-          tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })),
-          tool(I.shake, "Shake", () => send({ t: "shake" })));
-        // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
-        if (info.ipad) {
-          const ptr = tool(I.pointer, "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll). Again: back to touches", () => {
-            pointerMode = !pointerMode;
-            if (!pointerMode) send({ t: "pointer", a: "remove" });
+    // ---- the device's buttons, then capture and share (the launcher's screen toolbar): beside the screen on a wide
+    // window, the strip under it on a narrow one (each place its own buttons, built the same way)
+    soundBtns = []; recBtns = [];
+    const makeTools = () => {
+      const t = [];
+      if (control) {
+        if (p === "tvos") {
+          t.push(holdT("menu", I.back, "Back (Esc)"), holdT("tv", I.tv, "TV / home (F1)"), holdT("playpause", I.playpause, "Play / Pause"),
+            holdT("siri", I.siri, "Siri"), gap(), holdT("volup", I.volup, "Volume up"), holdT("voldown", I.voldown, "Volume down"), holdT("mute", I.mute, "Mute"));
+        } else if (p === "watchos") {
+          t.push(tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })), holdT("home", I.press, "Digital Crown: press"),
+            tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Side button"), gap(),
+            tool(I.tap, "Double tap (hand gesture)", () => send({ t: "sys", a: "double_tap" })), tool(I.wave, "Wrist flick (hand gesture)", () => send({ t: "sys", a: "wrist_flick" })));
+        } else if (p === "xros") {
+          t.push(holdT("home", I.press, "Digital Crown: press"), tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })),
+            tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Top button"));
+        } else {
+          t.push(holdT("home", I.home, "Home (F1)"), holdT("lock", I.lock, "Lock: the side button (F2)"), holdT("volup", I.volup, "Volume up (F3)"),
+            holdT("voldown", I.voldown, "Volume down (F4)"), holdT("siri", I.siri, "Siri"), holdT("action", I.action, "Action button"),
+            tool(I.switcher, "App Switcher", () => send({ t: "sys", a: "app_switcher" })), gap(),
+            tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })),
+            tool(I.shake, "Shake", () => send({ t: "shake" })));
+          // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
+          if (info.ipad) {
+            const ptr = tool(I.pointer, "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll). Again: back to touches", () => {
+              pointerMode = !pointerMode;
+              if (!pointerMode) send({ t: "pointer", a: "remove" });
+              for (const b of document.querySelectorAll(".tool.ptr")) b.classList.toggle("on", pointerMode);
+            });
+            ptr.classList.add("ptr");
             ptr.classList.toggle("on", pointerMode);
-          });
-          ptr.classList.toggle("on", pointerMode);
-          t.push(ptr);
+            t.push(ptr);
+          }
         }
+        t.push(tool(I.type, "Type text into the device (Ctrl+V pastes)", openPaste));
       }
-      t.push(tool(I.type, "Type text into the device (Ctrl+V pastes)", openPaste));
-    }
-    soundBtn = tool(I.soundOff, "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
-    recBtn = tool(I.record, "Record the screen to a video file", toggleRec);
-    t.push(gap(), soundBtn, link(I.camera, "Screenshot (PNG)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`)),
-      link(I.marks, "Screenshot with every element outlined and its @ref beside it (the refs agents use)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)),
-      recBtn);
-    tools.replaceChildren(...t);
-
-    // ---- a narrow screen: the most used controls under the screen (the tool column is hidden there)
-    quickSound = btn("", "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
-    const q = [];
-    if (control && (p === "ios" || p === "xros")) q.push(hold("home", "Home"));
-    if (control && p === "ios") q.push(btn("Switcher", "App Switcher", () => send({ t: "sys", a: "app_switcher" })));
-    if (control && p === "tvos") q.push(hold("menu", "Back"), hold("tv", "TV"));
-    if (control && p === "watchos") q.push(hold("home", "Crown"), hold("side", "Side"));
-    if (control) q.push(btn("Type…", "Type text into the device", openPaste));
-    q.push(quickSound);
-    quick.replaceChildren(...q);
+      const sb = tool(I.soundOff, "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
+      const rb = tool(I.record, "Record the screen to a video file", toggleRec);
+      soundBtns.push(sb); recBtns.push(rb);
+      t.push(gap(), sb, link(I.camera, "Screenshot (PNG)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`)),
+        link(I.marks, "Screenshot with every element outlined and its @ref beside it (the refs agents use)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)),
+        rb);
+      // share this device: links are the server owner's to make (as the header's Share)
+      if (ME.owner) t.push(tool(I.share, "Share this device: a link to watch or drive it from another browser", () => openShare(id)));
+      return t;
+    };
+    tools.replaceChildren(...makeTools());
+    quick.replaceChildren(...makeTools().filter((e) => !e.classList.contains("tgap")));
 
     // ---- the inspector: the overview, then folds (open ones remembered), as the launcher's right panel
     const parts = [pan ? pan.overview : null];
@@ -806,12 +804,10 @@ function phoneView(id) {
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       rec = null;
-      setIcon(recBtn, I.record);
-      recBtn.classList.remove("rec");
+      for (const b of recBtns) { setIcon(b, I.record); b.classList.remove("rec"); }
     };
     rec.start(1000);
-    setIcon(recBtn, I.stop);
-    recBtn.classList.add("rec");
+    for (const b of recBtns) { setIcon(b, I.stop); b.classList.add("rec"); }
   }
 
   // --- paste / type
