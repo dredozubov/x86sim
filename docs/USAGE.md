@@ -92,7 +92,8 @@ A model can be created only on a runtime that takes it (the runtime's own profil
 
 ### GPU per device
 
-Each device renders on its own GPU setting: `auto` (a discrete GPU first), one GPU, or `cpu` (lavapipe, no GPU).
+Each device renders on its own GPU setting: `auto` (a discrete GPU first), one GPU, or `cpu` (lavapipe, Mesa's CPU
+Vulkan driver: no GPU is used). `cpu` is always there: x86Sim comes with its own lavapipe and needs no driver installed.
 `x86sim gpu [PHONE] list` shows the host's GPUs, the setting and the GPU a running device uses; `x86sim gpu [PHONE]
 set auto|cpu|NAME|ID` changes it for the next start (the launcher: Advanced > GPU; MCP `sim_gpu`). Devices on the
 same GPU share one GPU helper process (mtlvk). On an AMD GPU, give your user read-write access to `/dev/udmabuf`

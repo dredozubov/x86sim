@@ -196,7 +196,7 @@ pub fn checks() -> Vec<Check> {
         check("Graphics (Vulkan)", Level::Ok, format!("drivers: {}", icds.join(", ")), "")
     } else {
         let why = if !loader { "no Vulkan loader (libvulkan.so.1)" } else if icds.is_empty() { "no Vulkan driver" } else { "no GPU device node" };
-        check("Graphics (Vulkan)", Level::Warn, why, "Install your GPU's Vulkan driver (NVIDIA's driver, or Mesa RADV / ANV) and vulkan-icd-loader. Without it devices draw in software: slow.")
+        check("Graphics (Vulkan)", Level::Warn, why, "Install your GPU's Vulkan driver (NVIDIA's driver, or Mesa RADV / ANV) and vulkan-icd-loader. Without it devices draw on the CPU (a device's GPU setting has CPU for that): slower.")
     });
     // AMD (Mesa RADV) refuses to import guest buffers by address: mtlvk hands them over as udmabufs instead, which
     // needs /dev/udmabuf (kernel CONFIG_UDMABUF) open to this user; without it buffers are copied each time they change

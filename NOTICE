@@ -25,6 +25,10 @@ rcodesign (tool)     MPL-2.0                                   https://github.co
 Web Inspector        BSD-2-Clause (WebKit; with CodeMirror MIT,    https://webkitgtk.org/releases/webkitgtk-2.54.3.tar.xz
 frontend             Esprima BSD-2-Clause, three.js MIT, CSS    (Source/WebInspectorUI; files taken from the
 (WebInspectorUI)     documentation MIT)                        built webkit2gtk-4.1 2.54.3-1 package)
+lavapipe             MIT and others (Mesa); LLVM linked in:      https://archive.mesa3d.org/mesa-26.2.5.tar.xz
+(libvulkan_lvp.so)   Apache-2.0 WITH LLVM-exception             (built by build/lavapipe.sh; licenses/lavapipe-LICENSE)
+libdrm, Vulkan       MIT; Apache-2.0                           beside lavapipe: Ubuntu 24.04's libdrm2 and libvulkan1
+loader
 omarchy-apple-dev    MIT                                       https://github.com/x86sim/omarchy-apple-dev (branch main)
 (x86sim dev scripts)
 Rust crates          MIT / Apache-2.0 and others: see each     tools/launcher/Cargo.lock, linux/mtlvk/Cargo.lock

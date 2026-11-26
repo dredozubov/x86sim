@@ -60,6 +60,10 @@ mkdir -p "$P/linux/mtlvk/target/release" "$P/tools/launcher/target/release"
 cp "$OUT/cargo-mtlvk/release/mtlvk" "$P/linux/mtlvk/target/release/"
 for b in x86sim-launcher x86sim-aot x86sim-mcp x86sim-dev x86sim-ax x86sim-serve x86sim-pool x86sim-devapp x86sim-account; do cp "$OUT/cargo-launcher/release/$b" "$P/tools/launcher/target/release/"; done
 strip --strip-debug "$P/linux/mtlvk/target/release/mtlvk" "$P/tools/launcher/target/release/"*
+# lavapipe for a device's GPU setting "cpu", beside mtlvk (gpus.rs finds it at <mtlvk's dir>/../lavapipe): there on every
+# computer, with or without a GPU or a Vulkan driver
+LAVAPIPE_DL=$OUT/lavapipe-build "$X/build/lavapipe.sh" "$OUT/lavapipe"
+cp -a "$OUT/lavapipe" "$P/linux/mtlvk/target/lavapipe"
 echo "$VERSION" > "$S/VERSION"
 
 echo "== Darling (installed by the setup wizard into /opt/x86sim)"
@@ -105,6 +109,7 @@ cp "$X/linux/arm64jit/third_party/lzfse/LICENSE" "$S/licenses/lzfse-LICENSE" 2>/
 cp "$X/LICENSE" "$S/licenses/x86sim-LICENSE"
 cp "$X/external/omarchy-apple-dev/LICENSE" "$S/licenses/omarchy-apple-dev-LICENSE"
 cp "$S/webinspector/LICENSE" "$S/licenses/webinspector-LICENSE"
+cp "$P/linux/mtlvk/target/lavapipe/LICENSE" "$S/licenses/lavapipe-LICENSE"
 cp "$X/NOTICE" "$S/NOTICE"
 
 echo "== Apple content check"

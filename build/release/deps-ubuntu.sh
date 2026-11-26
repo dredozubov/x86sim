@@ -52,7 +52,11 @@ apt-get install -y -q --no-install-recommends \
 	libxml2-dev libegl1-mesa-dev libfontconfig1-dev libbsd-dev libxrandr-dev libxcursor-dev libxi-dev libgif-dev libavutil-dev \
 	libpulse-dev libavformat-dev libavcodec-dev libswresample-dev libdbus-1-dev libxkbfile-dev libssl-dev libcap-dev \
 	libcap2-bin libvulkan-dev libboost-dev xz-utils file desktop-file-utils squashfs-tools zsync patchelf build-essential ccache \
-	zstd libglib2.0-bin
+	zstd libglib2.0-bin \
+	llvm-20-dev libpolly-20-dev python3-pip python3-mako python3-yaml python3-packaging glslang-tools libdrm-dev \
+	libzstd-dev zlib1g-dev libvulkan1
+# build/lavapipe.sh (Mesa wants meson 1.4 or newer; noble has 1.3): LLVM 20 is Ubuntu's, with static libraries
+pip3 install --break-system-packages -q 'meson==1.12.1'
 if ! command -v clang-$LLVM_VERSION >/dev/null; then
 	curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
 	bash /tmp/llvm.sh "$LLVM_VERSION"

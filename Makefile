@@ -6,13 +6,15 @@ cfg = $(shell X86SIM_ROOT='$(ROOT)' sh -c '. cli/lib/config.sh; echo "$$$(1)"')
 PREFIX := $(call cfg,X86SIM_PREFIX)
 DBUILD := $(call cfg,X86SIM_DARLING_BUILD)
 
-.PHONY: all help submodules mtlvk darling darling-configure darling-install sdks mac mac-diag clean
+.PHONY: all help submodules mtlvk lavapipe darling darling-configure darling-install sdks mac mac-diag clean
 
 all: mtlvk darling
 
 help:
 	@echo "make submodules         init external/darling (recursive) and external/metal2vulkan"
 	@echo "make mtlvk              linux/mtlvk (Rust, Vulkan): Metal stand-in, Linux side"
+	@echo "make lavapipe           linux/mtlvk/target/lavapipe: Mesa's CPU Vulkan driver for a device's GPU setting \"cpu\""
+	@echo "                        (build/lavapipe.sh; needs an LLVM with static libraries, or use your distribution's lavapipe)"
 	@echo "make darling            configure (once) and build Darling in $(DBUILD)"
 	@echo "make darling-install    build + install Darling into $(PREFIX) (sudo: bin/darling is setuid root;"
 	@echo "                        SUDO_PASS from the environment or a sudo prompt)"
@@ -29,6 +31,9 @@ submodules:
 
 mtlvk:
 	cd linux/mtlvk && cargo build --release
+
+lavapipe:
+	build/lavapipe.sh
 
 darling-configure:
 	@test -f "$(DBUILD)/build.ninja" || cmake -S external/darling -B "$(DBUILD)" -G Ninja \

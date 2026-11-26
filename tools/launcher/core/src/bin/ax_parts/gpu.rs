@@ -28,7 +28,7 @@ pub fn run(phone: Option<instance::Instance>, mut args: Vec<String>) -> Result<(
                 println!(" {mark} {}  {:<10}  {}{}\n      {}  ({})", g.index, g.kind, gpu::short_name(&g.name), if g.auto { "  [auto]" } else { "" }, id, g.driver);
             }
             if !l.iter().any(|g| g.usable && g.kind == "cpu") {
-                println!("   (cpu: install lavapipe for a device with no GPU)");
+                println!("   (cpu: no lavapipe here; a checkout builds one with build/lavapipe.sh, or install your distribution's)");
             }
             if let (Some(i), Some(s)) = (&phone, &setting) {
                 println!("{}: {}{}", i.name, gpu::setting_label(s, &l), now.map(|n| format!(", renders on {n} now")).unwrap_or_default());
