@@ -582,15 +582,23 @@ fn handle(srv: &Arc<Server>, mut s: TcpStream, peer: SocketAddr) {
         // this machine's Omarchy theme as the page's CSS variables (empty without Omarchy) and its generation, for the
         // page's Desktop look (share/theme.rs): colours only, no data
         "/theme.css" => return respond(&mut s, 200, "text/css; charset=utf-8", &[], super::theme::css().unwrap_or_default().as_bytes()),
-        // pushed, not polled: one event with the generation now, then one per theme switch (Server-Sent Events;
-        // a comment line every 25 s keeps proxies and tunnels from closing an idle stream)
-        "/api/theme/events" => {
-            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n");
+        // pushed, not polled: a WebSocket (it passes every tunnel; Cloudflare's quick tunnels hold back Server-Sent
+        // Events) with the generation now, then one message per theme switch, a ping every 25 s meanwhile
+        "/ws-theme" => {
+            let Some(key) = req.headers.get("sec-websocket-key").cloned() else { return json_resp(&mut s, 400, &json!({"error": "not a websocket"})) };
+            let resp = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n", super::ws::accept_key(&key));
+            if s.write_all(resp.as_bytes()).is_err() {
+                return;
+            }
             let (mut last, mut first) = (String::new(), true);
             loop {
                 let g = super::theme::wait_change(if first { "" } else { &last }, Duration::from_secs(25));
-                let msg = if first || g != last { format!("data: {}\n\n", json!({"available": !g.is_empty(), "generation": g})) } else { ": idle\n\n".to_string() };
-                if s.write_all(msg.as_bytes()).and_then(|_| s.flush()).is_err() || srv.stop.load(Ordering::Relaxed) {
+                let r = if first || g != last {
+                    super::ws::write(&mut s, 1, json!({"available": !g.is_empty(), "generation": g}).to_string().as_bytes())
+                } else {
+                    super::ws::write(&mut s, 9, b"")
+                };
+                if r.is_err() || srv.stop.load(Ordering::Relaxed) {
                     return;
                 }
                 last = g;

@@ -105,19 +105,25 @@ document.getElementById("lookBtn").addEventListener("click", () => {
   applyLook();
 });
 applyLook();
-try {
-  const ev = new EventSource("api/theme/events");
-  let gen = null;
-  ev.onmessage = (m) => {
+// the theme's generation, pushed over a WebSocket (it passes Tailscale and Cloudflare's quick tunnels alike); the
+// socket comes back after a drop (a server restart), a second later and then less often
+let themeGen = null, themeRetry = 0;
+function themeSocket() {
+  let ws;
+  try { ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws-theme"); } catch { return; }
+  ws.onmessage = (m) => {
+    themeRetry = 0;
     const t = JSON.parse(m.data);
     desktopTheme = !!t.available;
-    if (t.generation !== gen) {
-      if (gen !== null) document.getElementById("themecss").href = "theme.css?g=" + encodeURIComponent(t.generation);
-      gen = t.generation;
+    if (t.generation !== themeGen) {
+      if (themeGen !== null) document.getElementById("themecss").href = "theme.css?g=" + encodeURIComponent(t.generation);
+      themeGen = t.generation;
     }
     applyLook();
   };
-} catch {}
+  ws.onclose = () => setTimeout(themeSocket, Math.min(30000, 1000 * 2 ** themeRetry++));
+}
+themeSocket();
 
 // ---------- routing ----------
 let cleanup = null;
