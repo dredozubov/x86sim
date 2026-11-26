@@ -237,8 +237,11 @@ exports (`il2cpp_*`), on the main thread, where Unity's player loop runs:
 - Game objects: active ones with a name and an enabled renderer that a camera sees (`isVisible`) or an enabled
   collider (3D or 2D) are `node` elements, as SpriteKit's and SceneKit's: their `bounds` projected with `Camera.main`,
   corners behind it dropped.
-- Objects are found with `Object.FindObjectsByType` (2023.1+) or `FindObjectsOfType`. When code stripping removed both,
-  the loaded scenes' root objects are walked down their transforms (`SceneManager.GetSceneAt`,
+- Objects are found with `Object.FindObjectsByType` (2023.1+) or `FindObjectsOfType`. A game that never calls them
+  has both managed wrappers stripped (a real Unity 6.3 IL2CPP build); the engine still registers the native call
+  behind them, which `il2cpp_resolve_icall` finds by name
+  (`UnityEngine.Object::FindObjectsByType(System.Type,UnityEngine.FindObjectsInactive,UnityEngine.FindObjectsSortMode)`).
+  Without that too, the loaded scenes' root objects are walked down their transforms (`SceneManager.GetSceneAt`,
   `Scene.GetRootGameObjects`, `GetComponents`).
 - `key` is `unity:<instance id>` (`GetInstanceID`: the object's for its life), `uitk:<document id>/<child indexes>` for
   UI Toolkit; `oid` is the component (the game object for a node).

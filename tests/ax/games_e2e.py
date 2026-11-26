@@ -20,7 +20,11 @@ simax_unity.m; docs/protocols/SIMAX.md "Engines"), driven through x86sim-mcp ove
            --flutter-bundle com.x86sim.test.flutterDemo --flutter-wait "Taps: 0" --flutter-tap id:tap-button
            --flutter-tapped "Taps: 1" --flutter-field "Your name" --flutter-typed "Typed: x86sim"
   unity    a Unity IL2CPP game (--unity-app PATH --unity-bundle ID, the same -tap / -field / -wait options): elements
-           from the IL2CPP reader (or the game's own accessibility), taps, typing through the component
+           from the IL2CPP reader (or the game's own accessibility), taps, typing through the component; --unity-submit
+           presses Return after typing (Unity's keyboard bar covers the game until Done). The real game: the dev
+           toolchain's shells/samples/unity-hello, exported and built on Linux (shells/unity/build.sh):
+           --unity-bundle com.x86sim.dev.unityhello --unity-wait "Score: 0" --unity-tap Play --unity-tapped "Score: 1"
+           --unity-field "Your name" --unity-typed "Name: x86sim" --unity-submit
 
 Usage: tests/ax/games_e2e.py --phone NAME [--mcp PATH] [--only sprite,scene,vo,unityfake,...] [--out DIR] [--games-app PATH]
        [--vo-app PATH] [--unityfake-app PATH]
@@ -143,7 +147,7 @@ class Games(Run):
         f = [e for e in s["elements"] if e.get("app") == UNITY and e.get("role") == "textfield"]
         self.check("%s: the field's value" % tag, bool(f) and f[0].get("value") == "Ada", f and str(f[0]))
 
-    def engine_app(self, name, app, bundle, tap, field, wait=None, tapped=None, typed=None):
+    def engine_app(self, name, app, bundle, tap, field, wait=None, tapped=None, typed=None, submit=False):
         if not self.launch(app, bundle, None):
             return
         # the first snapshot is the first tree request: the screen-reader switch turns on then; the tree comes after
@@ -165,7 +169,7 @@ class Games(Run):
         if field:
             self.m.call("tap", target=field, after="none")
             time.sleep(1.5)
-            text, _, err, _ = self.m.call("type", text="x86sim")
+            text, _, err, _ = self.m.call("type", text="x86sim", **({"submit": True} if submit else {}))
             self.check("%s: type into %r" % (name, field), not err and "x86sim" in text, text[:300])
             if typed:
                 ok = not self.m.call("wait_for", target=typed, timeout=10)[2]
@@ -190,6 +194,8 @@ def main():
         ap.add_argument("--%s-wait" % e, help="text to wait for once the app is up")
         ap.add_argument("--%s-tapped" % e, help="text the app shows after the tap")
         ap.add_argument("--%s-typed" % e, help="text the app shows after typing x86sim")
+        ap.add_argument("--%s-submit" % e, action="store_true",
+                        help="press Return after typing (Unity's iOS keyboard bar covers the game until Done)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     m = Mcp(a.mcp, a.phone, open(os.path.join(a.out, "games-%s.log" % a.phone), "w"))
@@ -211,7 +217,7 @@ def main():
                          a.flutter_tapped, a.flutter_typed)
         if want("unity") and a.unity_bundle:
             r.engine_app("unity", a.unity_app, a.unity_bundle, a.unity_tap, a.unity_field, a.unity_wait, a.unity_tapped,
-                         a.unity_typed)
+                         a.unity_typed, a.unity_submit)
     finally:
         m.close()
     print("%d failed: %s" % (len(r.fails), ", ".join(r.fails)))
