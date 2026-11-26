@@ -19,6 +19,9 @@ import Charts
 import CoreData
 #endif
 import UniformTypeIdentifiers
+#if os(watchOS)
+import WatchKit
+#endif
 import Accessibility
 
 // MARK: helpers
@@ -1315,6 +1318,65 @@ private func p28Scaled<R: ScaleRange>(_ range: R) -> some View where R.VisualVal
 }
 #endif
 
+// MARK: watchOS: carousel / elliptical lists, Digital Crown rotation, accessibility quick actions, a WatchKit interface
+// object, snapshot background tasks, delegate adaptors; watchOS + tvOS: focus reset
+
+#if os(watchOS)
+private struct P28StyledList<S: ListStyle>: View {
+    let style: S; let name: String; let log: P6Log
+    var body: some View {
+        List { Text("one"); Text("two") }.listStyle(style).frame(height: 80).onAppear { log.add("\(name) appear") }.p28Size(name, log)
+    }
+}
+private struct P28WKMap: WKInterfaceObjectRepresentable {
+    let log: P6Log
+    func makeWKInterfaceObject(context: WKInterfaceObjectRepresentableContext<P28WKMap>) -> WKInterfaceMap {
+        log.add("wk make"); return WKInterfaceMap()
+    }
+    func updateWKInterfaceObject(_ map: WKInterfaceMap, context: WKInterfaceObjectRepresentableContext<P28WKMap>) { log.add("wk update") }
+}
+private final class P28WKAppDelegate: NSObject, WKApplicationDelegate {}
+private final class P28WKExtDelegate: NSObject, WKExtensionDelegate {}
+private func p28QuickStyle<S: AccessibilityQuickActionStyle>(_ s: S) -> String { "\(S.self)" }
+private struct P28WatchRoot: View {
+    let log: P6Log
+    @State var crown = 0.0
+    @State var quick = false
+    var body: some View {
+        ScrollView {
+            VStack {
+                P28StyledList(style: CarouselListStyle(), name: "list-carousel", log: log)
+                P28StyledList(style: EllipticalListStyle(), name: "list-elliptical", log: log)
+                Text("crown \(Int(crown))")
+                    .focusable()
+                    .digitalCrownRotation($crown, from: 0, through: 10, by: 1, sensitivity: DigitalCrownRotationalSensitivity.low, isContinuous: false, isHapticFeedbackEnabled: false)
+                    .p28Size("crown", log)
+                Text("events").focusable()
+                    .digitalCrownRotation($crown, onChange: { (e: DigitalCrownEvent) in log.add("crown event \(e.offset)") }, onIdle: { log.add("crown idle") })
+                Text("quick")
+                    .accessibilityQuickAction(style: AccessibilityQuickActionPromptStyle.prompt) { Button("Do") { log.add("quick do") } }
+                    .accessibilityQuickAction(style: AccessibilityQuickActionOutlineStyle.outline, isActive: $quick) { Button("Other") {} }
+                    .p28Size("quick", log)
+                P28WKMap(log: log).frame(width: 60, height: 40).p28Size("wk-map", log)
+            }
+        }
+    }
+}
+#endif
+#if os(watchOS) || os(tvOS)
+/// a focus reset (watchOS / tvOS): the environment's action called over a namespace
+private struct P28FocusReset: View {
+    let log: P6Log
+    @Namespace private var ns
+    @Environment(\.resetFocus) private var reset: ResetFocusAction
+    var body: some View {
+        VStack { Button("a") {}.prefersDefaultFocus(in: ns); Button("b") {} }
+            .focusScope(ns)
+            .onAppear { reset(in: ns); log.add("reset called") }
+    }
+}
+#endif
+
 // MARK: checks
 
 extension Registry {
@@ -2157,6 +2219,43 @@ extension Registry {
             // bar is a pure end color)
             try expect(ok, r)
             return r
+        })
+        #endif
+
+
+        #if os(watchOS)
+        // MARK: watchOS: carousel / elliptical list styles, Digital Crown rotation (no crown turned: the binding keeps its
+        // value), accessibility quick actions, a WKInterfaceMap through WKInterfaceObjectRepresentable, snapshot task
+        // values, WatchKit delegate adaptors made outside an App
+        c.append(check("SwiftUI", "p28-watch-lists-crown-wk", timeout: 20) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28WatchRoot(log: log)) }
+            defer { Task { @MainActor in close() } }
+            let keys = ["list-carousel", "list-elliptical", "crown", "quick", "wk-map"]
+            _ = await p6Wait(5) { keys.allSatisfy { p28Last(log, $0) != nil } && log.has("wk make") }
+            try await Task.sleep(for: .milliseconds(300))
+            let ad = await onMain { "\(type(of: WKApplicationDelegateAdaptor(P28WKAppDelegate.self))) \(type(of: WKExtensionDelegateAdaptor(P28WKExtDelegate.self)))" }
+            let snap: BackgroundTask<SnapshotData, SnapshotResponse> = .snapshot
+            _ = snap
+            let resp = SnapshotResponse(restoredDefaultState: true, estimatedSnapshotExpiration: nil, identifier: "p28")
+            _ = resp
+            let reasons: Set<SnapshotData.SnapshotReason> = [.appScheduled, .returnToDefaultState, .complicationUpdate, .prelaunch, .appBackgrounded]
+            let d = keys.map { "\($0) \(p28Last(log, $0) ?? "-")" }.joined(separator: ", ") + "; \(log.all.filter { !keys.contains(String($0.split(separator: " ").first ?? "")) }); \(ad); styles \(p28QuickStyle(.prompt)) \(p28QuickStyle(.outline)); reasons \(reasons.count)"
+            try expect(keys.allSatisfy { p28Last(log, $0) != nil } && log.has("wk make") && reasons.count == 5, d)
+            try expect(DigitalCrownRotationalSensitivity.low != .high && p28Last(log, "wk-map") == "60x40", d)
+            return d
+        })
+        #endif
+
+        #if os(watchOS) || os(tvOS)
+        // MARK: SwiftUI focus reset over a namespace (watchOS / tvOS)
+        c.append(check("SwiftUI", "p28-focus-reset", timeout: 15) {
+            let log = P6Log()
+            let close = try await onMain { try p6HostSwiftUI(P28FocusReset(log: log)) }
+            defer { Task { @MainActor in close() } }
+            _ = await p6Wait(4) { log.has("reset called") }
+            try expect(log.has("reset called"), "\(log.all)")
+            return "\(log.all)"
         })
         #endif
 
