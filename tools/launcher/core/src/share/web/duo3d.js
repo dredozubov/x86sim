@@ -140,15 +140,19 @@
   function placement(o, phi) {
     return [rollOf(o), o === "landscapeLeft" ? -Math.PI / 2 : o === "landscapeRight" ? phi - Math.PI / 2 : 0];
   }
-  function defaultView(o, deg, phi, inner) {
-    if (inner == null) inner = deg >= 85;
-    const k = Math.max(Math.sin(phi), 0);
-    if (o === "landscapeLeft" || o === "landscapeRight") return [rad(-12 * k), rad(inner ? 28 : 70)];
-    let n = inner ? [-Math.sin(phi), 0, 1 + Math.cos(phi)] : [Math.sin(phi), 0, -Math.cos(phi)];
-    n = rotZ(n, rollOf(o));
+  // how much the default view faces the inner screen: 0 folded, 1 open, eased over from 55° up to SpringBoard's swap
+  // angle (85°), so the inner screen is faced straight from where it is in use (half open at 90° is a book)
+  function innerWeight(deg) { const t = Math.max(0, Math.min(1, (deg - 55) / 30)); return t * t * (3 - 2 * t); }
+  // the default camera: a function of the hinge angle alone, so a slide or a pose is followed in one smooth move
+  function defaultView(o, deg, phi) {
+    const w = innerWeight(deg), k = Math.max(Math.sin(phi), 0);
+    if (o === "landscapeLeft" || o === "landscapeRight") return [rad(-12 * k), rad(70 + (28 - 70) * w)];
+    const y = -phi / 2 + (1 - w) * (Math.PI - phi / 2);
+    const n = rotZ([Math.sin(y), 0, Math.cos(y)], rollOf(o));
     const yaw = Math.atan2(n[0], n[2]), pitch = Math.atan2(n[1], Math.hypot(n[0], n[2]));
     return [yaw + rad(-14 * k), Math.max(-1.5, Math.min(1.5, pitch + rad(10 * k)))];
   }
+
 
   // where a ray meets the plane z of a half's own space: [t, x, y]
   function plane(o, d, z) {
@@ -290,12 +294,9 @@ void main() {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
       gl.generateMipmap(gl.TEXTURE_2D);
-      return { name, tex, dec: null, decCodec: "", needKey: true, lit: false, litAt: 0, jpegBusy: false, pendingJpeg: null, w: 0, h: 0 };
+      return { name, tex, dec: null, decCodec: "", needKey: true, jpegBusy: false, pendingJpeg: null, w: 0, h: 0 };
     }
     const scr = { inner: newScreen("inner"), outer: newScreen("outer") };
-    const probe = document.createElement("canvas");
-    probe.width = probe.height = 12;
-    const pctx = probe.getContext("2d", { willReadFrequently: true });
     let staging = null;
 
     function upload(s, src, w, h) {
@@ -311,18 +312,6 @@ void main() {
       }
       gl.generateMipmap(gl.TEXTURE_2D);
       s.w = w; s.h = h;
-      // lit or black, twice a second
-      const now = performance.now();
-      if (now - s.litAt > 500) {
-        s.litAt = now;
-        try {
-          pctx.drawImage(src, 0, 0, 12, 12);
-          const d = pctx.getImageData(0, 0, 12, 12).data;
-          let lit = false;
-          for (let i = 0; i < d.length; i += 4) if (d[i] > 12 || d[i + 1] > 12 || d[i + 2] > 12) { lit = true; break; }
-          s.lit = lit;
-        } catch {}
-      }
       dirty = true;
       opts.onFrame && opts.onFrame(w, h, s.name);
     }
@@ -381,7 +370,8 @@ void main() {
     // once; face up / down keep the last); placeOff: how far the drawn placement still is from it (eases to nothing)
     let hinge = 180, reported = "", orient = "", commanded = null, commandedOrient = null, placeOff = [0, 0];
     let shown = NaN, lastT = NaN, cam = null, fit = null, fitT = NaN;
-    let orbit = [0, 0], zoom = 1, proj = null;
+    // zoom: the wheel's (1: the phone fits); zoomShown: the one drawn (the wheel moves both, a reset only the first)
+    let orbit = [0, 0], zoom = 1, zoomShown = 1, proj = null;
     let cssW = 300, cssH = 300, mesh = null, meshDeg = NaN;
 
     function state(m) {
@@ -398,7 +388,6 @@ void main() {
       if (o) commandedOrient = [o, performance.now() / 1000];
       resetView();
     }
-    function facing() { const i = scr.inner.lit, o = scr.outer.lit; return i !== o ? i : null; }
 
     function resize(w, h) {
       w = Math.max(50, Math.floor(w)); h = Math.max(50, Math.floor(h));
@@ -441,13 +430,18 @@ void main() {
         if (Math.abs(placeOff[0]) + Math.abs(placeOff[1]) < 0.001) placeOff = [0, 0];
         moving = true;
       }
-      const want = defaultView(orient, shown, phi, facing());
+      const want = defaultView(orient, shown, phi);
       if (cam && dt > 0) {
         const k = 1 - Math.exp(-dt * SETTLE);
         const dy = wrap(want[0] - cam[0]), dp = want[1] - cam[1];
         if (Math.abs(dy) + Math.abs(dp) > 0.002) moving = true;
         cam = [cam[0] + dy * k, cam[1] + dp * k];
       } else if (!cam) cam = want;
+      if (zoomShown !== zoom) {
+        zoomShown += (zoom - zoomShown) * (1 - Math.exp(-dt * SETTLE));
+        if (Math.abs(zoomShown - zoom) < zoom * 0.001) zoomShown = zoom;
+        moving = true;
+      }
       return moving;
     }
 
@@ -494,7 +488,7 @@ void main() {
       } else if (!fit) fit = want;
       fitT = now;
       const [fs0, bcx, bcy, fc] = fit;
-      const s = fs0 * zoom;
+      const s = fs0 * zoomShown;
       const hw = cssW / 2, hh = cssH / 2;
       const off = [hw - bcx * s, hh - bcy * s];
       const ex = view([1, 0, 0]), ey = view([0, 1, 0]), ez = view([0, 0, 1]);
@@ -604,8 +598,13 @@ void main() {
     let g = null; // the gesture: {kind: "view" | "touch" | "touch2" | "wait", ...}
     let lastRight = 0, twoTaps = [];
     function turn(dx, dy) { orbit = [orbit[0] - dx * 0.008, orbit[1] + dy * 0.008]; dirty = true; }
-    function zoomBy(k) { zoom = Math.max(0.4, Math.min(5, zoom * k)); dirty = true; }
-    function resetView() { orbit = [0, 0]; zoom = 1; dirty = true; }
+    function zoomBy(k) { zoom = zoomShown = Math.max(0.4, Math.min(5, zoom * k)); dirty = true; }
+    // back to the pose's default view: the turn is handed to the camera, which eases from where it is drawn to the
+    // default view, and the zoom eases back (no jump)
+    function resetView() {
+      if (cam) cam = [wrap(cam[0] + orbit[0]), Math.max(-1.5, Math.min(1.5, cam[1] + orbit[1]))];
+      orbit = [0, 0]; zoom = 1; dirty = true;
+    }
     function touchAt(h, p, px, py) {
       const [x, y] = follow(px, py, h);
       opts.send({ t: "touch", p, x: clamp01(x), y: clamp01(y), s: h.s });

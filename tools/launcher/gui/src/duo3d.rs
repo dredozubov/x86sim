@@ -39,8 +39,6 @@ struct Feed {
     seen_ms: AtomicU64,
     frame: Mutex<Option<Img>>,
     dirty: AtomicBool,
-    /// the latest frame shows something (an unused screen is black)
-    lit: AtomicBool,
 }
 
 struct Screen {
@@ -51,7 +49,7 @@ struct Screen {
 
 impl Screen {
     fn new(ring: &Path, rot: u32, name: String, ctx: egui::Context) -> Screen {
-        let feed = Arc::new(Feed { ring: Mutex::new(ring.to_path_buf()), rot, target_w: AtomicU32::new(800), seen_ms: AtomicU64::new(now_ms()), frame: Mutex::new(None), dirty: AtomicBool::new(false), lit: AtomicBool::new(false) });
+        let feed = Arc::new(Feed { ring: Mutex::new(ring.to_path_buf()), rot, target_w: AtomicU32::new(800), seen_ms: AtomicU64::new(now_ms()), frame: Mutex::new(None), dirty: AtomicBool::new(false) });
         let weak: Weak<Feed> = Arc::downgrade(&feed);
         let _ = std::thread::Builder::new().name(format!("duo3d {name}")).spawn(move || {
             let mut path = PathBuf::new();
@@ -78,8 +76,6 @@ impl Screen {
                         let step = (src_w / f.target_w.load(Ordering::Relaxed).max(8) as usize).max(1);
                         if (fr.seq, step) != last {
                             let img = convert(&fr, step, f.rot, true);
-                            let lit = img.pixels.iter().step_by(97).any(|c| c.r() > 12 || c.g() > 12 || c.b() > 12);
-                            f.lit.store(lit, Ordering::Relaxed);
                             *f.frame.lock().unwrap() = Some(img);
                             f.dirty.store(true, Ordering::Release);
                             ctx.request_repaint();
@@ -148,8 +144,10 @@ pub struct Duo3d {
     fit_t: f64,
     /// what a drag turned the view by on top of the default view (radians); a double click resets it
     orbit: (f32, f32),
-    /// the scroll wheel's zoom (1: the phone fits the area)
+    /// the scroll wheel's zoom (1: the phone fits the area), and the one drawn: the wheel moves both, a reset only the
+    /// first (the drawn one eases back)
     zoom: f32,
+    zoom_shown: f32,
     gl: gpu::Target,
     /// the main view's projection, as last drawn (touches are traced back through it)
     proj: Option<Proj>,
@@ -197,6 +195,7 @@ impl Duo3d {
             fit_t: f64::NAN,
             orbit: (0.0, 0.0),
             zoom: 1.0,
+            zoom_shown: 1.0,
             gl: Default::default(),
             proj: None,
         })
@@ -246,7 +245,7 @@ impl Duo3d {
             ctx.request_repaint();
         }
         // the camera eases to the pose's view (the screen swap turns it from the inner to the outer screen)
-        let want = Self::default_view(&self.orient, self.shown, phi, self.facing());
+        let want = Self::default_view(&self.orient, self.shown, phi);
         let cam = match self.cam {
             Some((y, p)) if dt > 0.0 => {
                 let k = 1.0 - (-(dt as f32) * SETTLE).exp();
@@ -260,6 +259,14 @@ impl Duo3d {
             None => want,
         };
         self.cam = Some(cam);
+        if self.zoom_shown != self.zoom {
+            let k = 1.0 - (-(dt as f32) * SETTLE).exp();
+            self.zoom_shown += (self.zoom - self.zoom_shown) * k;
+            if (self.zoom_shown - self.zoom).abs() < self.zoom * 0.001 {
+                self.zoom_shown = self.zoom;
+            }
+            ctx.request_repaint();
+        }
         self.bent()
     }
 
@@ -273,8 +280,12 @@ impl Duo3d {
         self.reset_view();
     }
 
-    /// Back to the pose's default view: no turn or zoom by hand
+    /// Back to the pose's default view: no turn or zoom by hand. The turn is handed to the camera, which eases from
+    /// where it is drawn to the default view, and the zoom eases back: no jump.
     pub fn reset_view(&mut self) {
+        if let Some((y, p)) = self.cam {
+            self.cam = Some((wrap(y + self.orbit.0), (p + self.orbit.1).clamp(-1.5, 1.5)));
+        }
         self.orbit = (0.0, 0.0);
         self.zoom = 1.0;
     }
@@ -283,30 +294,29 @@ impl Duo3d {
         self.shown > 0.5 && self.shown < 179.5
     }
 
-    /// Whether the view should face the inner screen: the screen that is lit (SpringBoard moves to the other one a
-    /// couple of seconds after the hinge settles past its swap angle); None while both or neither are
-    fn facing(&self) -> Option<bool> {
-        let (i, o) = (self.inner.feed.lit.load(Ordering::Relaxed), self.outer.feed.lit.load(Ordering::Relaxed));
-        (i != o).then_some(i)
-    }
-
     /// The default camera (turntable yaw about the vertical, then elevation) at hinge angle `deg` (the right half
-    /// turned by `phi`), facing the screen in use: the lit one (`inner`), else by SpringBoard's swap angle (inner
-    /// from 85 degrees up). Held in portrait, the inner screen is seen along the bisector of the two halves (an open
-    /// book; straight on when flat), the outer one on the right half's back straight on, then from a little to the
-    /// right and above so the fold reads as 3D. In landscape the phone sits on the table on its lower half
+    /// turned by `phi`): a function of the angle alone, so a hinge moved by the slider or a pose is followed in one
+    /// smooth move (it once turned to whichever screen was lit, and SpringBoard lights the other one a couple of
+    /// seconds after the hinge passes its swap angle: the view ended facing the shut inner side, then swung round).
+    /// It faces the inner screen when open and the outer one when folded, blended up to SpringBoard's swap angle
+    /// (85 degrees; `inner_weight`). Held in portrait, the inner screen is seen along the bisector of the two halves
+    /// (an open book; straight on when flat), the outer one on the right half's back straight on, then from a little
+    /// to the right and above so the fold reads as 3D. In landscape the phone sits on the table on its lower half
     /// (`placement`), seen from the front and above as a laptop is: low for the inner screen, high for the outer
     /// one lying face up.
-    fn default_view(orient: &str, deg: f64, phi: f32, inner: Option<bool>) -> (f32, f32) {
-        let inner = inner.unwrap_or(deg >= 85.0);
+    fn default_view(orient: &str, deg: f64, phi: f32) -> (f32, f32) {
+        let w = inner_weight(deg);
         let k = phi.sin().max(0.0);
         if matches!(orient, "landscapeLeft" | "landscapeRight") {
-            let elev: f32 = if inner { 28.0 } else { 70.0 };
+            let elev = 70.0 + (28.0 - 70.0) * w;
             // a positive pitch tips the top of the scene towards the camera: seen from above
             return ((-12f32 * k).to_radians(), elev.to_radians());
         }
-        let n = if inner { v3(-phi.sin(), 0.0, 1.0 + phi.cos()) } else { v3(phi.sin(), 0.0, -phi.cos()) };
-        let n = rot_z(n, roll_of(orient));
+        // the inner screen's bisector turns by -phi/2, the outer screen's normal by pi - phi: the way between them
+        // goes round the right half's edge (never through the phone)
+        let yaw_in = -phi / 2.0;
+        let y = yaw_in + (1.0 - w) * (std::f32::consts::PI - phi / 2.0);
+        let n = rot_z(v3(y.sin(), 0.0, y.cos()), roll_of(orient));
         let yaw = n.x.atan2(n.z);
         let r = (n.x * n.x + n.z * n.z).sqrt();
         let pitch = n.y.atan2(r);
@@ -340,18 +350,19 @@ impl Duo3d {
                 let z = self.zoom * (scroll * 0.002).exp() * pinch;
                 if z != self.zoom {
                     self.zoom = z.clamp(0.4, 5.0);
+                    self.zoom_shown = self.zoom;
                 }
             }
         }
-        let (cy, cp) = self.cam.unwrap_or_else(|| Self::default_view(&orient, self.shown, phi, self.facing()));
+        let (cy, cp) = self.cam.unwrap_or_else(|| Self::default_view(&orient, self.shown, phi));
         let (yaw, pitch) = (cy + self.orbit.0, (cp + self.orbit.1).clamp(-1.5, 1.5));
         let (roll, tilt) = placement(&orient, phi);
         let (roll, tilt) = (roll + self.place_off.0, tilt + self.place_off.1);
         let view = |p: V3| rot_x(rot_y(rot_x(rot_z(p, roll), tilt), yaw), pitch);
         let ppp = ui.ctx().pixels_per_point();
         let inner_ring = inst.inner.as_ref().map(|d| d.ring.clone()).unwrap_or_default();
-        let inner = self.inner.texture(ui.ctx(), &inner_ring, rect.width() * ppp * 2.0 * self.zoom);
-        let outer = self.outer.texture(ui.ctx(), &inst.ring, rect.width() * ppp * 1.2 * self.zoom);
+        let inner = self.inner.texture(ui.ctx(), &inner_ring, rect.width() * ppp * 2.0 * self.zoom_shown);
+        let outer = self.outer.texture(ui.ctx(), &inst.ring, rect.width() * ppp * 1.2 * self.zoom_shown);
         let m = mesh::build(self.shown as f32);
         let size = 2.0 * mesh::half_w() + mesh::half_h();
         // a longer lens than a wide one, as products are photographed
@@ -391,7 +402,7 @@ impl Duo3d {
         self.fit = Some(fit);
         self.fit_t = now;
         let (s0, bbc, c) = fit;
-        let s = s0 * self.zoom;
+        let s = s0 * self.zoom_shown;
         let off = rect.center() - bbc.to_vec2() * s;
         let bb = Rect::from_center_size(bbc, bb.size());
         let (hw, hh) = (rect.width() / 2.0, rect.height() / 2.0);
@@ -575,6 +586,14 @@ fn placement(orient: &str, phi: f32) -> (f32, f32) {
     (roll, tilt)
 }
 
+/// How much the default view faces the inner screen at hinge angle `deg`: 0 folded, 1 open. It eases over from 55
+/// up to SpringBoard's swap angle (85 degrees), so the inner screen is faced straight from where it is in use (a
+/// half open book at 90 is seen as one)
+fn inner_weight(deg: f64) -> f32 {
+    let t = ((deg as f32 - 55.0) / 30.0).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// An angle brought into -pi..pi (the short way round)
 fn wrap(a: f32) -> f32 {
     (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
@@ -598,6 +617,26 @@ fn roll_of(orient: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default view follows the hinge without a jump anywhere from flat to closed (a degree of hinge never turns
+    /// it by more than a few degrees), facing the inner screen straight on when flat and the outer one when closed
+    #[test]
+    fn default_view_is_smooth() {
+        for orient in ["portrait", "portraitUpsideDown", "landscapeLeft", "landscapeRight"] {
+            let view = |deg: f64| Duo3d::default_view(orient, deg, ((180.0 - deg) as f32).to_radians());
+            let mut last = view(180.0);
+            for i in (0..1800).rev() {
+                let v = view(i as f64 / 10.0);
+                let d = wrap(v.0 - last.0).abs() + (v.1 - last.1).abs();
+                assert!(d < 1f32.to_radians(), "{orient} at {}: {last:?} -> {v:?}", i as f64 / 10.0);
+                last = v;
+            }
+        }
+        for deg in [0.0, 180.0] {
+            let (yaw, pitch) = Duo3d::default_view("portrait", deg, ((180.0 - deg) as f32).to_radians());
+            assert!(yaw.abs() < 1e-4 && pitch.abs() < 1e-4, "{deg}: {yaw} {pitch}");
+        }
+    }
 
     /// A turn between any two held orientations eases the short way round (never more than half a turn of roll), and
     /// face up / down reports do not count as one (the phone stays as it was placed)
@@ -631,10 +670,12 @@ mod tests {
                 let far = if orient == "landscapeLeft" { v3(-1000.0, 0.0, 0.0) } else { rot_y(v3(1000.0, 0.0, 0.0), phi) };
                 let f = rot_x(rot_z(far, roll), tilt);
                 assert!(f.y.abs() < 1e-2 && f.z > 900.0, "{orient} at {deg}: far edge {f:?}");
-                // the default camera sees its top: the face turned towards the viewer (+z), from above
-                let (yaw, pitch) = Duo3d::default_view(orient, deg as f64, phi, Some(true));
+                // the default camera sees its top: the face turned towards the viewer (+z), from above; low as a
+                // laptop is seen once the inner screen is in use, from high above while folded
+                let (yaw, pitch) = Duo3d::default_view(orient, deg as f64, phi);
                 let seen = rot_x(rot_y(n, yaw), pitch);
-                assert!(seen.z > 0.3 && seen.y > 0.5, "{orient} at {deg}: base top seen as {seen:?}");
+                let up = if deg >= 85.0 { 0.5 } else { 0.3 };
+                assert!(seen.z > 0.3 && seen.y > up, "{orient} at {deg}: base top seen as {seen:?}");
             }
         }
     }
