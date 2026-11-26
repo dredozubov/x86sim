@@ -1475,6 +1475,10 @@ extension Registry {
             let want = "faceRects:err9 faceLandmarks:err9 faceQuality:err9 humanRects:err9 bodyPose:err9 handPose:0 animalPose:err9 animals:err9 classify:err-1 textRects:1:VNTextObservation contours:1:VNContoursObservation docSeg:1:VNRectangleObservation attention:err-1 objectness:err-1 personSeg:err1 personMask:err9 foreground:err9 aesthetics:err-1 bodyPose3D:err16 horizon:0 homographic:1:VNImageHomographicAlignmentObservation"
             #if os(iOS)
             try expect(out.joined(separator: " ") == want, "requests differ from Apple's simulator: \(out.joined(separator: " "))")
+            #elseif os(visionOS)
+            // visionOS 27.2: the body / animal pose requests run (no results), the rest as on iOS
+            let wantXR = want.replacingOccurrences(of: "bodyPose:err9", with: "bodyPose:0").replacingOccurrences(of: "animalPose:err9", with: "animalPose:0")
+            try expect(out.joined(separator: " ") == wantXR, "requests differ from Apple's simulator: \(out.joined(separator: " "))")
             #endif
             // results typed by observation class, where there are any
             let textRects = (reqs.first { $0.0 == "textRects" }?.1.results ?? []).compactMap { $0 as? VNTextObservation }
@@ -1989,7 +1993,12 @@ extension Registry {
             iec.events = [ev]
             let mon: AVPlayerInterstitialEventMonitor = iec
             // events set on a controller whose primary item has not loaded read back empty (Apple's simulator)
+            // (Apple's visionOS simulator keeps them: ["ad"])
+            #if os(visionOS)
+            try expect(mon.events.map(\.identifier) == ["ad"], "interstitial events \(mon.events.map(\.identifier))")
+            #else
             try expect(mon.events.isEmpty && ev.identifier == "ad", "interstitial events \(mon.events.map(\.identifier))")
+            #endif
             let route = AVRouteDetector(); route.isRouteDetectionEnabled = true
             let multi = route.multipleRoutesDetected; route.isRouteDetectionEnabled = false
             let osa = AVOutputSettingsAssistant(preset: .preset1280x720)
