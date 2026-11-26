@@ -232,6 +232,7 @@ thread_local! {
     static PIPE_NAMES: std::cell::RefCell<std::collections::HashMap<u64, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
     static SAMPLED_MATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SKIP_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CUR_PSO: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
     static SKIP_PASS_RESOLVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static BOUND: std::cell::RefCell<std::collections::HashMap<(u32, u32), (u64, u64)>> = std::cell::RefCell::new(std::collections::HashMap::new());
     static SAMPLED: std::cell::RefCell<Vec<(Texture, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -362,6 +363,10 @@ pub struct State {
     /// x86Sim (issue #37): this connection's number, and the function names of each pipeline state, for the
     /// watchdog's summary of a command buffer not complete in time (`crate::hang`).
     pub conn: usize,
+    /// the client process (SO_PEERCRED: host pid and its program) and the command buffers it committed, for the
+    /// SIGUSR1 stats: which process keeps the GPU busy
+    pub peer: String,
+    commits: u64,
     pso_names: HashMap<u64, String>,
 }
 
@@ -445,6 +450,7 @@ impl State {
         );
         // the runtime's cumulative counts (pipelines made and the waits for them, translations, GPU time, ...): two
         // dumps' difference is what happened between them (SIGUSR1 before and after a lag)
+        eprintln!("mtlvk stats: conn{} {}: {} command buffers committed", self.conn, self.peer, self.commits);
         eprintln!("mtlvk metrics: {:?}", self.device.counters().metrics());
     }
 }
@@ -487,7 +493,7 @@ impl State {
         }
         Ok(State { device, objs: HashMap::new(), skip_draws: std::cell::Cell::new(false), mirrors: HashMap::new(), helper, out, log: std::env::var_os("MTLVK_LOG").is_some(), lib_bytes: HashMap::new(), func_src: HashMap::new(),
             vram_targets, proxies: HashMap::new(), idx: HashMap::new(), proxy_views: HashMap::new(), shared_vram: HashMap::new(), proxy_keys: HashMap::new(), buf_keys: HashMap::new(),
-            written: Default::default(), stats_seen: 0, kinds: HashMap::new(), conn: 0, pso_names: HashMap::new() })
+            written: Default::default(), stats_seen: 0, kinds: HashMap::new(), conn: 0, peer: String::new(), commits: 0, pso_names: HashMap::new() })
     }
 
     /// x86Sim: note that a command writes texture `id` (a proxied one is copied back at the end of the command
@@ -660,6 +666,7 @@ impl State {
                 None
             }
             CB_COMMIT => {
+                self.commits += 1;
                 let (queue, cb) = (r.u64(), r.u64());
                 if let Err(e) = self.cb_commit(queue, cb, &mut r) {
                     eprintln!("mtlvk: command buffer {cb:#x}: {e}");
@@ -1844,6 +1851,22 @@ impl State {
     /// dropped everything encoded after it: visionOS's Home View icons, rendered later in the same
     /// buffer as a stencil-export draw, went black for good. Logged the first 8 times per message.
     fn drawn(&self, r: Result<(), metal2vulkan_runtime::Error>) {
+        if std::env::var_os("MTLVK_DRAW_STATS").is_some() {
+            static TALLY: std::sync::Mutex<Option<(u64, std::collections::HashMap<String, u64>)>> = std::sync::Mutex::new(None);
+            let mut g = TALLY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (n, map) = g.get_or_insert_with(Default::default);
+            *map.entry(CUR_PSO.with(|c| c.borrow().clone())).or_default() += 1;
+            *n += 1;
+            if *n % 20000 == 0 {
+                let mut v: Vec<_> = map.iter().collect();
+                v.sort_by(|a, b| b.1.cmp(a.1));
+                eprintln!("mtlvk draw stats after {n} draws:");
+                for (k, c) in v.iter().take(30) {
+                    eprintln!("  {c:7} {k}");
+                }
+                map.clear();
+            }
+        }
         if let Err(e) = r {
             static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> = std::sync::Mutex::new(None);
             let msg = e.to_string();
@@ -1872,7 +1895,15 @@ impl State {
                 let skip_named = SKIP_PASS_RESOLVES.with(|c| c.get()) && std::env::var("MTLVK_SKIP_FRAG").ok().is_some_and(|l| {
                     PIPE_NAMES.with(|p| p.borrow().get(&id).is_some_and(|n| l.split(',').any(|x| x == n)))
                 });
-                self.skip_draws.set(failed || SKIP_PASS.with(|c| c.get()) || skip_named);
+                // x86Sim perf: MTLVK_SKIP_PSO=a,b skips the draws of pipelines whose name ("vertex/fragment")
+                // holds any of them (what a pipeline costs the GPU, by leaving it out); MTLVK_DRAW_STATS=1
+                // counts draws by pipeline name
+                let name = self.pso_names.get(&id).map(String::as_str).unwrap_or("?");
+                let skip_pso = std::env::var("MTLVK_SKIP_PSO").ok().is_some_and(|l| l.split(',').any(|x| !x.is_empty() && name.contains(x)));
+                if std::env::var_os("MTLVK_DRAW_STATS").is_some() {
+                    CUR_PSO.with(|c| *c.borrow_mut() = name.to_string());
+                }
+                self.skip_draws.set(failed || SKIP_PASS.with(|c| c.get()) || skip_named || skip_pso);
                 if !failed {
                     enc.set_render_pipeline_state(self.rps(id)?).map_err(e)?;
                 }
@@ -2163,6 +2194,19 @@ fn recv_header(fd: RawFd) -> std::io::Result<([u8; 16], Option<RawFd>)> {
     Ok((hdr, passed))
 }
 
+/// The client of a connection: its host pid and program (SO_PEERCRED), "?" where unknown
+fn peer_of(fd: std::os::fd::RawFd) -> String {
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: fd is the connection's socket; cred and len are valid for the call
+    let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
+    if r != 0 || cred.pid <= 0 {
+        return "?".into();
+    }
+    let prog = std::fs::read(format!("/proc/{}/cmdline", cred.pid)).ok().and_then(|c| c.split(|b| *b == 0).next().map(|a| String::from_utf8_lossy(a).rsplit('/').next().unwrap_or("").to_string())).unwrap_or_default();
+    format!("pid {} {prog}", cred.pid)
+}
+
 pub fn serve(n: usize, device: Device, stream: UnixStream) {
     let writer = Arc::new(Mutex::new(stream.try_clone().expect("clone stream")));
     let out: Sink = Arc::new(move |op, seq, payload: Vec<u8>| {
@@ -2182,6 +2226,7 @@ pub fn serve(n: usize, device: Device, stream: UnixStream) {
     };
     state.conn = n;
     let fd = stream.as_raw_fd();
+    state.peer = peer_of(fd);
     let mut reader = &stream;
     eprintln!("mtlvk: conn{n}: connected");
     loop {
