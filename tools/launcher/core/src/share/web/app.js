@@ -669,24 +669,28 @@ function phoneView(id) {
     // ---- the device's buttons, then capture and share (the launcher's screen toolbar): beside the screen on a wide
     // window, the strip under it on a narrow one (each place its own buttons, built the same way)
     soundBtns = []; recBtns = [];
+    // one order on every device, as the launcher's screen toolbar (phone.rs screen_toolbar): the hardware buttons
+    // (Home, crown, Lock / side, volume, mute, Siri, Action, Back, Play/Pause, App Switcher), the device actions
+    // (rotate, shake, pointer, hand gestures, typing), then the page's own tools (share, sound, record, screenshots).
+    // Each device shows only what it has, never in another order.
     const makeTools = () => {
       const t = [];
       if (control) {
+        const crown = p === "watchos" || p === "xros";
         if (p === "tvos") {
-          t.push(holdT("menu", I.back, "Back (Esc)"), holdT("tv", I.tv, "TV / home (F1)"), holdT("playpause", I.playpause, "Play / Pause"),
-            holdT("siri", I.siri, "Siri"), gap(), holdT("volup", I.volup, "Volume up"), holdT("voldown", I.voldown, "Volume down"), holdT("mute", I.mute, "Mute"));
-        } else if (p === "watchos") {
-          t.push(tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })), holdT("home", I.press, "Digital Crown: press"),
-            tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Side button"), gap(),
-            tool(I.tap, "Double tap (hand gesture)", () => send({ t: "sys", a: "double_tap" })), tool(I.wave, "Wrist flick (hand gesture)", () => send({ t: "sys", a: "wrist_flick" })));
-        } else if (p === "xros") {
+          t.push(holdT("tv", I.tv, "TV / home (F1)"), holdT("volup", I.volup, "Volume up"), holdT("voldown", I.voldown, "Volume down"),
+            holdT("mute", I.mute, "Mute"), holdT("siri", I.siri, "Siri"), holdT("menu", I.back, "Back (Esc)"), holdT("playpause", I.playpause, "Play / Pause"));
+        } else if (crown) {
           t.push(holdT("home", I.press, "Digital Crown: press"), tool(I.up, "Digital Crown: turn up", () => send({ t: "crown", d: -120 })),
-            tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, "Top button"));
+            tool(I.down, "Digital Crown: turn down", () => send({ t: "crown", d: 120 })), holdT("side", I.lock, p === "xros" ? "Top button" : "Side button"));
         } else {
           t.push(holdT("home", I.home, "Home (F1)"), holdT("lock", I.lock, "Lock: the side button (F2)"), holdT("volup", I.volup, "Volume up (F3)"),
             holdT("voldown", I.voldown, "Volume down (F4)"), holdT("siri", I.siri, "Siri"), holdT("action", I.action, "Action button"),
-            tool(I.switcher, "App Switcher", () => send({ t: "sys", a: "app_switcher" })), gap(),
-            tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })),
+            tool(I.switcher, "App Switcher", () => send({ t: "sys", a: "app_switcher" })));
+        }
+        t.push(gap());
+        if (p === "ios") {
+          t.push(tool(I.rotl, "Rotate left", () => send({ t: "rotate", dir: "left" })), tool(I.rotr, "Rotate right", () => send({ t: "rotate", dir: "right" })),
             tool(I.shake, "Shake", () => send({ t: "shake" })));
           // an iPad's pointer capture, as the launcher and Apple's simulator: the mouse drives the iPad's pointer
           if (info.ipad) {
@@ -700,16 +704,18 @@ function phoneView(id) {
             t.push(ptr);
           }
         }
+        if (p === "watchos")
+          t.push(tool(I.tap, "Double tap (hand gesture)", () => send({ t: "sys", a: "double_tap" })), tool(I.wave, "Wrist flick (hand gesture)", () => send({ t: "sys", a: "wrist_flick" })));
         t.push(tool(I.type, "Type text into the device (Ctrl+V pastes)", openPaste));
       }
       const sb = tool(I.soundOff, "The device's sound in this browser", () => (soundOn ? soundStop() : soundStart()));
       const rb = tool(I.record, "Record the screen to a video file", toggleRec);
       soundBtns.push(sb); recBtns.push(rb);
-      t.push(gap(), sb, link(I.camera, "Screenshot (PNG)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`)),
-        link(I.marks, "Screenshot with every element's @ref", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)),
-        rb);
+      t.push(gap());
       // share this device: links are the server owner's to make (as the header's Share)
       if (ME.owner) t.push(tool(I.share, "Share this device", () => openShare(id)));
+      t.push(sb, rb, link(I.camera, "Screenshot (PNG)", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png`)),
+        link(I.marks, "Screenshot with every element's @ref", withToken(`/api/phones/${encodeURIComponent(id)}/screenshot.png?marks=all`)));
       return t;
     };
     tools.replaceChildren(...makeTools());

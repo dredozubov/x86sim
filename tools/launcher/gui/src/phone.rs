@@ -410,7 +410,14 @@ impl App {
                         ui.add_enabled(live, Btn::ghost("").icon(ic)).on_hover_text(tip).on_disabled_hover_text("Not running").clicked()
                     }
                     let tool = |ui: &mut egui::Ui, ic: &'static str, tip: &str| tool_btn(ui, live, ic, tip);
-                    if platform != "tvos" && platform != "watchos" {
+                    // One order on every device (the web page's tool column, app.js makeTools, follows it too):
+                    //   1. hardware buttons: Home, Lock (side), Volume up, Volume down, Siri, Action, App Switcher
+                    //      (an Apple TV's are its remote, above; a watch's crown and side button stand on its case)
+                    //   2. device actions: Rotate left, Rotate right, Hinge, Shake, Pointer, Double tap, Wrist flick
+                    //   3. the launcher's tools: Share, Accessibility, Record, Screenshot, Info
+                    // each device shows only what it has, never in another order; a gap (not a rule) between groups
+                    let phone_like = platform != "tvos" && platform != "watchos";
+                    if phone_like {
                         let mut press = None;
                         if tool(ui, icon::HOUSE, "Home (F1)") {
                             press = Some("home");
@@ -439,69 +446,17 @@ impl App {
                         if let (true, Some(v)) = (switcher, self.viewer(id)) {
                             v.send("appswitcher");
                         }
-                        // Inputs 2: Device > Rotate Left / Right (iPhone, iPad) and Shake, as in Apple's simulator
-                        ui.add_space(S2);
-                        let (mut rot, mut shake) = (None, false);
-                        if platform == "ios" {
-                            if tool(ui, icon::ARROW_COUNTER_CLOCKWISE, "Rotate left (the screen image stays upright: landscape apps are drawn sideways)") {
-                                rot = Some(true);
-                            }
-                            if tool(ui, icon::ARROW_CLOCKWISE, "Rotate right") {
-                                rot = Some(false);
-                            }
-                        }
-                        if tool(ui, icon::VIBRATE, "Shake (e.g. Undo Typing)") {
-                            shake = true;
-                        }
-                        // Inputs 2: an iPad's pointer capture, as Apple's simulator (the iPad gets a mouse)
-                        if self.inst(id).is_some_and(|i| i.model_id.starts_with("iPad")) {
-                            let on = self.viewer(id).is_some_and(|v| v.pointer_mode);
-                            let tip = if on { "Pointer capture on: the mouse drives the iPad's pointer. Click to go back to touches" } else { "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll)" };
-                            if ui.add_enabled(live, if on { Btn::tinted("", pal().active) } else { Btn::ghost("") }.icon(icon::CURSOR)).on_hover_text(tip).clicked() {
-                                if let Some(v) = self.viewer(id) {
-                                    v.set_pointer_mode(!on);
-                                }
-                            }
-                        }
-                        if let Some(v) = self.viewer(id) {
-                            if let Some(left) = rot {
-                                v.rotate(left);
-                            }
-                            if shake {
-                                v.shake();
-                            }
-                        }
-                        // a gap, not a rule, between the device's buttons and the launcher's own tools
                         ui.add_space(S3);
                     }
-                    // Apple Watch: the hand gestures (watchOS's double tap and wrist flick)
-                    if platform == "watchos" {
-                        let mut g = None;
-                        if tool(ui, icon::HAND_TAP, "Double tap (pinch twice)") {
-                            g = Some("gesture doubletap");
+                    // ---- 2. device actions
+                    let (mut rot, mut shake, mut gesture) = (None, false, None);
+                    // Inputs 2: Device > Rotate Left / Right (iPhone, iPad) and Shake, as in Apple's simulator
+                    if platform == "ios" {
+                        if tool(ui, icon::ARROW_COUNTER_CLOCKWISE, "Rotate left (the screen image stays upright: landscape apps are drawn sideways)") {
+                            rot = Some(true);
                         }
-                        if tool(ui, icon::HAND_WAVING, "Wrist flick") {
-                            g = Some("gesture wristflick");
-                        }
-                        if let (Some(l), Some(v)) = (g, self.viewer(id)) {
-                            v.send(l);
-                        }
-                        ui.add_space(S3);
-                    }
-                    // Share: this phone in a browser tab (share.rs)
-                    if let Some(inst) = self.inst(id).cloned() {
-                        self.share_tool(ui, &inst);
-                        crate::axinspect_ui::tool(ui, &inst, live);
-                    }
-                    if let Some(inst) = self.inst(id).cloned() {
-                        self.record_tool(ui, &inst, live);
-                    }
-                    if tool(ui, icon::CAMERA, "Save a screenshot to Pictures") {
-                        let r = self.viewer(id).map(|v| v.screenshot(&name));
-                        match r {
-                            Some(Ok(f)) => self.say(format!("Screenshot saved: {}", f.display())),
-                            Some(Err(e)) => self.say(format!("Couldn't save a screenshot: {e}")),
-                            None => {}
+                        if tool(ui, icon::ARROW_CLOCKWISE, "Rotate right") {
+                            rot = Some(false);
                         }
                     }
                     // Models 2: a two-screen phone (iPhone Duo): its hinge, as Xcode's DeviceHub gives it: a slider from
@@ -519,6 +474,57 @@ impl App {
                             .align(egui::RectAlign::RIGHT_START)
                             .align_alternatives(&[egui::RectAlign::LEFT_START, egui::RectAlign::BOTTOM_START])
                             .show(|ui| self.hinge_panel(ui, id));
+                    }
+                    if phone_like && tool(ui, icon::VIBRATE, "Shake (e.g. Undo Typing)") {
+                        shake = true;
+                    }
+                    // Inputs 2: an iPad's pointer capture, as Apple's simulator (the iPad gets a mouse)
+                    if self.inst(id).is_some_and(|i| i.model_id.starts_with("iPad")) {
+                        let on = self.viewer(id).is_some_and(|v| v.pointer_mode);
+                        let tip = if on { "Pointer capture on: the mouse drives the iPad's pointer. Click to go back to touches" } else { "Pointer capture: the mouse drives the iPad's pointer (hover, click, scroll)" };
+                        if ui.add_enabled(live, if on { Btn::tinted("", pal().active) } else { Btn::ghost("") }.icon(icon::CURSOR)).on_hover_text(tip).clicked() {
+                            if let Some(v) = self.viewer(id) {
+                                v.set_pointer_mode(!on);
+                            }
+                        }
+                    }
+                    // Apple Watch: the hand gestures (watchOS's double tap and wrist flick)
+                    if platform == "watchos" {
+                        if tool(ui, icon::HAND_TAP, "Double tap (pinch twice)") {
+                            gesture = Some("gesture doubletap");
+                        }
+                        if tool(ui, icon::HAND_WAVING, "Wrist flick") {
+                            gesture = Some("gesture wristflick");
+                        }
+                    }
+                    if let Some(v) = self.viewer(id) {
+                        if let Some(left) = rot {
+                            v.rotate(left);
+                        }
+                        if shake {
+                            v.shake();
+                        }
+                        if let Some(l) = gesture {
+                            v.send(l);
+                        }
+                    }
+                    if phone_like || platform == "watchos" {
+                        ui.add_space(S3);
+                    }
+                    // ---- 3. the launcher's tools: Share (this phone in a browser tab, share.rs), Accessibility,
+                    // Record, Screenshot, Info
+                    if let Some(inst) = self.inst(id).cloned() {
+                        self.share_tool(ui, &inst);
+                        crate::axinspect_ui::tool(ui, &inst, live);
+                        self.record_tool(ui, &inst, live);
+                    }
+                    if tool(ui, icon::CAMERA, "Save a screenshot to Pictures") {
+                        let r = self.viewer(id).map(|v| v.screenshot(&name));
+                        match r {
+                            Some(Ok(f)) => self.say(format!("Screenshot saved: {}", f.display())),
+                            Some(Err(e)) => self.say(format!("Couldn't save a screenshot: {e}")),
+                            None => {}
+                        }
                     }
                     ui.add(Btn::tool(icon::INFO)).on_hover_text(match platform.as_str() {
                         "tvos" => GESTURES_TV,
