@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <errno.h>
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -81,6 +82,8 @@ typedef struct __SFBSwapchain {
 
 static dispatch_queue_t dump_q;
 static pthread_mutex_t gpu_lock = PTHREAD_MUTEX_INITIALIZER;
+// x86Sim: signalled (under gpu_lock) whenever a waiting present leaves its queue: SwapBegin's backpressure waits on it
+static pthread_cond_t present_cond = PTHREAD_COND_INITIALIZER;
 static CFTypeID conn_type, display_type, swapchain_type;
 
 // Models 2: a device with several integrated screens (iPhone Duo: the outer "LCD" 1398x2034 and the inner "LCD-1"
@@ -360,9 +363,43 @@ EXPORT uint32_t SFBSwapchainGetMaxSurfacesPerOperation(SFBSwapchainRef sc) { ret
 EXPORT bool SFBSwapchainAcquireSurfaceFence(SFBSwapchainRef sc, IOSurfaceRef s, void* a, void* b) { return true; }
 
 static void gpu_hook(void);
+// x86Sim: backpressure. A swap begins only once fewer than SIMFB_MAX_INFLIGHT (default 1) of this display's presents
+// still wait for the GPU, as on Apple's simulator, where the render server cannot start a frame before a swapchain
+// surface is free. Without it the render server encoded frames as fast as the CPU went: on a slow GPU (a 2-CU iGPU
+// drawing an iPad) the GPU queue grew to ~0.5 s of work, which was the lag, and most of those frames were drawn only to
+// be dropped (superseded) once two waited. The wait is cut at SIMFB_BEGIN_WAIT_MS (default 100) so a GPU that stalls
+// never freezes the UI longer than that; 0 in either turns the wait off.
+static uint64_t now_ns(void);
+static long max_inflight = -1, begin_wait_ms;
+static uint64_t st_begin_waits, st_begin_wait_ns, st_begin_timeouts;
+static void begin_backpressure(struct disp* D) {
+	if (max_inflight < 0) {
+		const char* v = getenv("SIMFB_MAX_INFLIGHT");
+		max_inflight = v ? atol(v) : 1;
+		v = getenv("SIMFB_BEGIN_WAIT_MS");
+		begin_wait_ms = v ? atol(v) : 100;
+	}
+	if (max_inflight <= 0 || begin_wait_ms <= 0) return;
+	pthread_mutex_lock(&gpu_lock);
+	if (D->npresent >= (size_t)max_inflight) {
+		uint64_t t0 = now_ns();
+		struct timespec ts;
+		clock_gettime(CLOCK_REALTIME, &ts);
+		uint64_t at = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec + (uint64_t)begin_wait_ms * 1000000ull;
+		ts.tv_sec = at / 1000000000ull; ts.tv_nsec = at % 1000000000ull;
+		while (D->npresent >= (size_t)max_inflight)
+			if (pthread_cond_timedwait(&present_cond, &gpu_lock, &ts) == ETIMEDOUT) { st_begin_timeouts++; break; }
+		st_begin_waits++; st_begin_wait_ns += now_ns() - t0;
+		if (st_begin_waits % 600 == 1)
+			fprintf(stderr, "simfb: %llu swaps waited for the GPU to catch up (%.1f ms on average, %llu cut at %ld ms)\n",
+				(unsigned long long)st_begin_waits, st_begin_wait_ns / 1e6 / st_begin_waits, (unsigned long long)st_begin_timeouts, begin_wait_ms);
+	}
+	pthread_mutex_unlock(&gpu_lock);
+}
 EXPORT bool SFBSwapchainSwapBegin(SFBSwapchainRef sc, uint64_t t, CFErrorRef* e) {
 	gpu_hook();
 	if (sc->pending) { CFRelease(sc->pending); sc->pending = NULL; }
+	begin_backpressure(sc->d ?: &disps[0]);
 	return true;
 }
 EXPORT bool SFBSwapchainSwapAddSurface(SFBSwapchainRef sc, IOSurfaceRef s, uint64_t a, uint64_t b, CFErrorRef* e, CGRect src, CGRect dst) {
@@ -642,6 +679,7 @@ static void gpu_completed(uint64_t seq) {
 	for (size_t i = 0; i < gpu_noutstanding; i++)
 		if (gpu_outstanding[i] == seq) { gpu_outstanding[i] = gpu_outstanding[--gpu_noutstanding]; break; }
 	for (int i = 0; i < ndisps; i++) present_fire_ready_locked(&disps[i]);
+	pthread_cond_broadcast(&present_cond);
 	pthread_mutex_unlock(&gpu_lock);
 }
 static void hooked_commit(id self, SEL cmd) {
@@ -687,6 +725,7 @@ static void present_watchdog(struct disp* D, uint64_t id) {
 			if (D->present[i].id != id) continue;
 			fprintf(stderr, "simfb: present waited 1 s for the GPU (%zu command buffers outstanding), copying anyway\n", gpu_noutstanding);
 			for (size_t k = 0; k <= i; k++) { D->st_watchdog++; present_fire_locked(D, 0); }
+			pthread_cond_broadcast(&present_cond);
 			break;
 		}
 		pthread_mutex_unlock(&gpu_lock);
