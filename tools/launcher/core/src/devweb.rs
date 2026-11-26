@@ -2,8 +2,10 @@
 //! own CLI writes (or refreshes) that Xcode project on Linux, then it builds with Swift Build like any Xcode project
 //! (devxcode.rs). Kinds:
 //!
-//! - capacitor: package.json with @capacitor/ios. The web build (`npm run build`, when the app has one), then `npx cap
-//!   sync ios`; the Xcode project is ios/App (Swift packages, or a CocoaPods workspace when the app uses pods).
+//! - capacitor: package.json with @capacitor/ios, or @capacitor/core and a capacitor.config.* (an Ionic starter, which
+//!   gets @capacitor/ios added as `ionic capacitor add ios` would). The web build (`npm run build`, when the app has
+//!   one), then `npx cap add ios` once and `npx cap sync ios`; the Xcode project is ios/App (Swift packages, or a
+//!   CocoaPods workspace when the app uses pods).
 //! - cordova: package.json with cordova-ios (config.xml beside it). `cordova prepare ios` (the app's own cordova CLI,
 //!   else npx's) adds the platform and copies www/; the Xcode project is platforms/ios (App.xcworkspace).
 use crate::{dev, devxcode};
@@ -22,7 +24,8 @@ fn has_dep(pj: &serde_json::Value, name: &str) -> bool {
 /// The shell kind of the app in DIR, if it is one
 pub fn detect(dir: &Path) -> Option<&'static str> {
     let pj = package_json(dir)?;
-    if has_dep(&pj, "@capacitor/ios") {
+    let cap_config = ["capacitor.config.ts", "capacitor.config.js", "capacitor.config.json"].iter().any(|f| dir.join(f).exists());
+    if has_dep(&pj, "@capacitor/ios") || (has_dep(&pj, "@capacitor/core") && cap_config) {
         return Some("capacitor");
     }
     if has_dep(&pj, "cordova-ios") && dir.join("config.xml").exists() {
@@ -87,7 +90,15 @@ pub fn prepare(dir: &Path, kind: &str, say: &mut dyn FnMut(&str)) -> Result<()> 
         c.arg("install");
         step(c, dir, &format!("{pm} install"), say)?;
     }
-    let pj = package_json(dir).unwrap_or_default();
+    let mut pj = package_json(dir).unwrap_or_default();
+    if kind == "capacitor" && !has_dep(&pj, "@capacitor/ios") {
+        // the iOS platform package, at the version of the app's @capacitor/core (Ionic's `ionic capacitor add ios`)
+        let core = pj["dependencies"]["@capacitor/core"].as_str().unwrap_or("latest").trim_start_matches(['^', '~']).to_string();
+        let mut c = dev::command(pm);
+        c.args([if pm == "npm" { "install" } else { "add" }, &format!("@capacitor/ios@{core}")]);
+        step(c, dir, &format!("{pm} add @capacitor/ios@{core} (the app had no iOS platform package)"), say)?;
+        pj = package_json(dir).unwrap_or_default();
+    }
     if kind == "capacitor" {
         // Ionic / Vite / Angular apps build their web assets into the web dir cap copies
         if pj["scripts"].get("build").is_some() {
