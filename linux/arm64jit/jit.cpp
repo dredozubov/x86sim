@@ -55,6 +55,7 @@ void set_guest_key_destructor(u64 key, u64 guest_dtor) {
 // As libpthread's _pthread_tsd_cleanup: up to PTHREAD_DESTRUCTOR_ITERATIONS (4) passes over the keys, each value
 // cleared before its destructor runs (a destructor may set values again). Slots 0-9 are the reserved shared ones.
 void GuestThread::run_guest_tsd_destructors() {
+    open_fault_signals();  // after libpthread's thread exit blocked every signal
     for (int pass = 0; pass < 4; pass++) {
         bool any = false;
         for (int k = 10; k < kGuestTsdSlots; k++) {
@@ -881,6 +882,7 @@ static std::unique_ptr<Dynarmic::A64::Jit> make_jit(const Dynarmic::A64::UserCon
 std::unique_ptr<Dynarmic::A64::Jit> dbg_make_jit(GuestThread &t) { return make_jit(t.cfg); }
 
 GuestThread::GuestThread() {
+    open_fault_signals();
     // The guest has its own TSD (tpidrro_el0): slots 0-9 (pthread_self, errno, mach thread self, ...) are copied from
     // Darling's native TSD (the gs base on x86_64); keys 10+ are the guest's alone. Sharing the native array let
     // Darling's own libobjc/libdispatch destructors free guest values at thread exit (SIGABRT in every daemon).

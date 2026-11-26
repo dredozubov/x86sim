@@ -141,6 +141,50 @@ void h_sigaltstack(GuestThread &t, u32) {
     else t.set_x(0, 0);
 }
 
+// pthread_sigmask / __pthread_sigmask / sigprocmask(how, set, oset): Darling applies the guest's mask to the Linux
+// thread, SIGSEGV and SIGBUS too. Translated code needs those two whatever the guest blocked: a top-byte-tagged pointer
+// (valid on arm64: Swift Foundation's Data) is a #GP that the fastmem handler fixes up, and a frozen remap waits in
+// on_fault. With SIGSEGV blocked such an access killed the process at once, without a report (a GCD worker inside a
+// "block all signals" section; MAUI at launch). They stay unblocked on Linux; the guest's own view is kept per thread
+// and is what it reads back. (XNU's trap signals are not held off by the mask either: a fault still ends the process.)
+constexpr uint32_t kFaultBits = (1u << (kDSIGBUS - 1)) | (1u << (kDSIGSEGV - 1));
+constexpr int kSIG_UNBLOCK = 2;
+void h_sigmask(GuestThread &t, u32 i) {
+    const int how = (int)t.x(0);
+    const auto *set = (const uint32_t *)t.x(1);
+    auto *oset = (uint32_t *)t.x(2);
+    uint32_t in = set ? *set : 0;
+    const uint32_t had = t.blocked_faults;
+    uint32_t now = had;
+    if (set) {
+        if (how == kSIG_BLOCK) now |= in & kFaultBits;
+        else if (how == kSIG_UNBLOCK) now &= ~in;
+        else if (how == kSIG_SETMASK) now = in & kFaultBits;
+        in &= ~kFaultBits;
+    }
+    const int r = ((int (*)(int, const uint32_t *, uint32_t *))g_thunks[i].native)(how, set ? &in : nullptr, oset);
+    if (r == 0 && oset) *oset = (*oset & ~kFaultBits) | had;
+    if (r == 0 && set) t.blocked_faults = now & kFaultBits;
+    t.set_x(0, (u32)r);
+}
+// Also for threads: mldr starts a Darling thread with its creator's Linux mask, and a creator with every signal blocked
+// (Darling's helper threads, a thread inside a handler) passed SIGSEGV blocked on to GCD workers; and libpthread's thread
+// exit blocks everything before the guest's TSD destructors run. GuestThread's constructor (on the thread) and those
+// destructors open them again.
+void open_fault_signals() {
+    const unsigned long faults = (1ul << (SIGSEGV - 1)) | (1ul << (SIGBUS - 1));
+    syscall(SYS_rt_sigprocmask, SIG_UNBLOCK, &faults, nullptr, sizeof faults);
+}
+// __disable_threadsignal(1) (libpthread's thread exit): Darling blocks every signal; SIGSEGV / SIGBUS stay open (above)
+void h_disable_threadsignal(GuestThread &t, u32 i) {
+    const int r = ((int (*)(int))g_thunks[i].native)((int)t.x(0));
+    if (r == 0 && t.x(0)) {
+        open_fault_signals();
+        t.blocked_faults = kFaultBits;
+    }
+    t.set_x(0, (u32)r);
+}
+
 // Runs the guest handler of one signal on this thread (its state at a safe point, or a fault's: sig_sync). Returns
 // whether the handler changed the thread state in its ucontext (the Jit state has the ucontext's state either way).
 static bool deliver_one(GuestThread &t, int sig) {
