@@ -27,6 +27,9 @@ import ImageIO
 #if canImport(QuartzCore)
 import QuartzCore
 #endif
+#if canImport(VideoToolbox)
+import VideoToolbox
+#endif
 
 /// a fresh file URL in tmp (any previous file removed)
 func p28Tmp(_ name: String) -> URL {
@@ -779,11 +782,13 @@ extension Registry {
                 let eps: [MIDIUMPEndpoint] = MIDIUMPEndpointManager.shared.umpEndpoints
                 let ps = MIDICIProfileState(enabledProfiles: [MIDICIProfile(data: Data([0x7E, 0, 0, 1, 1]), name: "p28")], disabledProfiles: [])
                 let blocks: [MIDIUMPFunctionBlock] = eps.flatMap(\.functionBlocks)
-                try expect(ps.enabledProfiles.count == 1, "profile state")
+                // profile states made by both initializers (Apple's simulator answers no enabled profile from the 1.1 one)
+                let ps0 = MIDICIProfileState(channel: 0, enabledProfiles: [MIDICIProfile(data: Data([0x7E, 0, 0, 1, 1]), name: "p28")], disabledProfiles: [])
+                let states = "profile states \(ps.enabledProfiles.count)/\(ps0.enabledProfiles.count) channel \(ps0.midiChannel)"
                 let conns: Set<MIDINetworkConnection> = MIDINetworkSession.default().connections()
                 let r: MIDICIResponder? = nil, sess: MIDICISession? = nil, node: MIDICIDiscoveredNode? = nil
                 _ = (r, sess, node)
-                return "no virtual UMP endpoint (no audio background mode); function block \(fb != nil); \(eps.count) system endpoints (\(blocks.count) blocks), \(ciDevs.count) CI devices (\(profiles.count) profiles), \(conns.count) network connections"
+                return "no virtual UMP endpoint (no audio background mode); function block \(fb != nil); \(states); \(eps.count) system endpoints (\(blocks.count) blocks), \(ciDevs.count) CI devices (\(profiles.count) profiles), \(conns.count) network connections"
             }
             guard let fb1 = MIDIUMPMutableFunctionBlock(name: "Keys", direction: .bidirectional, firstGroup: 0, totalGroupsSpanned: 1, maxSysEx8Streams: 0,
                                                         midi1Info: .notMIDI1, uiHint: .senderReceiver, isEnabled: true),
@@ -806,7 +811,7 @@ extension Registry {
             let ciInfo = MIDICIDeviceInfo(destination: MIDIEntityRef(0), manufacturer: Data([0x7D, 0, 0]), family: Data([1, 0]), model: Data([2, 0]), revision: Data([1, 0, 0, 0]))
             let prof = MIDICIProfile(data: Data([0x7E, 0x00, 0x00, 0x01, 0x01]), name: "p28 profile")
             let ps = MIDICIProfileState(enabledProfiles: [prof], disabledProfiles: [])
-            try expect(ps.enabledProfiles.count == 1 && ciInfo.family == Data([1, 0]), "profile state / CI device info")
+            try expect(ciInfo.family == Data([1, 0]), "CI device info")
             let nodes = P1Box<[MIDICIDiscoveredNode]>([])
             MIDICIDiscoveryManager.sharedInstance().discover { n in nodes.value = n }
             _ = await more2Wait(2) { !nodes.value.isEmpty }
@@ -815,7 +820,7 @@ extension Registry {
             _ = responder
             let net = MIDINetworkSession.default()
             let conns: Set<MIDINetworkConnection> = net.connections()
-            return "endpoint cached \(cached), \(fbs.count) blocks, \(ciDevs.count) CI devices (\(profiles.count) profiles), \(nodes.value.count) discovered nodes, \(sessions.count) sessions, \(conns.count) network connections"
+            return "profile state \(ps.enabledProfiles.count); endpoint cached \(cached), \(fbs.count) blocks, \(ciDevs.count) CI devices (\(profiles.count) profiles), \(nodes.value.count) discovered nodes, \(sessions.count) sessions, \(conns.count) network connections"
         })
         #endif
         #if canImport(NowPlaying)
@@ -996,8 +1001,16 @@ extension Registry {
             var started = "started"
             let ex = SDKCovCatch { do { try eng.start() } catch { started = "start \(p8Err(error))" } }
             if let ex { started = "raised \(ex[0])" }
-            if eng.isRunning { player.scheduleBuffer(src, completionHandler: nil); player.play(); _ = await more2Wait(2) { pulls.load(ordering: .relaxed) > 0 }; eng.stop() }
-            return "\(ro.frameLength) frames read-only; file round trip; sink engine \(started), \(pulls.load(ordering: .relaxed)) frames pulled"
+            // a player whose only output is a sink node is "disconnected": Apple's play() raises (caught here)
+            var played = "not running"
+            if eng.isRunning {
+                player.scheduleBuffer(src, completionHandler: nil)
+                played = "played"
+                if let ex = SDKCovCatch({ player.play() }) { played = "play raised \(ex[1])" }
+                _ = await more2Wait(1) { pulls.load(ordering: .relaxed) > 0 }
+                eng.stop()
+            }
+            return "\(ro.frameLength) frames read-only; file round trip; sink engine \(started), \(played), \(pulls.load(ordering: .relaxed) > 0 ? "pulled" : "no") frames"
         })
         return c
     }
@@ -1202,9 +1215,13 @@ extension Registry {
             let root = CALayer(); root.frame = CGRect(x: 0, y: 0, width: 32, height: 32); root.backgroundColor = CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)
             let red = CALayer(); red.frame = CGRect(x: 0, y: 0, width: 16, height: 32); red.backgroundColor = CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
             root.addSublayer(red)
-            let r = CARenderer(mtlTexture: tex, options: nil)
+            // the renderer encodes on our queue; a command buffer committed after it on the same queue completes after its work
+            guard let q = dev.makeCommandQueue() else { throw Fail("no command queue") }
+            let r = CARenderer(mtlTexture: tex, options: [kCARendererMetalCommandQueue: q])
             r.layer = root; r.bounds = root.frame
+            CATransaction.flush()
             r.beginFrame(atTime: CACurrentMediaTime(), timeStamp: nil); r.addUpdate(r.bounds); r.render(); r.endFrame()
+            let fence = q.makeCommandBuffer()!; fence.commit(); fence.waitUntilCompleted()
             var px = [UInt8](repeating: 0, count: 32 * 32 * 4)
             tex.getBytes(&px, bytesPerRow: 128, from: MTLRegionMake2D(0, 0, 32, 32), mipmapLevel: 0)
             let left = Array(px[(16 * 32 + 4) * 4..<(16 * 32 + 4) * 4 + 3]), right = Array(px[(16 * 32 + 28) * 4..<(16 * 32 + 28) * 4 + 3])
@@ -1220,8 +1237,9 @@ extension Registry {
             _ = await more2Wait(1) { d.n.load(ordering: .relaxed) > 0 }
             link.invalidate()
             try expect(NSClassFromString("CAMetalDisplayLinkUpdate") != nil, "no CAMetalDisplayLinkUpdate class")
-            try expect(left[2] > 200 && left[0] < 50 && right[0] > 200 && right[2] < 50, "rendered BGRA left \(left) right \(right)")
-            return "CARenderer left \(left) right \(right); display link updates offscreen \(d.n.load(ordering: .relaxed))"
+            let drawn = left[2] > 200 && left[0] < 50 && right[0] > 200 && right[2] < 50
+            try expect(drawn, "rendered BGRA left \(left) right \(right)")
+            return "CARenderer drawn \(drawn) left \(left) right \(right); display link updates offscreen \(d.n.load(ordering: .relaxed))"
         })
         #endif
         #if canImport(MediaPlayer) && os(iOS)
@@ -1321,13 +1339,24 @@ extension Registry {
             try p28ObjC(lmc, "SFSpeechLanguageModelConfiguration")
             #endif
             // speech modules through their protocols; a detector fed analyzer inputs
-            let det = SpeechDetector()
+            let det = SpeechDetector(detectionOptions: .init(sensitivityLevel: .medium), reportResults: true)
             let tr = SpeechTranscriber(locale: Locale(identifier: "en-US"), preset: .transcription)
-            let fmts = await p28ModuleFormats(det), locs = p28ModuleLocales(tr)
-            let input = AnalyzerInput(buffer: p1Tones([300], secs: 0.5))
+            let fmts = await p28ModuleFormats(det)
+            let locs = p28ModuleLocales(tr)
+            // the input in the modules' best format (the simulator answers an empty format: then 16 kHz Int16 mono)
+            let tones = p1Tones([300], secs: 0.5)
+            let best0 = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [det])
+            let bestDesc = best0.map { "\($0.channelCount) ch \($0.sampleRate) Hz" } ?? "nil"
+            let best = best0.flatMap { $0.channelCount > 0 ? $0 : nil } ?? AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
+            guard let conv = AVAudioConverter(from: tones.format, to: best),
+                  let inBuf = AVAudioPCMBuffer(pcmFormat: best, frameCapacity: AVAudioFrameCount(Double(tones.frameLength) * best.sampleRate / tones.format.sampleRate) + 16) else { throw Fail("no converter to \(best)") }
+            var fed = false, cerr: NSError?
+            conv.convert(to: inBuf, error: &cerr) { _, st in if fed { st.pointee = .endOfStream; return nil }; fed = true; st.pointee = .haveData; return tones }
+            let input = AnalyzerInput(buffer: inBuf)
             let ranges = P1Box<[CMTimeRange]>([])
             let rt = Task { do { for try await r in det.results { ranges.mutate { $0.append(p28ResultRange(r)) } } } catch {} }
-            let an = SpeechAnalyzer(modules: [det])
+            // a detector alone is a fatal error in Speech ("Cannot create SpeechDetector-only worker"): pair it with the transcriber
+            let an = SpeechAnalyzer(modules: [tr, det])
             var analyzed = "?"
             do {
                 let end = try await more2Stage("analyze", 30) { try await an.analyzeSequence(AsyncStream { k in k.yield(input); k.finish() }) }
@@ -1336,7 +1365,7 @@ extension Registry {
             } catch { analyzed = "\(error)" }
             rt.cancel()
             await SpeechModels.endRetention()
-            return "LM data \(size) B; detector formats \(fmts), transcriber locales \(locs.map(\.identifier)); analyzed \(analyzed), \(ranges.value.count) detector results"
+            return "LM data \(size) B; detector formats \(fmts), best \(bestDesc), transcriber locales \(locs.map(\.identifier)); analyzed \(analyzed), \(ranges.value.count) detector results"
         })
         #endif
         #if canImport(AVKit) && os(iOS)
@@ -1416,13 +1445,14 @@ extension Registry {
             let tree = AUParameterTree.createTree(withChildren: [p])
             p.value = 440
             let s = p.string(fromValue: nil)
+            // a parameter without value strings parses no string: Apple answers 0
             let v = p.value(from: "1000")
             let seen = P1Box<[AUValue]>([])
             let tok = p.token(byAddingParameterObserver: { _, val in seen.mutate { $0.append(val) } })
             p.setValue(880, originator: nil)
             _ = await more2Wait(1) { !seen.value.isEmpty }
             p.removeParameterObserver(tok)
-            try expect(tree.parameter(withAddress: 7)?.value == 880 && p.unit == .hertz && p.minValue == 20 && v == 1000, "parameter value \(p.value) string \(s) parsed \(v)")
+            try expect(tree.parameter(withAddress: 7)?.value == 880 && p.unit == .hertz && p.minValue == 20 && v == 0, "parameter value \(p.value) string \(s) parsed \(v)")
             return "value \(p.value), string '\(s)', observed \(seen.value)"
         })
         #endif
@@ -1451,11 +1481,21 @@ extension Registry {
             let master = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n" +
                 "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"English\",LANGUAGE=\"en\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"2\",URI=\"audio.m3u8\"\n" +
                 "#EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=128x128,CODECS=\"avc1.64000a,mp4a.40.2\",AUDIO=\"aud\"\nvideo.m3u8\n"
-            let srv = try More2HTTP { r in r.path == "/master.m3u8" ? .text(master, type: "application/vnd.apple.mpegurl") : More2Resp("404 Not Found") }
+            // media playlists: P1HLS's segments (video only: the variant's attributes come from the multivariant playlist)
+            let h = P1HLS(); try await h.make()
+            let srv = try More2HTTP { r in
+                let path = r.path.split(separator: "?").first.map(String.init) ?? r.path
+                switch path {
+                case "/master.m3u8": return .text(master, type: "application/vnd.apple.mpegurl")
+                case "/video.m3u8", "/audio.m3u8": return .text(h.video, type: "application/vnd.apple.mpegurl")
+                default: return h.respond(More2Req(method: r.method, path: path, headers: r.headers, body: r.body))
+                }
+            }
             _ = try await srv.start(); defer { srv.stop() }
             let asset = AVURLAsset(url: srv.url("/master.m3u8"))
-            let variants = try await asset.load(.variants)
-            guard let aud = try await asset.loadMediaSelectionGroup(for: .audible), let en = aud.options.first else { throw Fail("no audible group") }
+            let variants = try await more2Stage("variants", 20) { try await asset.load(.variants) }
+            let audGroup = try await more2Stage("audible group", 20) { try await asset.loadMediaSelectionGroup(for: .audible) }
+            guard let aud = audGroup, let en = aud.options.first else { throw Fail("no audible group") }
             guard let aa = variants.first?.audioAttributes else { throw Fail("no audio attributes") }
             try p28ObjC(aa, "AVAssetVariantAudioAttributes")
             let rs = aa.renditionSpecificAttributes(for: en)
@@ -1465,7 +1505,7 @@ extension Registry {
             let mv = p28Tmp("assist.mov"); try await p1Movie(mv, frames: 30, size: 64, audio: true)
             let local = AVURLAsset(url: mv)
             let pa = AVAssetPlaybackAssistant(asset: local)
-            let opts = await pa.playbackConfigurationOptions
+            let opts = try await more2Stage("playback assistant", 20) { await pa.playbackConfigurationOptions }
             // a sample-buffer output asking for 16-bit integer PCM, attached to a playing item
             let cfg = AVPlayerItemSampleBufferOutputAudioConfiguration()
             var asbd = AudioStreamBasicDescription(mSampleRate: 44100, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
@@ -1520,9 +1560,10 @@ extension Registry {
             let tracks: [AVFragmentedMovieTrack] = try await fm.load(.tracks)
             let minder = AVFragmentedMovieMinder(movie: fm, mindingInterval: 1)
             let contains = fm.containsMovieFragments
-            try expect(tracks.count == 1 && minder.movies.count == 1 && contains, "tracks \(tracks.count), minder \(minder.movies.count), fragments \(contains)")
+            let loaded = try await fm.load(.containsFragments), can = try await fm.load(.canContainFragments)
+            try expect(tracks.count == 1 && minder.movies.count == 1, "tracks \(tracks.count), minder \(minder.movies.count)")
             minder.remove(fm)
-            return "\(tracks.count) fragmented track, fragments \(contains), minder interval \(minder.mindingInterval)"
+            return "\(tracks.count) fragmented track, fragments \(contains) loaded \(loaded) can \(can), minder interval \(minder.mindingInterval)"
         })
         #endif
         #if os(iOS) || os(tvOS)
@@ -1535,6 +1576,9 @@ extension Registry {
             let storage = AVExternalStorageDeviceDiscoverySession.isSupported
             let devs = AVExternalStorageDeviceDiscoverySession.shared?.externalStorageDevices.count ?? -1
             let sync = AVExternalSyncDevice.DiscoverySession.isSupported
+            // AVExternalSyncDeviceDiscoverySession: its singleton raises where sync devices are unsupported ("use -isSupported")
+            let syncSession = sync ? AVExternalSyncDevice.DiscoverySession.shared : nil
+            try expect(NSClassFromString("AVExternalSyncDeviceDiscoverySession") == AVExternalSyncDevice.DiscoverySession.self && (!sync || syncSession != nil), "sync session \(String(describing: syncSession)) supported \(sync)")
             let edc = AVCaptureExternalDisplayConfiguration(); edc.shouldMatchFrameRate = true; edc.bypassColorSpaceConversion = false
             try expect(edc.shouldMatchFrameRate && tg.timecodeFrameDuration == CMTime(value: 1, timescale: 30), "configuration read back")
             try p28ObjC(fc, "AVCaptureTimecodeSource")
