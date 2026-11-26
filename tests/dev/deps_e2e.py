@@ -7,6 +7,8 @@ sees the setup and runs its steps before Swift Build builds the Xcode project (x
              projects by `carthage bootstrap --use-xcframeworks`), RxSwift and rive-ios (their prebuilt xcframeworks)
   xcodegen   HelioMesquita/Swiftmazing (MIT): project.yml with two local Swift packages and a remote one; XcodeGen
              (built on Linux) generates the Xcode project
+  bazel      bazelbuild/rules_apple 5.4.0's examples: not buildable on Linux yet; dev_build must name the reason
+             (ui / tap are replaced by one check, "blocked": the error points at the dev toolchain's bazel/README.md)
   tuist      kiliankoe/MensaDresden (MIT): a Tuist Project.swift (iOS app embedding a watchOS app, seven remote Swift
              packages, an Icon Composer icon), evaluated with Tuist's ProjectDescription built for Linux
 Then, on the phone:
@@ -69,6 +71,12 @@ SAMPLES = {
         "tap": "Settings",
         "after": "Ingredients & Allergens",
     },
+    # not buildable on Linux yet (external/omarchy-apple-dev/bazel/README.md): dev_build must say so
+    "bazel": {
+        "repo": "https://github.com/bazelbuild/rules_apple",
+        "commit": "45c497b7261659a51574aae7e6c2338a18ba190a",
+        "blocked": "bazel/README.md",
+    },
 }
 
 
@@ -103,6 +111,11 @@ def main():
         if not ok:
             failed.append(name)
 
+    if s.get("blocked"):
+        text, err = m.call("dev_build", project=work)
+        check("blocked", err and s["blocked"] in text, text.strip()[-300:])
+        m.close()
+        return len(failed)
     mcp_dev.ensure_phone(m, a.phone, a.model)
     with mcp_dev.phone_slot() as slot:
         print("slot %s, phone %s" % (slot, a.phone), flush=True)

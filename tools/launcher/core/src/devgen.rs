@@ -2,7 +2,8 @@
 //! (omarchy-apple-dev): Carthage (a Cartfile next to the Xcode project), XcodeGen (project.yml), Tuist (Project.swift:
 //! its manifests evaluated with Tuist's own ProjectDescription built for Linux, the project written by XcodeGen). They
 //! prepare the Xcode project that devxcode then builds with Swift Build. Their tools are optional setup pieces (`x86sim
-//! dev setup carthage`, `xcodegen`, `tuist`).
+//! dev setup carthage`, `xcodegen`, `tuist`). Bazel rules_apple workspaces are recognised and explained: they do not
+//! build on Linux yet (the dev toolchain's bazel/README.md says where they stop).
 use crate::dev;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -98,6 +99,9 @@ fn runner(id: &str) -> Result<PathBuf> {
 /// The kind of project in DIR this module prepares, if any: tuist (a Project.swift written against
 /// ProjectDescription), xcodegen (a project.yml), carthage (a Cartfile and an Xcode project)
 pub fn kind(dir: &Path) -> Option<&'static str> {
+    if is_bazel_apple(dir) {
+        return Some("bazel");
+    }
     if is_tuist(dir) {
         return Some("tuist");
     }
@@ -109,6 +113,19 @@ pub fn kind(dir: &Path) -> Option<&'static str> {
         n.ends_with(".xcodeproj") || n.ends_with(".xcworkspace")
     });
     (dir.join("Cartfile").is_file() && has_xcode).then_some("carthage")
+}
+
+/// A Bazel workspace that uses rules_apple
+fn is_bazel_apple(dir: &Path) -> bool {
+    ["MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"].iter().any(|f| std::fs::read_to_string(dir.join(f)).is_ok_and(|s| s.contains("rules_apple")))
+}
+
+/// Why a Bazel rules_apple app does not build here (the error `x86sim dev build` gives)
+pub fn bazel_blocker() -> String {
+    format!(
+        "Bazel rules_apple apps do not build on Linux yet: apple_support registers its Apple C/Swift toolchains for macOS hosts only and its tools run /usr/bin/xcrun; where it stops and what a Linux path needs: {}",
+        dev::fork_dir().join("bazel/README.md").display()
+    )
 }
 
 /// A Tuist project: Project.swift importing ProjectDescription

@@ -839,6 +839,7 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
             say(&format!("app: {}", app.display()));
             return Ok(app);
         }
+        "bazel" => bail!("{}: {}", p.dir.display(), crate::devgen::bazel_blocker()),
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
         "xcodeproj" | "carthage" | "xcodegen" | "tuist" => {
             let _lock = BuildLock::take(say)?;
