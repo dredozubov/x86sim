@@ -16,6 +16,7 @@ pub mod dev;
 pub mod devapp;
 pub mod devdelete;
 pub mod devpods;
+pub mod devxcode;
 pub mod discover;
 pub mod dyldcache;
 pub mod features;
