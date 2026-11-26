@@ -119,6 +119,11 @@ static bool has(CFDictionaryRef d, const char* key) {
 	return r;
 }
 static uint32_t align64(uint64_t x) { return (uint32_t)((x + 63) & ~63ull); }
+// x86Sim: a row pitch the client leaves to us is a multiple of 256 bytes, the pitch AMD's Vulkan driver (RADV) lays a
+// DRM_FORMAT_MOD_LINEAR image at: mtlvk then renders and samples the surface in place over its pages, where at 64 it
+// copied every full-screen surface into an image of its own and back at each command buffer (about 18 MB a frame on an
+// iPad). Clients read IOSurfaceGetBytesPerRow, which was already padded (64); at most 252 bytes more a row.
+static uint32_t align_row(uint64_t x) { return (uint32_t)((x + 255) & ~255ull); }
 
 static void surfFree(Surf* s) {
 	LOG("free surface %u\n", s->id);
@@ -145,7 +150,7 @@ static uint32_t surfCreate(CFDictionaryRef props, xpc_object_t clientShmem, Surf
 	if (!eh) eh = 1;
 	uint32_t offset = (uint32_t)num(props, "IOSurfaceOffset", 0);
 	uint32_t bpr = has(props, "IOSurfaceBytesPerRow") ? (uint32_t)num(props, "IOSurfaceBytesPerRow", 0)
-	                                                  : align64((uint64_t)((W + ew - 1) / ew) * bpe);
+	                                                  : align_row((uint64_t)((W + ew - 1) / ew) * bpe);
 	s->st.width = W; s->st.height = H; s->st.bytesPerElement = bpe; s->st.elementWidth = ew; s->st.elementHeight = eh;
 	s->st.offset = offset; s->st.bytesPerRow = bpr;
 	s->st.pixelFormat = (uint32_t)num(props, "IOSurfacePixelFormat", 0);
@@ -174,7 +179,7 @@ static uint32_t surfCreate(CFDictionaryRef props, xpc_object_t clientShmem, Surf
 			if (!ps->elementWidth) ps->elementWidth = 1;
 			if (!ps->elementHeight) ps->elementHeight = 1;
 			ps->bytesPerRow = has(p, "IOSurfacePlaneBytesPerRow") ? (uint32_t)num(p, "IOSurfacePlaneBytesPerRow", 0)
-				: align64((uint64_t)((ps->width + ps->elementWidth - 1) / ps->elementWidth) * ps->bytesPerElement);
+				: align_row((uint64_t)((ps->width + ps->elementWidth - 1) / ps->elementWidth) * ps->bytesPerElement);
 			ps->offset = has(p, "IOSurfacePlaneOffset") ? (uint32_t)num(p, "IOSurfacePlaneOffset", 0) : align64(next);
 			ps->size = has(p, "IOSurfacePlaneSize") ? (uint32_t)num(p, "IOSurfacePlaneSize", 0)
 				: align64((uint64_t)((ps->height + ps->elementHeight - 1) / ps->elementHeight) * ps->bytesPerRow);
