@@ -1912,6 +1912,12 @@ __attribute__((constructor)) static void simax_init(void) {
 	int n = snprintf(g_path, sizeof(g_path), "%s/x86sim-ax-%s-%d.sock", dir, udid && *udid ? udid : "phone", getpid());
 	if (n <= 0 || n >= (int)sizeof(((struct sockaddr_un*)0)->sun_path)) return;
 	snprintf(g_fg, sizeof(g_fg), "%s/x86sim-ax-%s-%d.fg", dir, udid && *udid ? udid : "phone", getpid());
+	// loaded into an app that already runs (libsimshim loads it when UIKit comes after launch, as in a Unity app): its
+	// launch notification has gone, start now
+	if (NSClassFromString(@"UIApplication") && UIApplication.sharedApplication) {
+		dispatch_async(dispatch_get_main_queue(), ^{ start(); });
+		return;
+	}
 	// only an application listens: many daemons link UIKit (sharingd, mobileassetd, ...) and never launch one
 	static id obs;
 	obs = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil

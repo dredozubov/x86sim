@@ -9,8 +9,10 @@ elements. The host side is `tools/launcher/core/src/ax.rs`: the MCP tools `snaps
 `mksimdevice.py` sets `X86SIM_AX_DYLIB` in every simulator process's environment. libsimshim's `shim_ax_init`
 dlopens that dylib only when UIKitCore is among the images loaded at launch, so daemons never load it. Its
 constructor waits for `UIApplicationDidFinishLaunchingNotification`, which means many daemons that link UIKit
-(sharingd, mobileassetd and others) never open a socket. `X86SIM_AX_OFF=1` turns it off, and `X86SIM_AX_LOG=1`
-logs to stderr.
+(sharingd, mobileassetd and others) never open a socket. An app whose executable links no UIKit and loads it later
+(a Unity app: its `main` loads UnityFramework, which links UIKit) gets it too: libsimshim watches image loads and
+dlopens it from the main queue once UIKitCore arrives, and the reader, finding the application already running,
+starts at once. `X86SIM_AX_OFF=1` turns it off, and `X86SIM_AX_LOG=1` logs to stderr.
 
 The first `tree` request in a process loads UIKit's accessibility bundles by turning accessibility automation on,
 as XCUITest does (`_AXSApplicationAccessibilitySetEnabled`, `_AXSSetAutomationEnabled`, `_UIAccessibilityInitialize`).
