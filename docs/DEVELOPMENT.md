@@ -7,7 +7,9 @@ design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - **Linux x86-64** with a recent kernel. Darling needs its usual setup: FUSE/overlayfs and a setuid-root `darling`
   binary.
-- **A Vulkan GPU**: NVIDIA (proprietary driver) or AMD (RADV), with `VK_EXT_external_memory_host`. Development used an
+- **A Vulkan GPU**: NVIDIA (proprietary driver) or AMD (RADV), with `VK_EXT_external_memory_host`. On AMD also
+  read-write access to `/dev/udmabuf` (the `udmabuf` module; RADV refuses host-pointer imports of Darling's memory,
+  and without udmabuf every buffer is mirrored). Development used an
   NVIDIA RTX 5090. Without a usable GPU, `X86SIM_METAL=0` falls back to software rendering.
 - **Darling's build dependencies**: clang/LLVM, cmake, ninja, bison, flex, FUSE, libcap, Python 3, and the rest of
   Darling's [build list](https://docs.darlinghq.org/build-instructions.html); dynarmic also needs boost headers.

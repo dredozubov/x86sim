@@ -867,7 +867,6 @@ impl State {
         let map_len = ((delta + length.max(1) + PAGE - 1) & !(PAGE - 1)) as usize;
         // SAFETY: mapping a memfd we were given.
         let base = unsafe { libc::mmap(std::ptr::null_mut(), map_len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd.as_raw_fd(), map_off as libc::off_t) };
-        drop(fd);
         if base == libc::MAP_FAILED {
             return Err(format!("mmap {map_len} at {map_off}: {}", std::io::Error::last_os_error()));
         }
@@ -875,23 +874,47 @@ impl State {
         // SAFETY: inside the mapping.
         let ptr = unsafe { map.base.add(delta as usize) };
         if shared {
-            let keep = map.clone();
             // The whole mapping (page-aligned, whole pages: NVIDIA's and RADV's minImportedHostPointerAlignment is the
-            // page) is imported as one block, the buffer placed at the plane's offset in it.
-            // SAFETY: the pages stay mapped (and writable) until the release drops `keep`, which the runtime runs
-            // once the block and every command buffer that used it are gone.
-            let r = unsafe {
-                self.device.import_host_memory(
-                    NonNull::new(map.base).unwrap(),
-                    map_len as u64,
-                    Some(Box::new(move || drop(keep))),
-                )
-            }
-            .and_then(|(block, _)| self.device.new_buffer(block.id, delta, length.max(1), None));
+            // page) is imported as one block, the buffer placed at the plane's offset in it. By its address first
+            // (VK_EXT_external_memory_host); where that is refused (amdgpu: libdrm asks USERPTR_ANONONLY, and these
+            // pages are shmem), as a udmabuf of the same memfd range (issue #39). Once udmabuf took a buffer whose
+            // address import was refused, udmabuf goes first.
+            let host = |this: &Self| {
+                let keep = map.clone();
+                // SAFETY: the pages stay mapped (and writable) until the release drops `keep`, which the runtime runs
+                // once the block and every command buffer that used it are gone.
+                unsafe { this.device.import_host_memory(NonNull::new(map.base).unwrap(), map_len as u64, Some(Box::new(move || drop(keep)))) }
+                    .and_then(|(block, _)| this.device.new_buffer(block.id, delta, length.max(1), None))
+                    .map_err(|e| e.to_string())
+            };
+            let dmabuf = |this: &Self| {
+                let dfd = crate::udmabuf::create(fd.as_raw_fd(), map_off, map_len as u64)?;
+                // The guest reaches the bytes through its own mapping of the memfd; ours is kept for the life of the
+                // block as for an address import. Such a block has no `contents` (only debug logs read it here).
+                let keep = map.clone();
+                this.device
+                    .import_dma_buf(dfd, map_len as u64, Some(Box::new(move || drop(keep))))
+                    .and_then(|(block, _)| this.device.new_buffer(block.id, delta, length.max(1), None))
+                    .map_err(|e| format!("import_dma_buf: {e}"))
+            };
+            use std::sync::atomic::Ordering::Relaxed;
+            let r = if crate::udmabuf::FIRST.load(Relaxed) {
+                dmabuf(self).map(|b| (b, "a udmabuf")).or_else(|e1| host(self).map(|b| (b, "its address")).map_err(|e2| format!("{e1}; {e2}")))
+            } else {
+                host(self).map(|b| (b, "its address")).or_else(|e1| {
+                    let r = dmabuf(self).map(|b| (b, "a udmabuf"));
+                    if r.is_ok() {
+                        eprintln!("mtlvk: buffer {id:#x}: address import refused ({e1}); imported as a udmabuf, as are the buffers after it");
+                        crate::udmabuf::FIRST.store(true, Relaxed);
+                    }
+                    r.map_err(|e2| format!("{e1}; udmabuf: {e2}"))
+                })
+            };
+            drop(fd);
             match r {
-                Ok(b) => {
+                Ok((b, how)) => {
                     if self.log {
-                        eprintln!("mtlvk: buffer {id:#x}: {length} bytes imported without a copy");
+                        eprintln!("mtlvk: buffer {id:#x}: {length} bytes imported without a copy, as {how}");
                     }
                     self.objs.insert(id, Obj::Buf(b));
                     self.kinds.insert(id, (Kind::BufImported, length));

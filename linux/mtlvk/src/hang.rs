@@ -110,16 +110,17 @@ pub fn done(token: u64, ok: bool) {
     }
 }
 
-/// Logs the Vulkan driver once, and starts the watchdog (unless MTLVK_HANG_SECS=0).
+/// Logs the Vulkan driver once, and starts the watchdog: the device's loss always (issue #39: MTLVK_HANG_SECS=0 hid it
+/// too), late command buffers unless MTLVK_HANG_SECS=0.
 pub fn start(device: Device) {
     log_driver(&device);
     let limit = secs();
-    if limit <= 0.0 {
-        return;
+    let late_on = limit > 0.0;
+    ON.store(late_on, Ordering::Relaxed);
+    let limit = Duration::from_secs_f64(limit.max(0.0));
+    if late_on {
+        eprintln!("mtlvk: command buffers not complete {:.1} s after commit are logged (MTLVK_HANG_SECS)", limit.as_secs_f64());
     }
-    ON.store(true, Ordering::Relaxed);
-    let limit = Duration::from_secs_f64(limit);
-    eprintln!("mtlvk: command buffers not complete {:.1} s after commit are logged (MTLVK_HANG_SECS)", limit.as_secs_f64());
     let _ = std::thread::Builder::new().name("hang-watch".into()).spawn(move || {
         let mut loss_logged = false;
         loop {
@@ -127,7 +128,13 @@ pub fn start(device: Device) {
             if !loss_logged {
                 if let Some(loss) = device.loss() {
                     loss_logged = true;
-                    eprintln!("mtlvk hang: DEVICE LOST at {} ({:?})", loss.call, loss.result);
+                    // The runtime ends every command buffer the loss reaches DeviceLost. Recreating the device is not
+                    // done: every guest Metal object of every phone on this mtlvk lives on it, and metalhostd does
+                    // not reconnect, so those phones keep their last frame until they are restarted.
+                    eprintln!(
+                        "mtlvk hang: DEVICE LOST at {} ({:?}): every phone on this mtlvk keeps its last frame until it is restarted",
+                        loss.call, loss.result
+                    );
                     match &loss.fault {
                         Some(f) => {
                             eprintln!("mtlvk hang: driver fault report: {:?}", f.description);
@@ -144,6 +151,12 @@ pub fn start(device: Device) {
                         None => eprintln!("mtlvk hang: no driver fault report (VK_EXT_device_fault absent or empty)"),
                     }
                 }
+            }
+            if !late_on {
+                if loss_logged {
+                    return;
+                }
+                continue;
             }
             let mut flight = FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
             let total = flight.len();
