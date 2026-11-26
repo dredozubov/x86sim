@@ -640,7 +640,7 @@ impl App {
                         vw.hinge_pose(pose);
                     }
                     if let Some(d) = self.duo3d.get_mut(id) {
-                        d.commanded = Some((pose.angle, now));
+                        d.pose(pose.angle, pose.orientation, now);
                     }
                     v = pose.angle;
                     sent = v;

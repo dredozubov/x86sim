@@ -132,6 +132,14 @@ pub struct Duo3d {
     last_t: f64,
     /// the angle the hinge panel last sent and when (the hinge file only changes at a move's start and end)
     pub commanded: Option<(f64, f64)>,
+    /// the orientation a pose chosen here holds the phone in, and when: drawn at once, before simhid reports it
+    commanded_orient: Option<(String, f64)>,
+    /// the device orientation the phone is placed in (portrait / landscape / upside down; a face up or down report
+    /// keeps the last one, as the screens' pictures do)
+    orient: String,
+    /// how far the drawn placement (roll, tilt) still is from the orientation's: it eases to nothing after a turn,
+    /// so the phone turns into a new orientation instead of jumping there
+    place_off: (f32, f32),
     /// the camera (yaw, pitch; radians) drawn, easing towards the default view of the pose
     cam: Option<(f32, f32)>,
     /// the framing (scale before zoom, picture centre, view-space centre) drawn, easing towards the phone's
@@ -181,6 +189,9 @@ impl Duo3d {
             shown: inst.hinge().unwrap_or(0.0),
             last_t: f64::NAN,
             commanded: None,
+            commanded_orient: None,
+            orient: String::new(),
+            place_off: (0.0, 0.0),
             cam: None,
             fit: None,
             fit_t: f64::NAN,
@@ -211,13 +222,34 @@ impl Duo3d {
         if self.shown != target {
             ctx.request_repaint();
         }
-        // the camera eases to the pose's view (the screen swap turns it from the inner to the outer screen)
         let phi = ((180.0 - self.shown) as f32).to_radians();
-        let want = Self::default_view(&orientation(inst), self.shown, phi, self.facing());
+        // the orientation: a pose's from here at once, else simhid's. A new one turns the phone over from where it is
+        // drawn and drops a view turned or zoomed by hand (it was relative to how the phone was held).
+        let o = match &self.commanded_orient {
+            Some((o, t)) if now - t < 1.5 => o.clone(),
+            _ => orientation(inst),
+        };
+        if roll_known(&o) && o != self.orient {
+            if !self.orient.is_empty() {
+                let (a, b) = (placement(&self.orient, phi), placement(&o, phi));
+                self.place_off = (wrap(self.place_off.0 + a.0 - b.0), self.place_off.1 + a.1 - b.1);
+                self.reset_view();
+            }
+            self.orient = o;
+        }
+        if self.place_off != (0.0, 0.0) {
+            let k = (-(dt as f32) * SETTLE).exp();
+            self.place_off = (self.place_off.0 * k, self.place_off.1 * k);
+            if self.place_off.0.abs() + self.place_off.1.abs() < 0.001 {
+                self.place_off = (0.0, 0.0);
+            }
+            ctx.request_repaint();
+        }
+        // the camera eases to the pose's view (the screen swap turns it from the inner to the outer screen)
+        let want = Self::default_view(&self.orient, self.shown, phi, self.facing());
         let cam = match self.cam {
             Some((y, p)) if dt > 0.0 => {
                 let k = 1.0 - (-(dt as f32) * SETTLE).exp();
-                let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
                 let (dy, dp) = (wrap(want.0 - y), want.1 - p);
                 if dy.abs() + dp.abs() > 0.002 {
                     ctx.request_repaint();
@@ -229,6 +261,22 @@ impl Duo3d {
         };
         self.cam = Some(cam);
         self.bent()
+    }
+
+    /// A pose chosen in the hinge panel (`HINGE_POSES`): drawn moving there at once, its orientation too, and the
+    /// view settles on the pose's default (a turn or zoom by hand is dropped)
+    pub fn pose(&mut self, angle: f64, orientation: Option<&str>, now: f64) {
+        self.commanded = Some((angle, now));
+        if let Some(o) = orientation {
+            self.commanded_orient = Some((o.to_string(), now));
+        }
+        self.reset_view();
+    }
+
+    /// Back to the pose's default view: no turn or zoom by hand
+    pub fn reset_view(&mut self) {
+        self.orbit = (0.0, 0.0);
+        self.zoom = 1.0;
     }
 
     pub fn bent(&self) -> bool {
@@ -274,15 +322,14 @@ impl Duo3d {
     /// response to the viewer with `screen_map`). Returns the response of the area.
     pub fn paint(&mut self, ui: &mut egui::Ui, rect: Rect, inst: &Instance) -> egui::Response {
         let resp = ui.interact(rect, ui.id().with("duo3d"), egui::Sense::click_and_drag());
-        let orient = orientation(inst);
+        let orient = if self.orient.is_empty() { orientation(inst) } else { self.orient.clone() };
         let phi = ((180.0 - self.shown) as f32).to_radians();
         let moving = ui.input(|i| i.modifiers.alt || i.pointer.secondary_down() || i.pointer.middle_down());
         {
             let other = resp.dragged_by(egui::PointerButton::Secondary) || resp.dragged_by(egui::PointerButton::Middle);
             // a double right click resets the view in either mode (a double left click is the phone's while it is used)
             if resp.double_clicked_by(egui::PointerButton::Secondary) || (moving && resp.double_clicked()) {
-                self.orbit = (0.0, 0.0);
-                self.zoom = 1.0;
+                self.reset_view();
             } else if other || (moving && resp.dragged_by(egui::PointerButton::Primary)) {
                 // the phone turns the way it is dragged, as if held by the pointer
                 let d = resp.drag_delta();
@@ -299,6 +346,7 @@ impl Duo3d {
         let (cy, cp) = self.cam.unwrap_or_else(|| Self::default_view(&orient, self.shown, phi, self.facing()));
         let (yaw, pitch) = (cy + self.orbit.0, (cp + self.orbit.1).clamp(-1.5, 1.5));
         let (roll, tilt) = placement(&orient, phi);
+        let (roll, tilt) = (roll + self.place_off.0, tilt + self.place_off.1);
         let view = |p: V3| rot_x(rot_y(rot_x(rot_z(p, roll), tilt), yaw), pitch);
         let ppp = ui.ctx().pixels_per_point();
         let inner_ring = inst.inner.as_ref().map(|d| d.ring.clone()).unwrap_or_default();
@@ -527,6 +575,16 @@ fn placement(orient: &str, phi: f32) -> (f32, f32) {
     (roll, tilt)
 }
 
+/// An angle brought into -pi..pi (the short way round)
+fn wrap(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Whether the orientation says how the phone is held upright (face up / down and unknown do not)
+fn roll_known(orient: &str) -> bool {
+    matches!(orient, "portrait" | "portraitUpsideDown" | "landscapeLeft" | "landscapeRight")
+}
+
 /// How far the device orientation turns the phone about the view axis
 fn roll_of(orient: &str) -> f32 {
     match orient {
@@ -540,6 +598,25 @@ fn roll_of(orient: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A turn between any two held orientations eases the short way round (never more than half a turn of roll), and
+    /// face up / down reports do not count as one (the phone stays as it was placed)
+    #[test]
+    fn orientation_turns_short_way() {
+        let all = ["portrait", "landscapeLeft", "portraitUpsideDown", "landscapeRight"];
+        for a in all {
+            for b in all {
+                let phi = 90f32.to_radians();
+                let (pa, pb) = (placement(a, phi), placement(b, phi));
+                let off = wrap(pa.0 - pb.0);
+                assert!(off.abs() <= std::f32::consts::PI + 1e-4, "{a} -> {b}: {off}");
+                // eased to nothing, the drawn roll is the new orientation's
+                let r = pb.0 + off;
+                assert!((r.sin() - pa.0.sin()).abs() < 1e-4 && (r.cos() - pa.0.cos()).abs() < 1e-4, "{a} -> {b}");
+            }
+        }
+        assert!(!roll_known("faceUp") && !roll_known("faceDown") && !roll_known("unknown") && !roll_known(""));
+    }
 
     /// In landscape the lower half's front faces straight up, whatever the hinge angle (a laptop's base on the table)
     #[test]

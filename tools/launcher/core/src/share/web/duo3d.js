@@ -134,6 +134,8 @@
   }
 
   // ---- pose and camera (duo3d.rs)
+  const rollKnown = (o) => o === "portrait" || o === "portraitUpsideDown" || o === "landscapeLeft" || o === "landscapeRight";
+  const wrap = (a) => ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
   function rollOf(o) { return o === "landscapeLeft" ? rad(90) : o === "landscapeRight" ? rad(-90) : o === "portraitUpsideDown" ? Math.PI : 0; }
   function placement(o, phi) {
     return [rollOf(o), o === "landscapeLeft" ? -Math.PI / 2 : o === "landscapeRight" ? phi - Math.PI / 2 : 0];
@@ -375,18 +377,27 @@ void main() {
 
     // ---- state
     let alive = true, dirty = true, raf = 0;
-    let hinge = 180, orient = "portrait", commanded = null;
+    // reported: the device's orientation (simhid's); orient: the one the phone is placed in (a pose's from here at
+    // once; face up / down keep the last); placeOff: how far the drawn placement still is from it (eases to nothing)
+    let hinge = 180, reported = "", orient = "", commanded = null, commandedOrient = null, placeOff = [0, 0];
     let shown = NaN, lastT = NaN, cam = null, fit = null, fitT = NaN;
     let orbit = [0, 0], zoom = 1, proj = null;
     let cssW = 300, cssH = 300, mesh = null, meshDeg = NaN;
 
     function state(m) {
       if (m.hinge != null) hinge = Number(m.hinge);
-      if (m.orientation) orient = m.orientation;
+      if (m.orientation) reported = m.orientation;
       dirty = true;
     }
     // the angle the page's hinge panel sent (the hinge file only changes at a move's start and end)
     function command(deg) { commanded = [Number(deg), performance.now() / 1000]; dirty = true; }
+    // a pose chosen on the page: drawn moving there at once, its orientation too, and the view settles on the
+    // pose's default (a turn or zoom by hand is dropped)
+    function pose(deg, o) {
+      command(deg);
+      if (o) commandedOrient = [o, performance.now() / 1000];
+      resetView();
+    }
     function facing() { const i = scr.inner.lit, o = scr.outer.lit; return i !== o ? i : null; }
 
     function resize(w, h) {
@@ -413,10 +424,26 @@ void main() {
       // the panel's angle gives way to simhid's a second after it was sent: drawn on until then
       let moving = shown !== target || (commanded && now - commanded[1] < 1.2);
       const phi = rad(180 - shown);
+      // the orientation: a pose's from here at once, else simhid's. A new one turns the phone over from where it is
+      // drawn and drops a view turned or zoomed by hand (it was relative to how the phone was held).
+      const o = commandedOrient && now - commandedOrient[1] < 1.5 ? commandedOrient[0] : reported;
+      if (rollKnown(o) && o !== orient) {
+        if (orient) {
+          const a = placement(orient, phi), b = placement(o, phi);
+          placeOff = [wrap(placeOff[0] + a[0] - b[0]), placeOff[1] + a[1] - b[1]];
+          resetView();
+        }
+        orient = o;
+      }
+      if (placeOff[0] || placeOff[1]) {
+        const k = Math.exp(-dt * SETTLE);
+        placeOff = [placeOff[0] * k, placeOff[1] * k];
+        if (Math.abs(placeOff[0]) + Math.abs(placeOff[1]) < 0.001) placeOff = [0, 0];
+        moving = true;
+      }
       const want = defaultView(orient, shown, phi, facing());
       if (cam && dt > 0) {
         const k = 1 - Math.exp(-dt * SETTLE);
-        const wrap = (a) => ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
         const dy = wrap(want[0] - cam[0]), dp = want[1] - cam[1];
         if (Math.abs(dy) + Math.abs(dp) > 0.002) moving = true;
         cam = [cam[0] + dy * k, cam[1] + dp * k];
@@ -428,7 +455,8 @@ void main() {
       let moving = step(now);
       const phi = rad(180 - shown);
       const yaw = cam[0] + orbit[0], pitch = Math.max(-1.5, Math.min(1.5, cam[1] + orbit[1]));
-      const [roll, tilt] = placement(orient, phi);
+      const [r0, t0] = placement(orient || "portrait", phi);
+      const roll = r0 + placeOff[0], tilt = t0 + placeOff[1];
       const view = (p) => rotX(rotY(rotX(rotZ(p, roll), tilt), yaw), pitch);
       if (shown !== meshDeg || !mesh) {
         mesh = build(shown);
@@ -724,7 +752,7 @@ void main() {
       el.remove();
     }
     // for scripted checks: the drawn hinge and where a screen point is on the page
-    const debug = { get shown() { return shown; }, get proj() { return proj; }, get orbit() { return orbit; }, get zoom() { return zoom; }, hit,
+    const debug = { get shown() { return shown; }, get proj() { return proj; }, get orbit() { return orbit; }, get zoom() { return zoom; }, get orient() { return orient; }, hit,
       // n frames drawn back to back, GPU included: ms per frame (the hinge swept so the mesh is rebuilt each time)
       bench(n = 60, sweep = true) {
         const t0 = performance.now(), keep = hinge;
@@ -741,7 +769,7 @@ void main() {
       }
       return best;
     } };
-    return { el, canvas, packet, state, command, resize, reset, resetView, close, debug };
+    return { el, canvas, packet, state, command, pose, resize, reset, resetView, close, debug };
   }
 
   window.Duo3D = { supported, create };
