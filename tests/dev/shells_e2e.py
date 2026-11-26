@@ -8,6 +8,8 @@ snapshot must show the app's UI and one tap must change it.
 
   capacitor  shells/samples/capacitor-hello: Capacitor 8 (Swift-package template). `npx cap add/sync ios` on Linux.
              "Capacitor on x86Sim" in the snapshot (WKWebView content); "Tap me" turns "Taps: 0" into "Taps: 1".
+  cordova    shells/samples/cordova-hello: Cordova (cordova-ios 8). `cordova prepare ios` on Linux. The page shows
+             "Cordova 8.2.0 on ios" once cordova.js fired deviceready (the native bridge works); the same tap.
 
 Usage: tests/dev/shells_e2e.py --phone NAME [--start] [--mcp PATH] [--only capacitor,...] [--out DIR]
   --start boots the phone when it is off and stops it at the end. X86SIM_OAD picks the dev toolchain checkout (default:
@@ -30,6 +32,7 @@ OAD = os.environ.get("X86SIM_OAD") or os.path.join(ROOT, "external/omarchy-apple
 # name: (sample dir, text that shows the UI is up, what to tap, the text the tap brings, use OCR)
 SAMPLES = {
     "capacitor": ("shells/samples/capacitor-hello", "Capacitor on x86Sim", "Tap me", "Taps: 1", False),
+    "cordova": ("shells/samples/cordova-hello", "Cordova 8.2.0 on ios", "Tap me", "Taps: 1", False),
 }
 # what a copy of a sample leaves out (each run starts from the sources)
 GENERATED = ("node_modules", "ios", "platforms", "plugins", "build", ".godot", "package-lock.json")

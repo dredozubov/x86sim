@@ -4,6 +4,8 @@
 //!
 //! - capacitor: package.json with @capacitor/ios. The web build (`npm run build`, when the app has one), then `npx cap
 //!   sync ios`; the Xcode project is ios/App (Swift packages, or a CocoaPods workspace when the app uses pods).
+//! - cordova: package.json with cordova-ios (config.xml beside it). `cordova prepare ios` (the app's own cordova CLI,
+//!   else npx's) adds the platform and copies www/; the Xcode project is platforms/ios (App.xcworkspace).
 use crate::{dev, devxcode};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -23,15 +25,21 @@ pub fn detect(dir: &Path) -> Option<&'static str> {
     if has_dep(&pj, "@capacitor/ios") {
         return Some("capacitor");
     }
+    if has_dep(&pj, "cordova-ios") && dir.join("config.xml").exists() {
+        return Some("cordova");
+    }
     None
 }
 
 pub fn is_shell(kind: &str) -> bool {
-    matches!(kind, "capacitor")
+    matches!(kind, "capacitor" | "cordova")
 }
 
 /// The generated Xcode project's directory (where its .xcodeproj / .xcworkspace is)
-fn native_dir(dir: &Path, _kind: &str) -> PathBuf {
+fn native_dir(dir: &Path, kind: &str) -> PathBuf {
+    if kind == "cordova" {
+        return dir.join("platforms/ios");
+    }
     // capacitor.config.json's ios.path moves ios/ (capacitor.config.ts: the default)
     let cfg: Option<serde_json::Value> = std::fs::read_to_string(dir.join("capacitor.config.json")).ok().and_then(|s| serde_json::from_str(&s).ok());
     let ios = cfg.as_ref().and_then(|c| c["ios"]["path"].as_str()).unwrap_or("ios");
@@ -98,6 +106,14 @@ pub fn prepare(dir: &Path, kind: &str, say: &mut dyn FnMut(&str)) -> Result<()> 
         }
         with_pod(&mut c);
         step(c, dir, &format!("cap {verb} ios"), say)?;
+    }
+    if kind == "cordova" {
+        let local = dir.join("node_modules/.bin/cordova");
+        let mut c = if local.exists() { dev::command(local) } else { let mut c = dev::command("npx"); c.args(["--yes", "cordova"]); c };
+        // prepare adds the platform package.json lists when it is missing, then copies www/ and config.xml
+        c.args(["prepare", "ios", "--no-telemetry"]);
+        with_pod(&mut c);
+        step(c, dir, "cordova prepare ios", say)?;
     }
     Ok(())
 }
