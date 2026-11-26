@@ -1023,8 +1023,13 @@ static void memlog_once(bool with_save) {
 bool guest_sig_action_set(int sig);  // signals.cpp
 static sem_t g_memlog_sem;
 static void (*g_darling_usr1)(int, siginfo_t *, void *) = nullptr;
+// x86sim profile / x86sim debug send their SIGUSR1 with sigqueue and this value: the request is the translator's even
+// when the guest has a SIGUSR1 action of its own (callservicesd, a dispatch signal source), which made such processes
+// impossible to profile or attach to at run time.
+constexpr int kToolSigValue = 0x78367331;  // "x6s1"
 static void on_usr1(int sig, siginfo_t *si, void *uc) {
-    if (g_darling_usr1 && guest_sig_action_set(30 /* Darwin SIGUSR1 */)) { g_darling_usr1(sig, si, uc); return; }
+    const bool tool = si && si->si_code == SI_QUEUE && si->si_value.sival_int == kToolSigValue;
+    if (!tool && g_darling_usr1 && guest_sig_action_set(30 /* Darwin SIGUSR1 */)) { g_darling_usr1(sig, si, uc); return; }
     const int e = errno;
     sem_post(&g_memlog_sem);  // async-signal-safe
     errno = e;
