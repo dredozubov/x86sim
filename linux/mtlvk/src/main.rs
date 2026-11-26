@@ -9,8 +9,10 @@
 //! Usage: mtlvk [socket path]      (default: var/run/mtlvk.sock, relative to the repo root)
 //!        mtlvk selftest           (memfd import, clear, blits on this GPU; no Darling needed)
 //!        mtlvk selftest-compute [metallib]  (stage 4: kernels of tests/metal/shaders/probe.metallib)
+//!        mtlvk --list-gpus   (every Vulkan device as JSON: name, type, driver, the id MTLVK_DEVICE_ID takes; gpus.rs)
 
 mod conn;
+mod gpus;
 mod hang;
 mod memstat;
 mod proto;
@@ -24,8 +26,9 @@ extern "C" fn on_usr1(_: libc::c_int) {
     conn::STATS_REQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The device mtlvk serves every phone on: the first Vulkan device above metal2vulkan-runtime's floor, a discrete GPU
-/// first (MTLVK_DEVICE=<n> picks the n-th of those above the floor, in the loader's order).
+/// The device mtlvk serves every phone on, among the Vulkan devices above metal2vulkan-runtime's floor:
+/// MTLVK_DEVICE_ID's (a GPU's "<deviceUUID>,<vendor>:<device>", or "cpu" for lavapipe; gpus.rs), else MTLVK_DEVICE=<n>'s
+/// (the n-th, in the loader's order), else a discrete GPU, an integrated one, the first, a CPU device last.
 ///
 /// Dropped with the new runtime (metal2vulkan-runtime 0.2, upstream's rewrite): the old runtime's x86Sim RAM 2 options.
 /// - Ray tracing withheld: the new runtime enables only the floor's extensions and those the consumer names
@@ -36,33 +39,27 @@ extern "C" fn on_usr1(_: libc::c_int) {
 /// - The in-memory memo (MTLVK_MEMO_MB): the new runtime keeps the last 1,024 compiled contents by its own rule, and
 ///   its lowerings on disk in `pipeline_cache_dir` (MTLVK_PIPELINE_CACHE, default $XDG_CACHE_HOME/metal2vulkan-rt;
 ///   MTLVK_PIPELINE_CACHE_MB caps the lowerings, default the runtime's 128).
-pub fn open_device() -> Result<Device, String> {
+pub fn open_device() -> Result<(Device, gpus::Gpu), String> {
     use metal2vulkan_runtime::{DeviceOptions, Instance};
+    gpus::prepare_loader(false);
     let instance = Instance::new(&[]).map_err(|e| format!("Vulkan instance: {e}"))?;
-    let physical = instance.physical_devices().map_err(|e| format!("physical devices: {e}"))?;
-    let entry_inst = instance.raw().1;
-    let mut ok: Vec<_> = physical
-        .into_iter()
-        .filter(|p| match p.check() {
-            Ok(_) => true,
-            Err(e) => {
-                eprintln!("mtlvk: a Vulkan device below the runtime's floor: {e:?}");
-                false
-            }
-        })
-        .collect();
-    // SAFETY: property queries of the instance's own physical devices.
-    let discrete = |p: &metal2vulkan_runtime::PhysicalDevice| unsafe {
-        entry_inst.get_physical_device_properties(p.raw()).device_type == ash::vk::PhysicalDeviceType::DISCRETE_GPU
-    };
-    let pick = match std::env::var("MTLVK_DEVICE").ok().and_then(|v| v.parse::<usize>().ok()) {
-        Some(n) if n < ok.len() => n,
-        _ => ok.iter().position(discrete).unwrap_or(0),
-    };
-    if ok.is_empty() {
-        return Err("no Vulkan device above metal2vulkan-runtime's floor".into());
+    let mut physical = instance.physical_devices().map_err(|e| format!("physical devices: {e}"))?;
+    let mut all = gpus::describe(instance.raw().1, &physical);
+    for (p, g) in physical.iter().zip(&all) {
+        if let Err(e) = p.check() {
+            eprintln!("mtlvk: a Vulkan device below the runtime's floor: {} ({}): {e:?}", g.name, g.kind);
+        }
     }
-    let physical = ok.swap_remove(pick);
+    let want = gpus::want();
+    let Some((pick, note)) = gpus::pick(&all, &want) else {
+        return Err("no Vulkan device above metal2vulkan-runtime's floor".into());
+    };
+    if let Some(n) = note {
+        eprintln!("mtlvk: {n}");
+    }
+    let gpu = all.swap_remove(pick);
+    eprintln!("mtlvk: GPU {} ({}, {}, {}) id {} [asked: {want}]", gpu.name, gpu.kind, gpu.driver, gpu.pci(), gpu.uuid);
+    let physical = physical.swap_remove(pick);
     let mut o = DeviceOptions::default();
     let dir = std::env::var_os("MTLVK_PIPELINE_CACHE").map(std::path::PathBuf::from).or_else(|| {
         let base = std::env::var_os("XDG_CACHE_HOME")
@@ -76,7 +73,7 @@ pub fn open_device() -> Result<Device, String> {
     o.pipeline_cache_cap = std::env::var("MTLVK_PIPELINE_CACHE_MB").ok().and_then(|v| v.parse::<u64>().ok()).map(|mb| mb << 20);
     let device = Device::new(&physical, o).map_err(|e| format!("device: {e}"))?;
     conn::grant_indices(&device)?;
-    Ok(device)
+    Ok((device, gpu))
 }
 
 /// x86Sim RAM 2/8/14: every MTLVK_TRIM_EVERY seconds (default 5; 0 = never), give back what this process holds and
@@ -233,7 +230,16 @@ fn main() {
     // SAFETY: the handler only bumps an atomic.
     unsafe { libc::signal(libc::SIGUSR1, on_usr1 as extern "C" fn(libc::c_int) as libc::sighandler_t) };
     let arg = std::env::args().nth(1);
-    let device = match open_device() {
+    if matches!(arg.as_deref(), Some("--list-gpus" | "list-gpus")) {
+        std::process::exit(match gpus::list() {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("mtlvk: {e}");
+                1
+            }
+        });
+    }
+    let (device, gpu) = match open_device() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("mtlvk: no Vulkan device: {e}");
@@ -279,6 +285,7 @@ fn main() {
     if let Some(dir) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    gpus::record(&path, &gpu);
     let listener = UnixListener::bind(&path).unwrap_or_else(|e| {
         eprintln!("mtlvk: bind {path}: {e}");
         std::process::exit(1);
