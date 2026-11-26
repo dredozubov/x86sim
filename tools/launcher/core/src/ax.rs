@@ -1118,11 +1118,11 @@ pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a
                     Some(0)
                 } else if id == t || val == t {
                     Some(1)
-                } else if !l.is_empty() && l.starts_with(&t) {
+                } else if !l.is_empty() && holds_at(&l, &t, true) {
                     Some(2)
-                } else if l.contains(&t) {
+                } else if holds_at(&l, &t, false) {
                     Some(3)
-                } else if val.contains(&t) {
+                } else if holds_at(&val, &t, false) {
                     Some(4)
                 } else if e.ocr && crate::ocr::near(&l, &t) {
                     // text read from pixels: a letter or two read wrong
@@ -1140,6 +1140,28 @@ pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a
     let front_rank = |app: &str| snap.front.iter().position(|f| f == app).unwrap_or(usize::MAX);
     v.sort_by_key(|(q, e)| (e.offscreen || e.covered, layer_rank(&e.layer), *q, front_rank(&e.app), !actionable(&e.role), e.role == "webview"));
     v.into_iter().map(|x| x.1).collect()
+}
+
+/// `hay` holds `needle` (at its start with `prefix`), and not as a part of a longer number: "Score: 1" is not in
+/// "Score: 10" (a counter a wait is for), "Item 2" not in "Item 12"
+fn holds_at(hay: &str, needle: &str, prefix: bool) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let digit_at = |s: &str, end: bool| if end { s.chars().next_back() } else { s.chars().next() }.is_some_and(|c| c.is_ascii_digit());
+    let (n0, n1) = (digit_at(needle, false), digit_at(needle, true));
+    let mut from = 0;
+    while let Some(i) = hay[from..].find(needle).map(|i| i + from) {
+        if prefix && i > 0 {
+            return false;
+        }
+        let j = i + needle.len();
+        if !(n0 && digit_at(&hay[..i], true)) && !(n1 && digit_at(&hay[j..], false)) {
+            return true;
+        }
+        from = i + hay[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 pub fn find<'a>(snap: &'a Snapshot, target: &str) -> Result<&'a El> {
@@ -2234,6 +2256,25 @@ mod tests {
 
     fn el(r: &str, pid: u32, oid: &str, role: &str, label: &str, y: f64) -> El {
         El { r: r.into(), pid, oid: oid.into(), role: role.into(), label: Some(label.into()), app: "a".into(), layer: "app".into(), frame: [0.0, y, 100.0, 40.0], enabled: true, ..Default::default() }
+    }
+
+    #[test]
+    fn numbers_match_exactly() {
+        assert!(holds_at("score: 10", "score: 10", true));
+        assert!(!holds_at("score: 10", "score: 1", true));
+        assert!(!holds_at("item 12", "item 2", false));
+        assert!(!holds_at("level 21", "1", false));
+        assert!(holds_at("12 apples, 1 pear", "1 pear", false));
+        assert!(holds_at("taps: 1 so far", "taps: 1", true));
+        assert!(holds_at("settings", "set", true));
+        // wait_for "Taps: 1" while the counter (read by OCR) still says 0, or already 10: no match
+        let ocr = |label: &str| El { ocr: true, ..el("e1", 1, "ocr:x", "text", label, 100.0) };
+        let snap = |label: &str| Snapshot { elements: vec![ocr(label)], ..Default::default() };
+        let t = parse_target("Taps: 1");
+        assert!(find_all(&snap("Taps: 0"), &t).is_empty());
+        assert!(find_all(&snap("Taps: 10"), &t).is_empty());
+        assert_eq!(find_all(&snap("Tsps: 1"), &t).len(), 1);
+        assert_eq!(find_all(&snap("Taps: 1"), &t).len(), 1);
     }
 
     #[test]

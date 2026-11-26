@@ -339,9 +339,18 @@ pub fn worth_a_look(inst: &crate::instance::Instance, t: &crate::ax::Target) -> 
         }
 }
 
+/// The numbers in a text, in order (runs of digits)
+fn numbers(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_ascii_digit()).filter(|n| !n.is_empty()).map(str::to_string).collect()
+}
+
 /// Close enough for text read from pixels: the same after dropping what is not a letter or digit, or at most one
-/// edit per six characters
+/// edit per six characters, in letters only: the numbers must be the same ("Taps: 0" is not "Taps: 1", a counter
+/// one step behind)
 pub fn near(label: &str, want: &str) -> bool {
+    if numbers(label) != numbers(want) {
+        return false;
+    }
     let a: Vec<char> = label.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
     let b: Vec<char> = want.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
     if b.len() < 3 {
@@ -628,6 +637,19 @@ mod tests {
         assert!(near("Settings", "Settings!"));
         assert!(!near("Start", "Stop"));
         assert!(!near("ab", "ac"));
+    }
+
+    #[test]
+    fn near_numbers_exact() {
+        // a counter one step behind is not the text waited for (wait_for "Taps: 1" while the screen says "Taps: 0")
+        assert!(!near("Taps: 0", "Taps: 1"));
+        assert!(!near("Taps: 1", "Taps: 0"));
+        assert!(!near("Score: 10", "Score: 1"));
+        assert!(!near("Level 12", "Level 21"));
+        assert!(!near("Taps: O", "Taps: 0"));
+        // letters may still be read wrong around the right number
+        assert!(near("Tsps: 1", "Taps: 1"));
+        assert!(near("Score: 42", "score 42"));
     }
 
     #[test]
