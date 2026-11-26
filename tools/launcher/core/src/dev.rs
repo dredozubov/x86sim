@@ -743,7 +743,7 @@ pub fn project(dir: &Path) -> Result<Project> {
     let name = yml_value(&y, "product").unwrap_or(base);
     let app = if matches!(kind, "expo" | "reactnative") {
         crate::devpods::last_app(&dir)
-    } else if matches!(kind, "xcodeproj" | "carthage") {
+    } else if matches!(kind, "xcodeproj" | "carthage" | "xcodegen") {
         crate::devxcode::last_app(&dir)
     } else {
         std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"))
@@ -840,7 +840,7 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
             return Ok(app);
         }
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
-        "xcodeproj" | "carthage" => {
+        "xcodeproj" | "carthage" | "xcodegen" => {
             let _lock = BuildLock::take(say)?;
             let log_path = work_dir().join(format!("build-{}.log", p.name));
             let mut log = std::fs::File::create(&log_path).ok();
@@ -1127,8 +1127,8 @@ pub fn mcp_tools() -> Vec<serde_json::Value> {
     vec![
         json!({"name": "dev_status", "description": "Develop (omarchy-apple-dev): the app toolchain's state: Swift, xtool, the iOS SDK (and its simulator platforms), device tools; ready_sim says whether simulator builds work. Includes the running / last setup job with its step and log tail, and the recent projects.",
                "inputSchema": {"type": "object", "properties": {}}}),
-        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use), cocoapods (a pinned user-local Ruby and CocoaPods, ~70 MB: pod install for React Native / Expo apps and Flutter plugins with a Podfile), swiftbuild (Apple's open-source Swift Build with sweetpad's Linux front end, ~220 MB: builds Xcode projects and workspaces, and the xcodebuild stand-in), carthage (Carthage built from source: apps with a Cartfile; dev_build / dev_run then bootstrap their dependencies first).",
-               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb", "cocoapods", "swiftbuild", "carthage"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
+        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use), cocoapods (a pinned user-local Ruby and CocoaPods, ~70 MB: pod install for React Native / Expo apps and Flutter plugins with a Podfile), swiftbuild (Apple's open-source Swift Build with sweetpad's Linux front end, ~220 MB: builds Xcode projects and workspaces, and the xcodebuild stand-in), carthage (Carthage built from source: apps with a Cartfile; dev_build / dev_run then bootstrap their dependencies first), xcodegen (XcodeGen built from source: apps with a project.yml; dev_build / dev_run generate the project first).",
+               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb", "cocoapods", "swiftbuild", "carthage", "xcodegen"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
         json!({"name": "dev_setup_cancel", "description": "Stop the running setup job.", "inputSchema": {"type": "object", "properties": {}}}),
         json!({"name": "dev_new", "description": "Make a new SwiftUI app project (xtool new) in parent (default: ~/x86sim-apps), set up for every simulator platform. Returns its directory.",
                "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "a Swift identifier, e.g. HelloApp"}, "parent": {"type": "string"}}, "required": ["name"]}}),

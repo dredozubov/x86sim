@@ -5,9 +5,12 @@ Each setup has one real open-source sample, cloned at a pinned commit into WORK 
 sees the setup and runs its steps before Swift Build builds the Xcode project (x86sim dev / devgen.rs):
   carthage   demolaf/movies-uikit (MIT): a Cartfile with Alamofire, SDWebImage, realm-swift (built from their Xcode
              projects by `carthage bootstrap --use-xcframeworks`), RxSwift and rive-ios (their prebuilt xcframeworks)
+  xcodegen   HelioMesquita/Swiftmazing (MIT): project.yml with two local Swift packages and a remote one; XcodeGen
+             (built on Linux) generates the Xcode project
 Then, on the phone:
   ui     the app's first screen is in the snapshot (carthage: "Watch Movies")
-  tap    one tap changes it (carthage: the TV Shows tab, with its Search button)
+  tap    one tap changes it (carthage: the TV Shows tab, with its Search button;
+         xcodegen: a repository's detail, with its "See repository" button)
 
 Usage: tests/dev/deps_e2e.py SETUP [--phone at2-deps] [--model "iPhone 17"] [--work DIR] [--mcp PATH] [--keep]
        [--explore] (print the snapshot after launch instead of the checks)
@@ -45,6 +48,15 @@ SAMPLES = {
         "ui": "Watch Movies",
         "tap": "TV Shows",
         "after": "Search",
+    },
+    "xcodegen": {
+        "repo": "https://github.com/HelioMesquita/Swiftmazing",
+        "commit": "4ba29c688ef40b37499d925dea5aec4d50efb225",
+        "bundle": "com.swiftmazing",
+        # its feed is GitHub's search API (api.github.com): the phone needs the network
+        "ui": "BEST REPOSITORIES",
+        "tap": "awesome-ios",
+        "after": "See repository",
     },
 }
 
