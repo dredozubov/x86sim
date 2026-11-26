@@ -78,6 +78,16 @@ fn open_url(u: &str) {
 }
 
 impl App {
+    /// Saves text to Downloads (`<name> <date at time>.txt`) and says where, in the window's message line
+    pub fn save_to_downloads(&self, name: &str, body: &str) {
+        let dir = user_dir("DOWNLOAD", "Downloads");
+        let f = dir.join(format!("{name} {}.txt", stamp()));
+        let msg = match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&f, body)) {
+            Ok(()) => format!("Saved: {}", f.display()),
+            Err(e) => format!("Couldn't save {}: {e}", f.display()),
+        };
+        self.extras.said.lock().unwrap().push(msg);
+    }
     /// Each frame: messages of finished work, recordings whose recorder ended on its own
     pub fn extras_poll(&mut self) {
         let msgs: Vec<String> = std::mem::take(&mut *self.extras.said.lock().unwrap());

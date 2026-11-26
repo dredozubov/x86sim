@@ -928,7 +928,7 @@ impl App {
         }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let rest = ui.available_width() - 116.0 - 2.0 * H_MD - 3.0 * 6.0 - 4.0;
+            let rest = ui.available_width() - 116.0 - 4.0 * H_MD - 5.0 * 6.0 - 4.0;
             let rest = rest.max(80.0);
             search(ui, &mut self.log_filter, if rest < 190.0 { "Filter" } else { "Filter text or process" }, rest).on_hover_text("Show only lines with this text, or from this process");
             let groups = self.logs.as_ref().map(|l| l.1.groups()).unwrap_or_default();
@@ -957,10 +957,24 @@ impl App {
             if ui.add(Btn::tool(ic)).on_hover_text(tip).clicked() {
                 self.log_paused = !self.log_paused;
             }
+            // the lines shown (this filter and source): to the clipboard, or to a file in Downloads
+            let shown = || -> String {
+                let f = self.log_filter.to_lowercase();
+                self.logs.as_ref().map(|(_, t)| t.lines.iter().filter(|l| log_shown(l, &self.log_source, &f)).map(log_text).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+            };
+            if ui.add(Btn::tool(icon::COPY)).on_hover_text("Copy the lines shown (click a line to pick it, Shift+click for a range, Ctrl+C copies those)").clicked() {
+                let t = shown();
+                ui.ctx().copy_text(t);
+            }
+            if ui.add(Btn::tool(icon::DOWNLOAD_SIMPLE)).on_hover_text("Save the lines shown to a text file in Downloads").clicked() {
+                let t = shown();
+                self.save_to_downloads(&format!("x86Sim logs {}", inst.name), &t);
+            }
             if ui.add(Btn::tool(icon::TRASH)).on_hover_text("Clear the lines shown here (the log files stay)").clicked() {
                 if let Some((_, t)) = &mut self.logs {
                     t.lines.clear();
                 }
+                self.log_sel = None;
             }
         });
         ui.add_space(S1);
@@ -968,7 +982,14 @@ impl App {
         let src = self.log_source.clone();
         let paused = self.log_paused;
         if let Some((_, t)) = &self.logs {
-            let rows: Vec<&logs::Line> = t.lines.iter().filter(|l| (src.is_empty() || l.group == src) && (f.is_empty() || l.text.to_lowercase().contains(&f) || l.source.to_lowercase().contains(&f))).collect();
+            let rows: Vec<&logs::Line> = t.lines.iter().filter(|l| log_shown(l, &src, &f)).collect();
+            let sel = self.log_sel.map(|(a, b)| (a.min(b), a.max(b)));
+            let picked = |l: &logs::Line| sel.is_some_and(|(a, b)| l.seq >= a && l.seq <= b);
+            // Ctrl+C with lines picked (and no text field holding the keyboard): those lines
+            if sel.is_some() && ui.memory(|m| m.focused().is_none()) && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
+                ui.ctx().copy_text(rows.iter().filter(|l| picked(l)).map(|l| log_text(l)).collect::<Vec<_>>().join("\n"));
+            }
+            let mut new_sel = self.log_sel;
             egui::Frame::new().fill(pal().well).stroke(egui::Stroke::new(1.0_f32, pal().border)).corner_radius(radius()).inner_margin(egui::Margin::symmetric(0, 4)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -986,9 +1007,19 @@ impl App {
                     let srcw = 96.0;
                     let tw = 60.0;
                     for l in &rows[range.start.min(rows.len())..range.end.min(rows.len())] {
-                        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::hover());
-                        if resp.hovered() {
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+                        if picked(l) {
+                            ui.painter().rect_filled(r, 0.0, pal().selected);
+                        } else if resp.hovered() {
                             ui.painter().rect_filled(r, 0.0, pal().hover);
+                        }
+                        if resp.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            new_sel = match new_sel {
+                                Some((a, _)) if shift => Some((a, l.seq)),
+                                Some((a, b)) if a == l.seq && b == l.seq => None,
+                                _ => Some((l.seq, l.seq)),
+                            };
                         }
                         let (time, msg) = logs::split_time(&l.text);
                         let mut x = r.left() + 10.0;
@@ -1003,14 +1034,29 @@ impl App {
                         let col = if low.contains("error") || low.contains("fail") || low.contains("crash") { pal().crit_ink } else if low.contains("warn") { pal().warn } else { pal().ink };
                         let g = galley_trunc(ui, msg, mono.clone(), col, r.right() - x - 8.0);
                         ui.painter().galley(egui::pos2(x, r.center().y - g.size().y / 2.0), g, col);
-                        resp.on_hover_ui(|ui| {
+                        let resp = resp.on_hover_ui(|ui| {
                             ui.set_max_width(520.0);
                             ui.label(muted(&l.source));
                             ui.label(egui::RichText::new(&l.text).monospace().size(T_SMALL).color(pal().ink));
                         });
+                        resp.context_menu(|ui| {
+                            if ui.button("Copy this line").clicked() {
+                                ui.ctx().copy_text(log_text(l));
+                                ui.close();
+                            }
+                            if sel.is_some() && ui.button("Copy the picked lines").clicked() {
+                                ui.ctx().copy_text(rows.iter().filter(|l| picked(l)).map(|l| log_text(l)).collect::<Vec<_>>().join("\n"));
+                                ui.close();
+                            }
+                            if ui.button(format!("Copy all {} lines shown", rows.len())).clicked() {
+                                ui.ctx().copy_text(rows.iter().map(|l| log_text(l)).collect::<Vec<_>>().join("\n"));
+                                ui.close();
+                            }
+                        });
                     }
                 });
             });
+            self.log_sel = new_sel;
         }
         ui.add_space(S3);
     }
@@ -1170,4 +1216,14 @@ impl App {
         });
         ui.add_space(S3);
     }
+}
+
+/// A log line passes the source picker and the filter
+fn log_shown(l: &logs::Line, src: &str, f: &str) -> bool {
+    (src.is_empty() || l.group == src) && (f.is_empty() || l.text.to_lowercase().contains(f) || l.source.to_lowercase().contains(f))
+}
+
+/// A log line as copied or saved: its process, then the line
+fn log_text(l: &logs::Line) -> String {
+    format!("{}: {}", l.source, l.text)
 }

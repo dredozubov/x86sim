@@ -122,6 +122,8 @@ pub struct App {
     pub log_filter: String,
     pub log_source: String,
     pub log_paused: bool,
+    /// the selected log lines: (anchor, end) by Line::seq, inclusive
+    pub log_sel: Option<(u64, u64)>,
     pub last_log_poll: Instant,
     pub settings: Option<(String, instance::BootSettings)>,
     pub aot: global::Aot,
@@ -266,6 +268,7 @@ impl App {
             log_filter: String::new(),
             log_source: String::new(),
             log_paused: false,
+            log_sel: None,
             last_log_poll: Instant::now(),
             settings: None,
             aot,

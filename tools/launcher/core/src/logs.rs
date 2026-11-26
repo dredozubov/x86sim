@@ -15,6 +15,8 @@ pub struct Line {
     /// the process or file the line came from
     pub source: String,
     pub text: String,
+    /// counts up across the tail's life: a line keeps its number while older ones scroll out (a selection holds)
+    pub seq: u64,
 }
 
 /// A dir of per-process logs, or one file, and the group its lines belong to.
@@ -35,6 +37,7 @@ pub struct Tail {
     pub generation: u64,
     /// unix seconds: files last modified before this are skipped (a past boot's)
     pub since: Option<f64>,
+    next_seq: u64,
 }
 
 /// "com.apple.SpringBoard.log" -> "SpringBoard", "AegirPoster.1338.log" -> "AegirPoster", "lsim.out" -> "lsim"
@@ -51,7 +54,7 @@ fn tag(p: &std::path::Path) -> String {
 
 impl Tail {
     pub fn new(srcs: Vec<Src>) -> Tail {
-        Tail { srcs, offs: HashMap::new(), lines: VecDeque::new(), cap: 6000, generation: 0, since: None }
+        Tail { srcs, offs: HashMap::new(), lines: VecDeque::new(), cap: 6000, generation: 0, since: None, next_seq: 0 }
     }
 
     /// Reads what is new; returns the number of lines added.
@@ -112,7 +115,8 @@ impl Tail {
                             if l.trim().is_empty() {
                                 continue;
                             }
-                            self.lines.push_back(Line { group, source: t.clone(), text: l.to_string() });
+                            self.next_seq += 1;
+                            self.lines.push_back(Line { group, source: t.clone(), text: l.to_string(), seq: self.next_seq });
                             added += 1;
                         }
                     }
