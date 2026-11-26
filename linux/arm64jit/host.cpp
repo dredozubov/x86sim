@@ -1387,7 +1387,7 @@ static void start_file_trim() {
         long base = 0, prev = 0;
         const char *se = getenv("X86SIM_A64_FILETRIM_SETTLE");
         const long settle_kb = (se && *se ? atol(se) : 64) << 10;
-        double c0 = cpu(), w0 = now(), fc0 = c0, fw0 = w0;
+        double c0 = cpu(), w0 = now(), fc0 = c0, fw0 = w0, last_trim = 0;
         for (;;) {
             sleep(tick);
             const double c1 = cpu(), w1 = now(), busy = pct(c1 - c0, w1 - w0);
@@ -1404,14 +1404,20 @@ static void start_file_trim() {
             const long grew = r - prev;
             prev = r;
             const bool settled = settle_kb > 0 && busy < 25.0 && grew < 1024 && r - base >= settle_kb;
-            if (busy >= 3.0 && !settled) continue;
+            // RAM 14: a process that never drops under 25% (visionOS backboardd, compositing at 60 fps) kept its whole
+            // start-up fault-around: ~450 MB of image, index and cache pages on a Vision Pro. It is trimmed too once
+            // its file RSS grew by twice the settle size and stopped growing, at most once a minute (the pages it
+            // still runs fault back in from the page cache: minor faults).
+            const bool busy_settled = settle_kb > 0 && busy >= 25.0 && grew < 1024 && r - base >= 2 * settle_kb &&
+                                      w1 - last_trim >= 60e3;
+            if (busy >= 3.0 && !settled && !busy_settled) continue;
             if (r < 0 || r - base < 2048) continue;
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
             file_trim_once();
             clock_gettime(CLOCK_MONOTONIC, &t1);
             base = prev = rss_file_kb();
-            c0 = cpu(); w0 = now();
+            c0 = cpu(); w0 = last_trim = now();
             if (getenv("X86SIM_A64_FILETRIM_LOG"))
                 logf("filetrim: RssFile %ld -> %ld MB in %.1f ms (cpu %.1f%%%s)", r >> 10, base >> 10,
                      (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6, busy, busy >= 3.0 ? ", settled" : "");
