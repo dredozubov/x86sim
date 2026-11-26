@@ -114,7 +114,7 @@ pub struct Viewer {
     pub remote: bool,
     /// the wheel distance not yet sent as an arrow key (remote)
     wheel_acc: egui::Vec2,
-    /// Platforms 1: the screen's corner radius as a fraction of its width (a TV's is square, a watch's rounder)
+    /// the screen's corner radius as a fraction of its upright width, the device type's (Instance::corner)
     pub corner: f32,
 }
 
@@ -256,7 +256,7 @@ impl Viewer {
             orient: 0,
             pointer_mode: false,
             last_hover: None,
-            corner: if inst.model_id.starts_with("AppleTV") { 0.0 } else if inst.model_id.starts_with("Watch") { 0.22 } else { 0.11 } }
+            corner: inst.corner }
     }
 
     /// Follow the phone's current ring (sim.env after its last boot); a change drops the old ring's picture.
@@ -345,7 +345,8 @@ impl Viewer {
         let (rect, resp) = ui.allocate_exact_size(outer, if interactive { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
         let screen = rect.shrink(bezel);
         let p = ui.painter();
-        let radius = (size.x * self.corner).max(4.0);
+        // the corner is a fraction of the upright width: the short side, also when the picture is turned
+        let radius = (size.min_elem() * self.corner).max(2.0);
         p.rect_filled(rect, radius + bezel * 0.7, pal().bezel);
         p.rect_stroke(rect, radius + bezel * 0.7, egui::Stroke::new(1.0_f32, pal().border_strong), egui::StrokeKind::Inside);
         match (&self.tex, live) {

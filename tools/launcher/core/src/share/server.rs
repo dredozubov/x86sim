@@ -487,7 +487,7 @@ impl Server {
                     "memory_mb": s.map(|s| s.memory_mb), "cpu_pct": s.map(|s| s.cpu_pct), "uptime_s": s.and_then(|s| s.uptime_s),
                     // the GPU it renders on (its GPU helper's)
                     "gpu": s.and_then(|s| s.gpu_name.as_ref().map(|n| json!({"name": n, "short": s.gpu_short.clone().unwrap_or_default()}))),
-                    "screen": [t.size.0, t.size.1], "two_screens": i.inner.is_some(), "inner_active": i.inner_active(),
+                    "screen": [t.size.0, t.size.1], "corner": i.corner, "two_screens": i.inner.is_some(), "inner_active": i.inner_active(),
                     "orientation": i.orientation(), "hinge": i.hinge(),
                     "ipad": i.model.contains("iPad"),
                 })
@@ -932,7 +932,7 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
     let control = g.role == Role::Control;
     let state = |inst: &Instance| json!({"t": "state", "orientation": inst.orientation(), "hinge": inst.hinge(), "inner_active": inst.inner_active(), "running": crate::ring::Ring::new(&inst.ring).seq() != 0});
     let _ = tx.send(Out::Text(
-        json!({"t": "hello", "role": g.role, "phone": inst.id, "name": inst.name, "model": inst.model, "platform": inst.platform, "two_screens": inst.inner.is_some(),
+        json!({"t": "hello", "role": g.role, "phone": inst.id, "name": inst.name, "model": inst.model, "platform": inst.platform, "corner": inst.corner, "two_screens": inst.inner.is_some(),
                "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "build": web_build(), "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle, "orientation": p.orientation})).collect::<Vec<_>>()})
         .to_string(),
     ));

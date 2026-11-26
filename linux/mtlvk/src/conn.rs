@@ -443,6 +443,9 @@ impl State {
             n[0], buf_bytes >> 20, n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], self.lib_bytes.len(), lib >> 20,
             self.func_src.len(), self.mirrors.len(), mirror >> 20, self.proxies.len(), self.shared_vram.len()
         );
+        // the runtime's cumulative counts (pipelines made and the waits for them, translations, GPU time, ...): two
+        // dumps' difference is what happened between them (SIGUSR1 before and after a lag)
+        eprintln!("mtlvk metrics: {:?}", self.device.counters().metrics());
     }
 }
 
