@@ -255,7 +255,7 @@ any app. Engines without exported reflection (Unreal, Godot, cocos2d) have no re
 ### Views that draw their own pixels (`pixels`)
 
 `tree` also lists the views on screen that render without UIKit's views (`simax_pixels.m`): a view whose layer is a
-`CAMetalLayer` or `CAEAGLLayer` (MTKView, GLKView, game engines such as Unity's, Flutter), an `SKView` or an `SCNView`,
+`CAMetalLayer` or `CAEAGLLayer`, or one as a sublayer covering it (MTKView, GLKView, game engines such as Unity's or Godot's, Flutter), an `SKView` or an `SCNView`,
 covering at least 1/16 of its window. They are noted while the walk passes them, also when they set
 `accessibilityElementsHidden` (a game hiding nothing but saying so). Each has `frame` (screen points, clipped to the
 window), `class`, `kind` (`metal`, `opengl`, `spritekit`, `scenekit`), `win` and `oid`; at most 16. The DOM walk gives a
