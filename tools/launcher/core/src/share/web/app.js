@@ -354,7 +354,23 @@ function phoneView(id) {
   const side = h("aside", { class: "side" });
   // a narrow screen (a phone's browser): the most used controls right under the screen, the rest below
   const quick = h("div", { class: "quick" });
-  main.append(h("div", { class: "phone" }, stage, quick, side));
+  // the panels on a narrow screen: the screen takes every touch (it drives the device), so the page can't be scrolled
+  // down to them; a button pinned at the strip's end slides them up as a sheet over the screen instead
+  const panelsBtn = h("button", { class: "tool panels", type: "button", title: "Panels", "aria-label": "Panels", "aria-expanded": "false" },
+    h("span", { class: "ic", text: "\uE434" }));
+  const phoneEl = h("div", { class: "phone" }, stage, h("div", { class: "quickbar" }, quick, panelsBtn), side);
+  main.append(phoneEl);
+  const sheet = (open) => {
+    phoneEl.classList.toggle("sheet", open);
+    panelsBtn.classList.toggle("on", open);
+    panelsBtn.setAttribute("aria-expanded", String(open));
+    if (open) side.style.cssText = `bottom:${phoneEl.querySelector(".quickbar").offsetHeight}px`;
+  };
+  panelsBtn.onclick = () => sheet(!phoneEl.classList.contains("sheet"));
+  document.addEventListener("pointerdown", (e) => {
+    if (phoneEl.classList.contains("sheet") && !side.contains(e.target) && !panelsBtn.contains(e.target) && !e.target.closest?.(".hingepop, dialog")) sheet(false);
+  }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && phoneEl.classList.contains("sheet")) sheet(false); });
   // the Accessibility Inspector (axinspect.js): its overlay on the screen, its panel in the side bar
   const axi = window.AXI ? AXI.attach({ id, wrap, side, control, api, h, toast }) : null;
   const stats = h("div", { class: "stats" });
