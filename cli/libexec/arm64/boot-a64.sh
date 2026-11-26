@@ -92,28 +92,50 @@ a64_mtlvk_users() {
 	done
 	echo $n
 }
+# The GPU this boot's mtlvk serves on: MTLVK_DEVICE_ID (the launcher's per-device GPU setting, BootSettings::gpu: auto,
+# cpu, or a GPU's "<deviceUUID>,<vendor>:<device>"; linux/mtlvk/src/gpus.rs), else MTLVK_DEVICE=<n> (the n-th, in the
+# Vulkan loader's order). Each choice has its own mtlvk in this state dir, $ST/mtlvk<key>.{sock,pid,log,gpu} (auto:
+# plain mtlvk.sock, as before), so a phone switched to another GPU never reuses (or stops) the helper other phones
+# still render through on the old one, and phones share a helper only when they want the same GPU.
+a64_gpu_key() {
+	local w=${MTLVK_DEVICE_ID:-auto}
+	if [ "$w" = auto ]; then
+		case ${MTLVK_DEVICE:-} in ''|*[!0-9]*) echo "" ;; *) echo "-i$MTLVK_DEVICE" ;; esac
+		return
+	fi
+	[ "$w" = cpu ] && { echo -cpu; return; }
+	w=${w%%,*}; w=$(printf %s "$w" | tr -cd '0-9a-fA-F:' | tr 'A-F:' 'a-f-'); echo "-${w:0:8}"
+}
+M=$ST/mtlvk$(a64_gpu_key)
+# $1: an mtlvk's base path ($ST/mtlvk<key>)
 a64_mtlvk_live() {
-	local pid
-	pid=$(cat "$ST/mtlvk.pid" 2>/dev/null || true)
-	[ -n "$pid" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = mtlvk ] && [ -S "$ST/mtlvk.sock" ]
+	local pid b=${1:-$M}
+	pid=$(cat "$b.pid" 2>/dev/null || true)
+	[ -n "$pid" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = mtlvk ] && [ -S "$b.sock" ]
 }
 stop_a64_mtlvk() {
-	[ -n "${A64_MTLVK_SOCKET:-}" ] && return 0
-	local old users
-	if a64_mtlvk_live; then
-		users=$(a64_mtlvk_users "$ST/mtlvk.sock")
+	[ -n "${A64_MTLVK_SOCKET:-}" ] && [ -z "${1:-}" ] && return 0
+	local old users b=${1:-$M}
+	if a64_mtlvk_live "$b"; then
+		users=$(a64_mtlvk_users "$b.sock")
 		if [ "$users" -gt 0 ]; then
-			echo "boot-a64: keeping mtlvk (pid $(cat "$ST/mtlvk.pid")): $users other phone(s) render through it" >&2
+			echo "boot-a64: keeping mtlvk (pid $(cat "$b.pid")): $users other phone(s) render through it" >&2
 			return 0
 		fi
 	fi
-	old=$(cat "$ST/mtlvk.pid" 2>/dev/null || true)
+	old=$(cat "$b.pid" 2>/dev/null || true)
 	if [ -n "$old" ] && [ "$(cat "/proc/$old/comm" 2>/dev/null)" = mtlvk ]; then  # not a process that reused its pid
 		kill "$old" 2>/dev/null || true
 		sleep 0.2
 		[ -d "/proc/$old" ] && kill -9 "$old" 2>/dev/null || true
 	fi
-	rm -f "$ST/mtlvk.pid" "$ST/mtlvk.sock"
+	rm -f "$b.pid" "$b.sock" "$b.gpu"
+}
+# a stop: every mtlvk this state dir started (one per GPU it was booted on), each unless another phone uses it
+stop_a64_mtlvks() {
+	local f
+	for f in "$ST"/mtlvk*.pid; do [ -e "$f" ] && stop_a64_mtlvk "${f%.pid}"; done
+	return 0
 }
 if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ]; then
 	# On-disk Metal binary so xpc_bundle can find MTLCompilerService.xpc (see ensure-metal-framework.sh).
@@ -132,23 +154,24 @@ if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ]; then
 	fi
 fi
 if [ -n "$X86SIM_METAL" ] && [ "$X86SIM_METAL" != 0 ] && [ -z "${A64_MTLVK_SOCKET:-}" ]; then
-	export X86SIM_MTLVK_SOCKET=$ST/mtlvk.sock
-	if a64_mtlvk_live && [ "$(a64_mtlvk_users "$ST/mtlvk.sock")" -gt 0 ]; then
-		# another phone renders through this boot's earlier mtlvk: use it too (a fresh one would take theirs down)
-		echo "boot-a64: reusing mtlvk (pid $(cat "$ST/mtlvk.pid")), other phones use it" >&2
+	export X86SIM_MTLVK_SOCKET=$M.sock
+	if a64_mtlvk_live && [ "$(a64_mtlvk_users "$M.sock")" -gt 0 ]; then
+		# another phone renders through this boot's earlier mtlvk (same GPU: same key): use it too (a fresh one would
+		# take theirs down)
+		echo "boot-a64: reusing mtlvk (pid $(cat "$M.pid")), other phones use it" >&2
 	elif stop_a64_mtlvk && [ -x "$MTLVK_BIN" ]; then
 		# started from a subshell that exits at once, so mtlvk is not a child of this script: stop_prefix ends an earlier
 		# boot's script of this device with its children (pkill -P), and while this script ran (its first ~40 s) a stop
 		# or a re-boot of this phone SIGTERMed the mtlvk that other phones had started sharing (their apps then got no
 		# MTLDevice until rebooted)
-		(setsid "$MTLVK_BIN" "$ST/mtlvk.sock" > "$ST/mtlvk.log" 2>&1 < /dev/null & echo $! > "$ST/mtlvk.pid")
-		for i in $(seq 1 50); do [ -S "$ST/mtlvk.sock" ] && break; sleep 0.1; done
+		(setsid "$MTLVK_BIN" "$M.sock" > "$M.log" 2>&1 < /dev/null & echo $! > "$M.pid")
+		for i in $(seq 1 50); do [ -S "$M.sock" ] && break; sleep 0.1; done
 	fi
-	mpid=$(cat "$ST/mtlvk.pid" 2>/dev/null || true)
-	if [ -S "$ST/mtlvk.sock" ] && [ -n "$mpid" ] && [ -d "/proc/$mpid" ]; then
-		echo "boot-a64: mtlvk up (pid $mpid), Metal for: $X86SIM_METAL" >&2
+	mpid=$(cat "$M.pid" 2>/dev/null || true)
+	if [ -S "$M.sock" ] && [ -n "$mpid" ] && [ -d "/proc/$mpid" ]; then
+		echo "boot-a64: mtlvk up (pid $mpid, GPU ${MTLVK_DEVICE_ID:-auto}), Metal for: $X86SIM_METAL" >&2
 	else
-		echo "boot-a64: mtlvk did not start ($MTLVK_BIN, see $ST/mtlvk.log): software rendering" >&2
+		echo "boot-a64: mtlvk did not start ($MTLVK_BIN, see $M.log): software rendering" >&2
 		export X86SIM_METAL=0
 		stop_a64_mtlvk
 	fi
@@ -774,7 +797,7 @@ stop_helpers
 # Speed 10: A64_STOP_ONLY=1 stops this device: the container, and its mtlvk unless another phone renders through it
 # (A64_KEEP_MTLVK=1: the container only -- the launcher's restart keeps the GPU helper, its stop ends it itself)
 if [ "${A64_STOP_ONLY:-0}" = 1 ]; then
-	[ "${A64_KEEP_MTLVK:-0}" = 1 ] || stop_a64_mtlvk
+	[ "${A64_KEEP_MTLVK:-0}" = 1 ] || stop_a64_mtlvks
 	# RAM 15: the frame rings live in /run/user (tmpfs, RAM): a stopped phone's stayed resident (4 frames each, 50 MB
 	# for an iPhone 17, 140 MB for the Duo's two screens) until its next boot replaced them. The next boot makes new ones.
 	R=$(sed -n 's#^SIMFB_RING=/Volumes/SystemRoot##p' "$D/sim.env" 2>/dev/null)
@@ -1126,6 +1149,6 @@ fi
 # A64_KEEP=1: leave the device running (the container outlives the launcher's timeout); else stop this prefix
 if [ "${A64_KEEP:-0}" != 1 ]; then
 	stop_prefix
-	stop_a64_mtlvk
+	stop_a64_mtlvks
 	stop_helpers   # the mDNS server outlived every timed boot (test devices left one each)
 fi
