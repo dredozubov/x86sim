@@ -62,6 +62,7 @@ pub struct Palette {
     pub focus_fill: Color32,   // the keyboard cursor's row
     pub focus_border: Color32,
     pub radius: u8,            // Hyprland's window rounding
+    pub border_w: f32,         // control borders ([controls] normal-border-width)
     pub omarchy: bool,         // following a live Omarchy theme (else the built-in default)
     pub light: bool,
 }
@@ -159,6 +160,7 @@ impl Palette {
             p.hilite_fill = c;
         }
         p.selection = alpha(selection, t.shell_f32("controls", "selection-fill-alpha", 0.85).max(0.35));
+        p.border_w = t.shell_width("controls", "normal-border-width", 1.0).clamp(0.0, 4.0);
         p
     }
 
@@ -221,6 +223,7 @@ impl Palette {
             focus_fill: alpha(a.focus_color.unwrap_or(control), a.focus),
             focus_border: alpha(accent_ink, 0.8),
             radius,
+            border_w: 1.0,
             omarchy,
             light,
         }
@@ -347,6 +350,8 @@ pub fn dialog_title(t: impl Into<String>) -> RichText {
 
 // ---------------------------------------------------------------- applying the theme
 
+/// The `[font] base-size` the window's zoom was last set for.
+static FONT_BASE: Mutex<f32> = Mutex::new(12.0);
 static FONT_PATHS: Mutex<Option<(std::path::PathBuf, Option<std::path::PathBuf>)>> = Mutex::new(None);
 
 /// What Settings > Appearance picked.
@@ -431,6 +436,15 @@ pub fn apply(ctx: &egui::Context) {
     }
     p.omarchy = theme.is_some();
     *PALETTE.write().unwrap() = Some(p);
+    // Omarchy's type size ([font] base-size): the launcher is drawn for 12, so another size scales the whole window
+    // (as Omarchy's scale-with-font does its spacing), on top of any Ctrl +/- zoom
+    let base = theme.as_ref().map_or(12.0, |t| t.font_base());
+    let mut last = FONT_BASE.lock().unwrap();
+    if (base - *last).abs() > 0.01 {
+        ctx.set_zoom_factor(ctx.zoom_factor() * base / *last);
+        *last = base;
+    }
+    drop(last);
     // Omarchy's apps use the system monospace font; without Omarchy the bundled Inter (fonts are reloaded only
     // when the file changed: the theme changes more often)
     let want = theme.as_ref().and_then(|_| omarchy::mono_font());
@@ -558,19 +572,19 @@ fn style(ctx: &egui::Context, p: &Palette) {
         v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.ink_2);
         v.widgets.inactive.bg_fill = p.raised;
         v.widgets.inactive.weak_bg_fill = p.raised;
-        v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, p.border_strong);
+        v.widgets.inactive.bg_stroke = Stroke::new(p.border_w, p.border_strong);
         v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.ink);
         v.widgets.hovered.bg_fill = p.hover;
         v.widgets.hovered.weak_bg_fill = p.hover;
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, alpha(p.accent_ink, 0.7));
+        v.widgets.hovered.bg_stroke = Stroke::new(p.border_w, alpha(p.accent_ink, 0.7));
         v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, p.ink);
         v.widgets.active.bg_fill = p.pressed;
         v.widgets.active.weak_bg_fill = p.pressed;
-        v.widgets.active.bg_stroke = Stroke::new(1.0_f32, p.accent);
+        v.widgets.active.bg_stroke = Stroke::new(p.border_w, p.accent);
         v.widgets.active.fg_stroke = Stroke::new(1.0_f32, p.ink);
         v.widgets.open.bg_fill = p.selected;
         v.widgets.open.weak_bg_fill = p.selected;
-        v.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.border_strong);
+        v.widgets.open.bg_stroke = Stroke::new(p.border_w, p.border_strong);
         v.widgets.open.fg_stroke = Stroke::new(1.0_f32, p.ink);
     });
 }

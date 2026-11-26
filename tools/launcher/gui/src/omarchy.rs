@@ -1,13 +1,13 @@
 //! The live Omarchy theme: colours from `~/.local/state/omarchy/current/theme/colors.toml`, the control language
 //! (fill and border alphas) from `shell.toml` next to it, the window rounding from Hyprland and the system monospace
-//! font from fontconfig. A watcher thread polls the theme's generation file once a second and flags a reload; the
-//! window applies it on its next frame, so a theme switch repaints live. Nothing here writes to Omarchy's files.
+//! font from fontconfig. A watcher thread waits on inotify (share::theme) and flags a reload; the window applies it on
+//! its next frame, so a theme switch repaints live. Nothing here writes to Omarchy's files.
 //! `X86SIM_OMARCHY_THEME_DIR` points the loader at another theme directory (tests: a copy you can edit).
 use eframe::egui::Color32;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 /// Set by the watcher when the theme changed on disk; the window takes it and reloads.
 pub static DIRTY: AtomicBool = AtomicBool::new(false);
@@ -71,6 +71,14 @@ impl Theme {
         let c = self.shell_color(section, key)?;
         let a = self.shell_f32(section, &format!("{key}-alpha"), 1.0);
         Some(Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * a.clamp(0.0, 1.0)).round() as u8))
+    }
+    /// A border width ("N" or a CSS-style list: the first one).
+    pub fn shell_width(&self, section: &str, key: &str, default: f32) -> f32 {
+        self.shell.get(&format!("{section}.{key}")).and_then(|v| v.split_whitespace().next()?.parse().ok()).unwrap_or(default)
+    }
+    /// `[font] base-size`: Omarchy's type scale root (12 by default; the launcher's sizes are drawn for 12).
+    pub fn font_base(&self) -> f32 {
+        self.shell_f32("font", "base-size", 12.0).clamp(6.0, 48.0)
     }
     pub fn is_light(&self) -> bool {
         self.colors.get("mode").is_some_and(|m| m == "light")
@@ -187,50 +195,55 @@ fn fc(args: &[&str]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-fn mtime(p: &Path) -> Option<SystemTime> {
-    std::fs::metadata(p).ok().and_then(|m| m.modified().ok())
-}
-
-/// What a theme or font switch touches: the generation and name files beside the theme, the two files read from it,
-/// and fontconfig's user configuration (omarchy-font-set).
-fn signature() -> Vec<Option<SystemTime>> {
-    let dir = theme_dir();
-    let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
-    let fontconf = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("fontconfig/fonts.conf");
-    vec![mtime(&parent.join("theme.generation")), mtime(&parent.join("theme.name")), mtime(&dir.join("colors.toml")), mtime(&dir.join("shell.toml")), mtime(&fontconf), std::fs::read_link(&dir).ok().map(|_| SystemTime::UNIX_EPOCH), std::fs::canonicalize(&dir).ok().and_then(|p| mtime(&p))]
-}
-
-/// Polls the theme once a second; on a change flags DIRTY and asks for a repaint. A theme switch replaces the files
-/// (and the directory's symlink), so the mtimes are enough and no inotify watch has to be re-armed.
+/// Follows the theme without polling: a thread sleeps in the share server's inotify watch (Omarchy's state dir, the
+/// theme dir and fontconfig's) and flags DIRTY when a switch lands; another reads `gsettings monitor` for the desktop's
+/// light / dark preference (used without an Omarchy theme). Each asks the window for a repaint.
 pub fn watch(ctx: eframe::egui::Context) {
+    let c = ctx.clone();
     std::thread::Builder::new()
         .name("omarchy-theme".into())
         .spawn(move || {
-            let mut last = signature();
-            PREFERS_LIGHT.store(read_prefers_light(), Ordering::Relaxed);
-            let mut tick = 0u32;
+            let mut last = x86sim_core::share::theme::wait_change("", Duration::ZERO);
             loop {
-                std::thread::sleep(Duration::from_secs(1));
-                // the desktop preference: a process per read, so every 3 s, and only without an Omarchy theme
-                tick += 1;
-                if tick % 3 == 0 && !theme_dir().join("colors.toml").exists() {
-                    let l = read_prefers_light();
-                    if PREFERS_LIGHT.swap(l, Ordering::Relaxed) != l {
-                        DIRTY.store(true, Ordering::Release);
-                        ctx.request_repaint();
-                    }
-                }
-                let now = signature();
-                if now != last {
-                    // the switch writes several files in a row: let it finish
-                    std::thread::sleep(Duration::from_millis(150));
-                    last = signature();
+                let g = x86sim_core::share::theme::wait_change(&last, Duration::from_secs(3600));
+                if g != last {
+                    last = g;
                     DIRTY.store(true, Ordering::Release);
-                    ctx.request_repaint();
+                    c.request_repaint();
                 }
             }
         })
         .expect("theme watcher");
+    std::thread::Builder::new()
+        .name("color-scheme".into())
+        .spawn(move || {
+            PREFERS_LIGHT.store(read_prefers_light(), Ordering::Relaxed);
+            // gsettings prints a line per change; it dies with the launcher (PR_SET_PDEATHSIG)
+            use std::io::BufRead;
+            use std::os::unix::process::CommandExt;
+            let mut cmd = std::process::Command::new("gsettings");
+            cmd.args(["monitor", "org.gnome.desktop.interface"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                    Ok(())
+                });
+            }
+            let Ok(mut child) = cmd.spawn() else { return };
+            let Some(out) = child.stdout.take() else { return };
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if !(line.starts_with("color-scheme") || line.starts_with("gtk-theme")) {
+                    continue;
+                }
+                let l = read_prefers_light();
+                if PREFERS_LIGHT.swap(l, Ordering::Relaxed) != l {
+                    DIRTY.store(true, Ordering::Release);
+                    ctx.request_repaint();
+                }
+            }
+            let _ = child.wait();
+        })
+        .expect("colour-scheme watcher");
 }
 
 #[cfg(test)]
