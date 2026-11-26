@@ -638,7 +638,15 @@ pub fn run_installer(mode: Option<&str>, xip: Option<&Path>, repair: bool, say: 
         anyhow::ensure!(x.is_file(), "{} is not a file", x.display());
         c.env("XCODE_XIP", x);
     }
-    stream(c, say)
+    let rc = stream(c, say)?;
+    // the same Xcode's 3D device models (the iPhone Duo's, for the 3D phone): a failure here fails nothing else
+    if let Some(x) = xip.filter(|_| rc == 0) {
+        say("== xcode: 3D device models (extract-devicemodels.py)");
+        if let Err(e) = crate::devicemodel::extract(x, say) {
+            say(&format!("device models: {e:#} (the 3D phone keeps its own model)"));
+        }
+    }
+    Ok(rc)
 }
 
 /// Builds a fresh `xtool new` project for the simulator in the work dir: the whole toolchain end to end

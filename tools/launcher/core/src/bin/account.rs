@@ -22,7 +22,8 @@ const USAGE: &str = "usage: x86sim account <command> [args]
   download-xcode [VERSION] [--list] [--dir DIR] [--no-setup] [--no-devicetypes] [--update-devicetypes] [--delete-xip]
                        download Xcode.xip (default: the dev toolchain's Xcode, its newest release; VERSION: 27.2,
                        27, \"27.3 beta 2\") into DIR (default: your download folder; resumes a .part), check Apple's
-                       signature and checksums, then build the dev SDK from it (x86sim dev setup sdk --xip) and
+                       signature and checksums, then build the dev SDK from it (x86sim dev setup sdk --xip), take
+                       its 3D device models (the iPhone Duo's, for the 3D phone; kept in ~/.local/share/x86sim) and
                        compare its device types with x86Sim's (--update-devicetypes writes cli/lib). The .xip is kept
                        unless --delete-xip. --list: the Xcode releases this account can download.
   verify-xip FILE      check a .xip's signature (Apple's certificate chain) and checksums";

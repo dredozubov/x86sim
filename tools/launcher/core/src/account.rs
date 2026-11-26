@@ -1352,6 +1352,13 @@ pub fn get_xcode(o: &GetXcode, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
             let _ = crate::dev::save_settings(&s);
         }
     }
+    // the 3D device models (when the SDK step didn't take them already)
+    if !o.setup_sdk {
+        say("== xcode: 3D device models (extract-devicemodels.py)");
+        if let Err(e) = crate::devicemodel::extract(&xip, say) {
+            say(&format!("device models: {e:#} (the 3D phone keeps its own model)"));
+        }
+    }
     if o.devicetypes {
         say("== xcode: device types (extract-devicetypes.py)");
         let out = crate::dev::work_dir().join("devicetypes");
