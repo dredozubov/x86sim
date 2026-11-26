@@ -797,6 +797,9 @@ pub struct Status {
     pub signed_in_on: String,
     /// the session still works with Apple (checked live when asked)
     pub session_ok: Option<bool>,
+    /// Apple ended the sign-in (listDownloads' resultCode 1100): signing in again is the only way back, the password
+    /// is never kept (with the password only while two-factor is still skipped: `trusted_until`)
+    pub expired: bool,
     /// developer downloads: "ok", or why not
     pub downloads: String,
     /// signing (xtool): "ok: Apple ID, team T, until D", or why not
@@ -838,8 +841,16 @@ pub fn status(live: bool) -> Result<Status> {
         let http = Http::new(&s.cookies)?;
         // developer.apple.com's download list: what the session is for (App Store Connect's own session, which only
         // gives the name at sign-in, ends within the hour)
-        st.downloads = downloads_state(&http);
-        let ok = st.downloads != "session expired";
+        let d = list_downloads(&http);
+        st.expired = matches!(d, Ok(Listing::Expired));
+        st.downloads = match &d {
+            Ok(Listing::Ok(_)) => "ok".into(),
+            Ok(Listing::Expired) => expired_text(m.trusted_until),
+            Ok(Listing::Refused(c, msg)) => agreement_hint(*c, msg),
+            Ok(Listing::Unexpected(code)) => format!("unexpected answer from developer.apple.com (HTTP {code})"),
+            Err(e) => format!("{e:#}"),
+        };
+        let ok = !st.expired;
         st.session_ok = Some(ok);
         // keep refreshed cookies
         let jar = http.cookies();
@@ -851,28 +862,91 @@ pub fn status(live: bool) -> Result<Status> {
         st.downloads = "not checked (x86sim account status checks it)".into();
     }
     st.renew = match (st.session_ok, m.trusted_until) {
-        (Some(false), t) if t > now() => format!("session expired: sign in again (password only, no code until {})", date(t)),
-        (Some(false), _) => "session expired: sign in again (password and a two-factor code)".into(),
+        (Some(false), t) if t > now() => format!("sign-in expired: sign in again (password only, no code until {})", date(t)),
+        (Some(false), _) => "sign-in expired: sign in again (password and a two-factor code)".into(),
         (_, t) if t > now() => format!("Apple ends web sessions after a while (often a day or so): signing in again then needs the password only, no code until {}", date(t)),
         _ => "Apple ends web sessions after a while (often a day or so): sign in again then".into(),
     };
     Ok(st)
 }
 
-fn downloads_state(http: &Http) -> String {
-    match http.req("POST", LIST_DOWNLOADS, &[("Accept", "application/json"), ("Content-Type", "application/json")], Some(b"{}")) {
-        Ok(r) if r.status == 200 => {
-            let v = r.json();
-            match v.get("resultCode").and_then(|x| x.as_i64()) {
-                Some(0) => "ok".into(),
-                Some(c) => agreement_hint(c, &r.apple_message()),
-                None => format!("unexpected answer from developer.apple.com (HTTP {})", r.status),
-            }
-        }
-        Ok(r) if r.status == 401 || r.status == 403 => "session expired".into(),
-        Ok(r) => format!("developer.apple.com answered HTTP {}", r.status),
-        Err(e) => format!("{e:#}"),
+/// developer.apple.com's answer to listDownloads
+#[derive(Debug)]
+enum Listing {
+    /// resultCode 0: the list (its JSON)
+    Ok(Value),
+    /// the sign-in is over: resultCode 1100 ("Your session has expired. Please log in.", HTTP 200), or HTTP 401/403
+    Expired,
+    /// another resultCode (Apple's message): the developer agreement not accepted yet and the like
+    Refused(i64, String),
+    /// no resultCode: the HTTP status
+    Unexpected(u16),
+}
+
+/// Apple's resultCode for an ended developer.apple.com session
+const RESULT_SESSION_EXPIRED: i64 = 1100;
+
+fn classify(r: &Resp) -> Listing {
+    if r.status == 401 || r.status == 403 {
+        return Listing::Expired;
     }
+    let v = r.json();
+    match v.get("resultCode").and_then(|x| x.as_i64()) {
+        Some(0) => Listing::Ok(v),
+        Some(RESULT_SESSION_EXPIRED) => Listing::Expired,
+        // the same, should Apple renumber it: its own words
+        Some(_) if r.apple_message().to_lowercase().contains("session has expired") => Listing::Expired,
+        Some(c) => Listing::Refused(c, r.apple_message()),
+        None => Listing::Unexpected(r.status),
+    }
+}
+
+fn post_list(http: &Http) -> Result<Listing> {
+    let r = http.req("POST", LIST_DOWNLOADS, &[("Accept", "application/json"), ("Content-Type", "application/json")], Some(b"{}"))?;
+    Ok(classify(&r))
+}
+
+/// listDownloads, renewing developer.apple.com's own session once when it lapsed: its account page hands out a new
+/// one while the Apple sign-in (idmsa's myacinfo) still holds. When that has ended too (the page is the sign-in form)
+/// nothing renews it without the password, which is never kept: Expired.
+fn list_downloads(http: &Http) -> Result<Listing> {
+    let first = post_list(http)?;
+    if !matches!(first, Listing::Expired) {
+        return Ok(first);
+    }
+    let page = http.req_follow("https://developer.apple.com/account/")?;
+    if page.status != 200 || String::from_utf8_lossy(&page.body).contains("widgetKey") {
+        return Ok(Listing::Expired);
+    }
+    post_list(http)
+}
+
+/// The sign-in has ended (Apple does after a while): what a status line or an error says
+fn expired_text(trusted_until: u64) -> String {
+    if trusted_until > now() {
+        format!("{SIGN_IN_EXPIRED}: sign in again (password only, no code until {})", date(trusted_until))
+    } else {
+        format!("{SIGN_IN_EXPIRED}: sign in again (password and a two-factor code)")
+    }
+}
+
+/// How an expired sign-in starts, in status lines and errors (the launcher's Develop page looks for it)
+pub const SIGN_IN_EXPIRED: &str = "Apple Account sign-in expired";
+
+/// The error for an expired sign-in: `x86sim account login`, or Settings > Apple Account in the launcher
+#[derive(Debug)]
+pub struct SessionExpired(pub String);
+
+impl std::fmt::Display for SessionExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (x86sim account login, or Settings > Apple Account in the launcher)", self.0)
+    }
+}
+
+impl std::error::Error for SessionExpired {}
+
+fn session_expired() -> anyhow::Error {
+    anyhow::Error::new(SessionExpired(expired_text(load_meta().map(|m| m.trusted_until).unwrap_or(0))))
 }
 
 fn agreement_hint(code: i64, msg: &str) -> String {
@@ -914,16 +988,12 @@ fn session_http() -> Result<(Session, Http)> {
 }
 
 fn list_with(http: &Http) -> Result<Vec<Release>> {
-    let r = http.req("POST", LIST_DOWNLOADS, &[("Accept", "application/json"), ("Content-Type", "application/json")], Some(b"{}"))?;
-    if r.status == 401 || r.status == 403 {
-        bail!("the Apple Account session has expired: x86sim account login");
-    }
-    let v = r.json();
-    match v.get("resultCode").and_then(|x| x.as_i64()) {
-        Some(0) => {}
-        Some(c) => bail!("{}", agreement_hint(c, &r.apple_message())),
-        None => bail!("unexpected answer from developer.apple.com (HTTP {})", r.status),
-    }
+    let v = match list_downloads(http)? {
+        Listing::Ok(v) => v,
+        Listing::Expired => return Err(session_expired()),
+        Listing::Refused(c, msg) => bail!("{}", agreement_hint(c, &msg)),
+        Listing::Unexpected(code) => bail!("unexpected answer from developer.apple.com (HTTP {code})"),
+    };
     let mut out = vec![];
     for d in v.get("downloads").and_then(|x| x.as_array()).into_iter().flatten() {
         let name = d.get("name").and_then(|x| x.as_str()).unwrap_or("");
@@ -950,8 +1020,18 @@ fn list_with(http: &Http) -> Result<Vec<Release>> {
 
 /// The Xcode releases the account can download, newest first
 pub fn list_xcodes() -> Result<Vec<Release>> {
-    let (_, http) = session_http()?;
-    list_with(&http)
+    let (s, http) = session_http()?;
+    let r = list_with(&http);
+    keep_cookies(s, &http, r.is_ok());
+    r
+}
+
+/// Keeps the cookies a request renewed (developer.apple.com's own session) when it worked
+fn keep_cookies(s: Session, http: &Http, ok: bool) {
+    let jar = http.cookies();
+    if ok && jar != s.cookies {
+        let _ = save(&Session { cookies: jar, ..s });
+    }
 }
 
 /// The release a VERSION (or the pinned major's newest final release) means
@@ -988,6 +1068,7 @@ pub fn download_xcode(version: Option<&str>, dir: &Path, say: &mut dyn FnMut(&st
     let (s, http) = session_http()?;
     say("== xcode: sign-in");
     let all = list_with(&http)?;
+    keep_cookies(s.clone(), &http, true);
     let rel = pick_release(&all, version)?;
     let file = rel.path.rsplit('/').next().unwrap_or("Xcode.xip").to_string();
     std::fs::create_dir_all(dir)?;
@@ -1004,8 +1085,11 @@ pub fn download_xcode(version: Option<&str>, dir: &Path, say: &mut dyn FnMut(&st
         }
         // the download cookie (ADCDownloadAuth) for this file
         let a = http.req("GET", &format!("{DOWNLOAD_AUTH}{}", rel.path), &[], None)?;
+        if download_auth_expired(&a) {
+            return Err(session_expired());
+        }
         if a.status >= 400 {
-            bail!("developer.apple.com refused the download (HTTP {}): sign in again, or accept the agreement at https://developer.apple.com/account", a.status);
+            bail!("developer.apple.com refused the download (HTTP {}): accept the Apple Developer Agreement once at https://developer.apple.com/account, then try again", a.status);
         }
         say("== xcode: download");
         if have > 0 {
@@ -1053,6 +1137,13 @@ pub fn download_xcode(version: Option<&str>, dir: &Path, say: &mut dyn FnMut(&st
     verify_xip(&out, say)?;
     say(&format!("{} verified: signed by Apple", out.display()));
     Ok(out)
+}
+
+/// download.action without a live sign-in: 401/403, or a redirect to the sign-in (idmsa / the account page) instead
+/// of the file, or no ADCDownloadAuth cookie set
+fn download_auth_expired(a: &Resp) -> bool {
+    let loc = a.header("Location").unwrap_or("").to_lowercase();
+    a.status == 401 || a.status == 403 || ((300..400).contains(&a.status) && (loc.contains("idmsa.apple.com") || loc.contains("/signin") || loc.contains("/login")))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1288,4 +1379,55 @@ pub fn get_xcode(o: &GetXcode, say: &mut dyn FnMut(&str)) -> Result<PathBuf> {
     }
     say("== xcode: done");
     Ok(xip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resp(status: u16, body: &str, headers: &[(&str, &str)]) -> Resp {
+        Resp { status, headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), body: body.as_bytes().to_vec() }
+    }
+
+    /// listDownloads.action once the sign-in has ended: HTTP 200, resultCode 1100 and this userString, as Apple
+    /// answered on 2026-11-26 (the fields x86Sim reads)
+    const EXPIRED: &str = r#"{"resultCode":1100,"userString":"Your session has expired. Please log in."}"#;
+
+    #[test]
+    fn expired_session_is_not_the_agreement() {
+        assert!(matches!(classify(&resp(200, EXPIRED, &[])), Listing::Expired));
+        assert!(matches!(classify(&resp(401, "", &[])), Listing::Expired));
+        assert!(matches!(classify(&resp(403, "{}", &[])), Listing::Expired));
+        // renumbered, same words
+        assert!(matches!(classify(&resp(200, &EXPIRED.replace("1100", "1199"), &[])), Listing::Expired));
+    }
+
+    #[test]
+    fn other_answers() {
+        assert!(matches!(classify(&resp(200, r#"{"resultCode":0,"downloads":[]}"#, &[])), Listing::Ok(_)));
+        match classify(&resp(200, r#"{"resultCode":2170,"userString":"Accept the agreement."}"#, &[])) {
+            Listing::Refused(c, m) => {
+                assert_eq!(c, 2170);
+                assert_eq!(m, "Accept the agreement.");
+            }
+            l => panic!("{l:?}"),
+        }
+        assert!(matches!(classify(&resp(502, "<html>", &[])), Listing::Unexpected(502)));
+    }
+
+    #[test]
+    fn download_auth_without_a_sign_in() {
+        assert!(download_auth_expired(&resp(302, "", &[("Location", "https://idmsa.apple.com/IDMSWebAuth/signin?appIdKey=x")])));
+        assert!(download_auth_expired(&resp(403, "", &[])));
+        assert!(!download_auth_expired(&resp(302, "", &[("Location", "https://download.developer.apple.com/Developer_Tools/Xcode_27.2/Xcode_27.2.xip")])));
+        assert!(!download_auth_expired(&resp(200, "", &[])));
+    }
+
+    #[test]
+    fn expired_text_says_what_to_do() {
+        let t = expired_text(now() + 86400 * 10);
+        assert!(t.starts_with(SIGN_IN_EXPIRED) && t.contains("password only"));
+        assert!(expired_text(0).contains("two-factor code"));
+        assert!(!format!("{}", SessionExpired(expired_text(0))).contains("agreement"));
+    }
 }

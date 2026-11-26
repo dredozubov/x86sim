@@ -256,6 +256,7 @@ impl App {
         if let Some(j) = &job {
             ui.add_space(S3);
             let mut cancel = false;
+            let mut go_account = false;
             list_card(ui, |ui| {
                 let title = match (j.running, j.rc) {
                     (true, _) => format!("Installing: {}", j.kind),
@@ -264,9 +265,14 @@ impl App {
                 };
                 let last = j.last.trim_matches(|c| c == '=' || c == ' ').to_string();
                 let detail = if j.step.is_empty() || j.step == last { last } else { format!("{} · {last}", j.step) };
+                // Download Xcode stopped on an expired Apple sign-in: the way back is Settings > Apple Account
+                let expired = !j.running && j.last.contains(x86sim_core::account::SIGN_IN_EXPIRED);
                 list_row(ui, if j.running { icon::HOURGLASS } else { icon::TERMINAL_WINDOW }, &title, &detail, |ui| {
                     if j.running {
                         cancel = ui.add(Btn::secondary("Cancel")).clicked();
+                    }
+                    if expired && ui.add(Btn::primary("Sign in again").icon(icon::SIGN_IN)).on_hover_text("Settings > Apple Account").clicked() {
+                        go_account = true;
                     }
                     let t = if self.develop.show_job_log { "Hide log" } else { "Show log" };
                     if ui.add(Btn::ghost(t).small()).clicked() {
@@ -286,6 +292,9 @@ impl App {
                     });
                 }
             });
+            if go_account {
+                self.view = crate::View::Settings;
+            }
             if cancel {
                 if let Err(e) = dev::cancel_job() {
                     self.say(format!("{e:#}"));

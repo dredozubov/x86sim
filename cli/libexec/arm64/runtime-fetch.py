@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """x86Sim (Speed 22): simulator runtimes straight from Apple, no Mac and no Apple ID.
 
-    runtime-fetch.py list [ios|tvos|watchos|all]   27.x runtimes in Apple's catalogue (the one Xcode reads); default ios
+    runtime-fetch.py list [ios|tvos|watchos|all] [json]   27.x runtimes in Apple's catalogue (the one Xcode reads);
+                                          default ios; json: one object per runtime with its beta flag and, for a
+                                          build made for particular devices, the general build it stands beside
     runtime-fetch.py url BUILD            the runtime's download URL (from gdmf.apple.com, as Xcode asks for it)
     runtime-fetch.py fetch BUILD          download into runtimes/<platform>-<ver>-<build>-arm64/ (ios-, tvos-, watchos-),
                                           decrypt, unpack, RuntimeRoot
@@ -43,10 +45,30 @@ PLATFORMS = {
 }
 
 
-def catalogue(platforms=("ios",)):
-    """(version, build, name, size, archs, platform key) of the arm64 27.x runtimes of these platforms."""
+def index():
     with urllib.request.urlopen(INDEX) as r:
-        d = plistlib.loads(r.read())
+        return plistlib.loads(r.read())
+
+
+def alt_of(d):
+    """build -> the general build it is an alternative to. Apple's sdkToSimulatorMappings group the runtimes an SDK
+    can use (groupTag); the one Xcode picks by default has "affinity": "preferred", the others in the group are builds
+    for particular devices (iOS 27.2 24B91016s, the iPhone Duo's, beside 24B8117)."""
+    pref, out = {}, {}
+    maps = d.get("sdkToSimulatorMappings", [])
+    for m in maps:
+        if m.get("affinity") == "preferred" and m.get("groupTag", "none") != "none":
+            pref[m["groupTag"]] = m["simulatorBuildUpdate"]
+    for m in maps:
+        g, b = m.get("groupTag", "none"), m["simulatorBuildUpdate"]
+        if g in pref and pref[g] != b and m.get("affinity") != "preferred":
+            out[b] = pref[g]
+    return out
+
+
+def catalogue(platforms=("ios",), d=None):
+    """(version, build, name, size, archs, platform key) of the arm64 27.x runtimes of these platforms."""
+    d = d or index()
     out = []
     for x in d.get("downloadables", []):
         v = x.get("simulatorVersion", {})
@@ -154,13 +176,25 @@ def fetch(build):
 def main():
     a = sys.argv[1:] or ["list"]
     if a[0] == "list":
-        which = a[1] if len(a) > 1 else "ios"
+        as_json = "json" in a[1:]
+        rest = [x for x in a[1:] if x != "json"]
+        which = rest[0] if rest else "ios"
         if which != "all" and which not in PLATFORMS:
             sys.exit(f"runtime-fetch: platform {which}: one of {', '.join(PLATFORMS)} or all")
-        for v, b, name, size, arch, key in catalogue(tuple(PLATFORMS) if which == "all" else (which,)):
+        d = index()
+        alts = alt_of(d)
+        rows = []
+        for v, b, name, size, arch, key in catalogue(tuple(PLATFORMS) if which == "all" else (which,), d):
             have = os.path.isdir(os.path.join(ROOT, "runtimes", f"{key}-{v}-{b}-arm64", "RuntimeRoot"))
-            mark = "  (downloaded)" if have else ""
-            print(f"{b:12} {name:42} {size / 1e9:4.1f} GB{mark}")
+            if as_json:
+                rows.append({"version": v, "build": b, "name": name, "gb": round(size / 1e9, 1), "platform": key,
+                             "beta": "beta" in name or "Release Candidate" in name, "alt_of": alts.get(b, ""),
+                             "downloaded": have})
+            else:
+                mark = "  (downloaded)" if have else ""
+                print(f"{b:12} {name:42} {size / 1e9:4.1f} GB{mark}")
+        if as_json:
+            print(json.dumps(rows, indent=1))
     elif a[0] == "url" and len(a) > 1:
         v, x, _ = asset(a[1])
         print(x["__BaseURL"] + x["__RelativePath"])

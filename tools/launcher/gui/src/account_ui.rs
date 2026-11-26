@@ -221,16 +221,26 @@ impl App {
                         if s.store == "keyring" { "Secret Service keyring" } else { "0600 file in ~/.config/x86sim" },
                         match s.session_ok {
                             Some(true) => ", works",
-                            Some(false) => ", expired: sign in again",
+                            Some(false) if s.expired => "; Apple has ended it since",
+                            Some(false) => ", doesn't work",
                             None => "",
                         }
                     );
-                    list_row(ui, icon::USER_CIRCLE_CHECK, &who, &detail, |ui| {
+                    list_row(ui, if s.expired { icon::USER_CIRCLE } else { icon::USER_CIRCLE_CHECK }, &who, &detail, |ui| {
                         sign_out = ui.add(Btn::secondary("Sign out")).on_hover_text("Forget the session (xtool's sign-in stays: x86sim account logout signs it out too)").clicked();
+                        if s.expired {
+                            ui.add_space(S2);
+                            badge(ui, "Expired", pal().warn);
+                        }
                     });
                     hline(ui);
+                    let (dl_badge, dl_col) = match s.downloads.as_str() {
+                        "ok" => ("Ready", pal().good),
+                        _ if s.expired => ("Expired", pal().warn),
+                        _ => ("Check", pal().warn),
+                    };
                     list_row(ui, icon::DOWNLOAD_SIMPLE, "Developer downloads", &s.downloads, |ui| {
-                        badge(ui, if s.downloads == "ok" { "Ready" } else { "Check" }, if s.downloads == "ok" { pal().good } else { pal().warn });
+                        badge(ui, dl_badge, dl_col);
                     });
                     hline(ui);
                     let sign_ok = s.signing.starts_with("ok");
@@ -250,6 +260,17 @@ impl App {
                 if signed_in {
                     hline(ui);
                 }
+                // the session can't be renewed without the password (never kept): say so, the form is right here
+                if let (true, Some(Ok(s))) = (expired, &st) {
+                    egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 4 }).show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = S2;
+                            ui.label(egui::RichText::new(icon::WARNING_CIRCLE).family(icons()).size(14.0).color(pal().warn));
+                            let code = if s.trusted_until.is_empty() { "password and a two-factor code".to_string() } else { format!("password only, no code until {}", s.trusted_until) };
+                            ui.add(egui::Label::new(body(format!("Apple ended this sign-in, as it does after a while. Sign in again to download Xcode ({code})."))).wrap());
+                        });
+                    });
+                }
                 form_row(ui, "Apple ID", "Any Apple ID (free) works for Xcode downloads; signing for devices needs it too.", false, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.account.apple_id).hint_text("you@example.com").desired_width(260.0));
                 });
@@ -267,7 +288,7 @@ impl App {
                     if signed_in && !expired && ui.add_enabled(ok, Btn::secondary("Sign in xtool only")).clicked() {
                         start = Some(true);
                     }
-                    if ui.add_enabled(ok, Btn::primary("Sign in").icon(icon::SIGN_IN)).clicked() {
+                    if ui.add_enabled(ok, Btn::primary(if expired { "Sign in again" } else { "Sign in" }).icon(icon::SIGN_IN)).clicked() {
                         start = Some(false);
                     }
                 });

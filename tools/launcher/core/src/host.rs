@@ -22,6 +22,8 @@ pub struct Runtime {
     pub jc: PathBuf,
     /// Models 2: model ids this runtime is limited to (empty: any), see sim::runtime_restricted_to
     pub restricted_to: Vec<String>,
+    /// model ids its profile lists as unsupported (iOS 27.2 24B8117: the iPhone Duo, which has a build of its own)
+    pub unsupported: Vec<String>,
 }
 
 impl Runtime {
@@ -41,7 +43,7 @@ pub fn runtimes() -> Vec<Runtime> {
             let (platform, version, build) = crate::sim::parse_runtime_dir(&dir)?;
             let root = e.path().join("RuntimeRoot");
             let present = crate::dyldcache::Cache::cache_dir(&root).join(crate::dyldcache::CACHE_NAME).exists();
-            Some(Runtime { jc: crate::sim::jc_for(&root), platform: platform.to_string(), version, build, restricted_to: crate::sim::runtime_restricted_to(&root), dir, root, present, partial: !present })
+            Some(Runtime { jc: crate::sim::jc_for(&root), platform: platform.to_string(), version, build, restricted_to: crate::sim::runtime_restricted_to(&root), unsupported: crate::sim::runtime_unsupported(&root), dir, root, present, partial: !present })
         })
         .collect();
     // within a version a runtime limited to some models (the iPhone Duo's 27.2 build) after the general one
@@ -60,39 +62,46 @@ pub struct Catalogue {
     /// Platforms 1: "ios", "tvos" or "watchos" (from the name: "tvOS 27.2 Simulator Runtime"); absent in older caches
     #[serde(default = "ios")]
     pub platform: String,
+    /// a beta or release candidate (its name says so)
+    #[serde(default)]
+    pub beta: bool,
+    /// a build for particular devices: the general build of the same release it stands beside (Apple's
+    /// sdkToSimulatorMappings, runtime-fetch.py alt_of), as iOS 27.2 24B91016s (iPhone Duo) beside 24B8117; empty for
+    /// a general build. Which devices it is for is in the runtime's own profile, so known once downloaded (or from the
+    /// general build's unsupported list, when that one is here).
+    #[serde(default)]
+    pub alt_of: String,
 }
 
 fn ios() -> String {
     "ios".into()
 }
 
-/// Apple's catalogue (network; `x86sim runtime list all`: iOS, tvOS and watchOS), cached in scratch
+impl Catalogue {
+    /// "iOS 27.2", "iOS 27.3 beta 2", "iOS 27.2 RC"
+    pub fn title(&self) -> String {
+        let short = self.name.trim_end_matches(" Simulator Runtime").trim().replace("Release Candidate", "RC");
+        if !short.is_empty() {
+            short
+        } else if self.version.is_empty() {
+            self.build.clone()
+        } else {
+            format!("{} {}", crate::sim::platform_name(&self.platform), self.version)
+        }
+    }
+}
+
+/// Apple's catalogue (network; `x86sim runtime list all json`: every platform), cached in scratch
 pub fn catalogue(refresh: bool) -> Vec<Catalogue> {
-    // Platforms 1: a new file name, so a cache of the iOS-only list is not taken for the whole catalogue
-    let cache = scratch().join("launcher-runtimes-all.json");
+    // a new file name for each new shape, so an older cache (iOS only; no beta / alt_of) is not taken for this one
+    let cache = scratch().join("launcher-runtimes-all-2.json");
     if !refresh {
         if let Some(v) = std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
             return v;
         }
     }
-    let out = Command::new(repo_root().join("cli/x86sim")).args(["runtime", "list", "all"]).stdin(Stdio::null()).output();
-    let mut v = vec![];
-    if let Ok(o) = out {
-        for l in String::from_utf8_lossy(&o.stdout).lines() {
-            // "{build:12} {name:42} {size:4.1f} GB{mark}"
-            let f: Vec<&str> = l.split_whitespace().collect();
-            if f.len() < 4 {
-                continue;
-            }
-            let build = f[0].to_string();
-            let gb_i = f.iter().position(|x| *x == "GB").unwrap_or(f.len());
-            let gb = gb_i.checked_sub(1).and_then(|i| f.get(i)).and_then(|x| x.parse().ok()).unwrap_or(0.0);
-            let name = f[1..gb_i.saturating_sub(1)].join(" ");
-            let version = name.split_whitespace().find(|w| w.starts_with("27")).unwrap_or("").to_string();
-            let platform = if name.starts_with("tvOS") { "tvos" } else if name.starts_with("watchOS") { "watchos" } else if name.starts_with("visionOS") { "xros" } else { "ios" }.to_string();
-            v.push(Catalogue { version, build, name, gb, platform });
-        }
-    }
+    let out = Command::new(repo_root().join("cli/x86sim")).args(["runtime", "list", "all", "json"]).stdin(Stdio::null()).output();
+    let v: Vec<Catalogue> = out.ok().and_then(|o| serde_json::from_slice(&o.stdout).ok()).unwrap_or_default();
     if !v.is_empty() {
         let _ = crate::aot::write_json(&cache, &v);
     }
