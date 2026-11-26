@@ -217,7 +217,17 @@ impl App {
                 } else {
                     // the Accessibility Inspector (axinspect_ui.rs): touches pause while it inspects, its outlines on top
                     let ax_on = live && crate::axinspect_ui::is_on(&ctx, id);
-                    let r = self.viewer(id).map(|v| v.show(ui, avail, live, placeholder, !ax_on, viewer::FULL));
+                    // Models 2: a two-screen phone's tools stay at the pane's right edge (as over its 3D model, which
+                    // turns and zooms in the whole pane): the flat screen centres in the room left of them
+                    let r = if inst.inner.is_some() {
+                        ui.allocate_ui_with_layout(avail, egui::Layout::top_down(egui::Align::Center), |ui| {
+                            ui.set_min_width(avail.x);
+                            self.viewer(id).map(|v| v.show(ui, avail, live, placeholder, !ax_on, viewer::FULL))
+                        })
+                        .inner
+                    } else {
+                        self.viewer(id).map(|v| v.show(ui, avail, live, placeholder, !ax_on, viewer::FULL))
+                    };
                     if let (true, Some(r)) = (live, r) {
                         crate::axinspect_ui::overlay(ui, &inst, r.shrink(10.0));
                     }
