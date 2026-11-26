@@ -254,6 +254,10 @@ int guest_fault_now(GuestThread &t, int sig, int code, u64 addr, u64 pc, uint32_
     FaultCall f{&t, sig, false, !(here < irsp && irsp - here < (1u << 20))};
     if (f.switched) a64_call_on_stack(fault_call, &f, (void *)((irsp - 256) & ~15ull));
     else fault_call(&f);
+    // rare, and what a crash or a runtime's fault handling (NullReferenceException) went through: one line each
+    logf("guest signal %d (code %d) at pc %#lx addr %#lx%s: handler %s%s", sig, code, (unsigned long)pc, (unsigned long)addr,
+         in_jit ? "" : " (not translated code)", f.changed ? "changed the context, resuming at pc " : "returned, retrying",
+         f.changed ? where(t.jit->GetPC()).c_str() : "");
     return f.changed ? 2 : 1;
 }
 
