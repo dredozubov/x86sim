@@ -1,10 +1,9 @@
 "use strict";
-// The iPhone Duo in 3D on the web page, as the launcher draws it (gui/src/duo3d.rs, duo3d/mesh.rs, duo3d/gpu.rs, ported
-// here): Apple's own model when the server has it (/devicemodel/duo: Xcode's, from the user's own Xcode.xip, never
-// public; core devicemodel.rs), skinned on the GPU with its materials, else the procedural one: two rounded halves on
-// a hinge spine (shaped after Apple's: halves of different thickness, cameras, buttons). The inner screen is one panel across both fronts, the outer screen on the back of the left half, each
-// the phone's live picture (the socket's two streams: kind 1 / 2 the inner screen,
-// 17 / 18 the outer one). The right half turns about the hinge by 180 - angle; the device orientation turns the whole
+// The iPhone Duo in 3D on the web page, as the launcher draws it (gui/src/duo3d.rs, duo3d/gpu.rs, ported here):
+// Apple's own model (/devicemodel/duo: Xcode's, from the user's own Xcode.xip, never public; core devicemodel.rs),
+// skinned on the GPU with its materials. Without it the page shows the phone flat (app.js). The inner screen is one
+// panel across both fronts, the outer screen on the back of the left half, each the phone's live picture (the
+// socket's two streams: kind 1 / 2 the inner screen, 17 / 18 the outer one). The right half turns about the hinge by 180 - angle; the device orientation turns the whole
 // phone. Touches on the drawn screens are traced back through the camera onto the screen under them (DuoMap) and go
 // to the phone as {s: "inner" | "outer", x, y} on that screen's picture. WebGL2, no library.
 //
@@ -12,187 +11,19 @@
 // right button / Alt (or off the screens, or a touchpad pinch) zooms, a double right click resets. Fingers: a gesture
 // that starts off the screens turns (one finger) or zooms (two); a double tap with two fingers there resets.
 (function () {
-  // ---- geometry (mesh.rs): sizes in inner-screen pixels
-  const INNER = [2853, 2007], OUTER = [1398, 2034];
-  const BEZEL = 46, THICK_L = 95, THICK_R = 158, CORNER = 200, FILLET = 13, HINGE_CORNER = 0.5, AXIS_Z = 4.7;
-  // measured from Apple's model (mesh.rs): the spine bar (section, half length; its middle at 0, 22.5 .. 180
-  // degrees), the camera plateau (x, y ranges, top), the towers on it (x, y, radius, lens radius) and their top, the flash, the microphone, the outer
-  // screen's camera hole, the side buttons (y from, to; depth, half height, standing out), speaker and microphone holes
-  const SPINE = [148, 53, 1043];
-  const SPINE_AT = [[20.6, 4.7], [20.3, 0.7], [19.1, -3.2], [17.2, -6.8], [14.7, -9.9], [15.0, -18.1], [14.1, -29.4], [8.9, -39.8], [0.0, -44.3]];
-  const PLATEAU = [520, 1440, 600, 990, 182], CAMS = [[893, 788, 147, 70], [1214, 788, 147, 95]], CAM_TOP = 197, FLASH = [592, 708, 36], MIC = [591, 866, 14], HOLE = [1297, 871, 32];
-  const BUTTONS = [[-623, -322], [124, 454]], BUTTON_Z = [-45, 20, 8];
-  const SPEAKER = [290, 330, 371, 412, 1070, 1111, 1152, 1192], MICS = [620, 717, 766, 861];
+  // ---- the phone's space (duo3d/geom.rs): sizes in inner-screen pixels
+  const INNER = [2853, 2007], OUTER = [1398, 2034], BEZEL = 46;
   const HALF_W = INNER[0] / 2 + BEZEL, HALF_H = OUTER[1] + 2 * BEZEL;
-  const ALU = 0, BACK = 1, FRONT = 2, INNER_SCREEN = 3, OUTER_SCREEN = 4, HINGE = 5, DARK = 6;
   // SPEED: at most this many degrees a second; HINGE_RATE: how fast the drawn hinge closes on its target (an eased
   // follow, so a slider's step every 40 ms draws one smooth sweep, not a dash and a stop per step)
   const SPEED = 300, SETTLE = 7, HINGE_RATE = 14;
   const rad = (d) => d * Math.PI / 180;
-  const v3 = (x, y, z) => [x, y, z];
   const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-  const scale = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
-  const norm = (a) => { const l = Math.max(Math.hypot(a[0], a[1], a[2]), 1e-9); return [a[0] / l, a[1] / l, a[2] / l]; };
   function rotX(p, a) { const s = Math.sin(a), c = Math.cos(a); return [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c]; }
   function rotY(p, a) { const s = Math.sin(a), c = Math.cos(a); return [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c]; }
   function rotZ(p, a) { const s = Math.sin(a), c = Math.cos(a); return [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]]; }
 
-  // vertices: position, normal, uv, material (9 floats); the screens come after `body` indices
-  class Mesh {
-    constructor() { this.v = []; this.i = []; this.n = 0; this.body = 0; }
-    vert(p, n, uv, m) { this.v.push(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1], m); return this.n++; }
-    quad(a, b, c, d) { this.i.push(a, b, c, a, c, d); }
-  }
-  // a part's placement (mesh.rs Place): columns c, translation t; normals take the columns alone
-  function place(c, t) {
-    const n = (v) => add(add(scale(c[0], v[0]), scale(c[1], v[1])), scale(c[2], v[2]));
-    const P = { c, t, n, p: (v) => add(n(v), t) };
-    P.of = (q) => place([n(q.c[0]), n(q.c[1]), n(q.c[2])], P.p(q.t));
-    return P;
-  }
-  const LEFT = place([[-1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, 0]);
-  function RIGHT(phi) { const a = [0, 0, AXIS_Z]; return place([rotY([1, 0, 0], phi), [0, 1, 0], rotY([0, 0, 1], phi)], sub(a, rotY(a, phi))); }
-
-  // a rounded rectangle's outline with outward normals, counter-clockwise; radii: bottom right, top right, top left, bottom left
-  function outline(x0, x1, y0, y1, r, seg) {
-    const corners = [[x1 - r[0], y0 + r[0], -90], [x1 - r[1], y1 - r[1], 0], [x0 + r[2], y1 - r[2], 90], [x0 + r[3], y0 + r[3], 180]];
-    const pts = [];
-    corners.forEach(([cx, cy, a0], i) => {
-      for (let k = 0; k <= seg; k++) {
-        const a = rad(a0 + 90 * k / seg);
-        pts.push([cx + r[i] * Math.cos(a), cy + r[i] * Math.sin(a), Math.cos(a), Math.sin(a)]);
-      }
-    });
-    return pts;
-  }
-
-  // a slab with filleted edges: side, front cap and back cap materials
-  function slab(m, at, [x0, x1, y0, y1], r, [zf, zb], e, mats, seg) {
-    const line = outline(x0, x1, y0, y1, r, seg);
-    const prof = [];
-    const k = 5;
-    for (let j = 0; j <= k; j++) prof.push([rad(90 - 90 * j / k), zf - e]);
-    for (let j = 0; j <= k; j++) prof.push([rad(-90 * j / k), zb + e]);
-    const base = m.n, np = prof.length;
-    for (const [px, py, nx, ny] of line) {
-      for (const [t, cz] of prof) {
-        const ct = Math.cos(t), st = Math.sin(t), d = e * (ct - 1);
-        m.vert(at.p([px + nx * d, py + ny * d, cz + e * st]), at.n([nx * ct, ny * ct, st]), [0, 0], mats[0]);
-      }
-    }
-    const nl = line.length;
-    for (let i = 0; i < nl; i++) {
-      const i2 = (i + 1) % nl;
-      for (let j = 0; j < np - 1; j++) m.quad(base + i * np + j, base + i2 * np + j, base + i2 * np + j + 1, base + i * np + j + 1);
-    }
-    for (const [z, nz, mat] of [[zf, 1, mats[1]], [zb, -1, mats[2]]]) {
-      const n = at.n([0, 0, nz]);
-      const c = m.vert(at.p([(x0 + x1) / 2, (y0 + y1) / 2, z]), n, [0, 0], mat);
-      const first = m.n;
-      for (const [px, py, nx, ny] of line) m.vert(at.p([px - nx * e, py - ny * e, z]), n, [0, 0], mat);
-      for (let i = 0; i < nl; i++) m.i.push(c, first + i, first + (i + 1) % nl);
-    }
-  }
-
-  function roundIn(x, y, x0, x1, y0, y1, r) {
-    let cx, cy;
-    if (x < x0 + r) cx = x0 + r; else if (x > x1 - r) cx = x1 - r; else return [x, y];
-    if (y < y0 + r) cy = y0 + r; else if (y > y1 - r) cy = y1 - r; else return [x, y];
-    const dx = x - cx, dy = y - cy, d = Math.hypot(dx, dy);
-    return d > r ? [cx + dx / d * r, cy + dy / d * r] : [x, y];
-  }
-
-  function screen(m, [x0, x1, y0, y1], r, [nx, ny], mat, at, uv) {
-    const base = m.n;
-    for (let j = 0; j <= ny; j++) {
-      for (let i = 0; i <= nx; i++) {
-        const [x, y] = roundIn(x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny, x0, x1, y0, y1, r);
-        const [p, n] = at(x, y);
-        m.vert(p, n, uv(x, y), mat);
-      }
-    }
-    const a = (i, j) => base + j * (nx + 1) + i;
-    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) m.quad(a(i, j), a(i + 1, j), a(i + 1, j + 1), a(i, j + 1));
-  }
-
-  // a flat disc in a placement's local z = 0 plane, facing +z
-  function disc(m, at, [cx, cy, r], mat, seg) {
-    const n = at.n([0, 0, 1]), c = m.vert(at.p([cx, cy, 0]), n, [0, 0], mat), first = m.n;
-    for (let k = 0; k <= seg; k++) { const a = 2 * Math.PI * k / seg; m.vert(at.p([cx + r * Math.cos(a), cy + r * Math.sin(a), 0]), n, [0, 0], mat); }
-    for (let k = 0; k < seg; k++) m.i.push(c, first + k, first + k + 1);
-  }
-  // a round tower standing on a half's back (z0) out to z1: its side, a black glass cap and a darker lens
-  function tower(m, at, [cx, cy, r, lens], z0, z1, seg) {
-    const base = m.n;
-    for (let k = 0; k <= seg; k++) {
-      const a = 2 * Math.PI * k / seg, n = at.n([Math.cos(a), Math.sin(a), 0]);
-      for (const z of [z0, z1]) m.vert(at.p([cx + r * Math.cos(a), cy + r * Math.sin(a), z]), n, [0, 0], HINGE);
-    }
-    for (let k = 0; k < seg; k++) m.quad(base + 2 * k, base + 2 * k + 2, base + 2 * k + 3, base + 2 * k + 1);
-    disc(m, at.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, z1])), [cx, -cy, r - 10], FRONT, seg);
-    disc(m, at.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, z1 - 0.8])), [cx, -cy, lens], DARK, seg);
-  }
-  // the spine bar: a stadium turned by phi / 2, its middle on the measured path
-  function spine(m, phi) {
-    const deg = Math.min(180, Math.max(0, 180 - phi * 180 / Math.PI)), f = deg / 22.5;
-    const i = Math.min(7, Math.floor(f)), t = f - Math.min(7, Math.floor(f)), a = SPINE_AT[i], b = SPINE_AT[Math.min(i + 1, 8)];
-    let c = [a[0] + (b[0] - a[0]) * t, 0, a[1] + (b[1] - a[1]) * t];
-    const u = rotY([1, 0, 0], phi / 2), v = rotY([0, 0, 1], phi / 2), [w, h, len] = SPINE, rr = h / 2 - 0.01;
-    // kept behind the crease (Apple's bent panel covers it; the crease here is sharp)
-    const dot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
-    const inside = [-Math.sin(phi / 2), 0, Math.cos(phi / 2)], crease = scale(RIGHT(phi).p([0, 0, 0]), 0.5);
-    const reach = dot(c, inside) + w / 2 * Math.abs(dot(u, inside)) + h / 2 * Math.abs(dot(v, inside));
-    c = sub(c, scale(inside, Math.max(0, reach - dot(crease, inside) + 2)));
-    const at = place([u, v, [0, -1, 0]], c);
-    slab(m, at, [-w / 2, w / 2, -h / 2, h / 2], [rr, rr, rr, rr], [len, -len], 1.5, [HINGE, HINGE, HINGE], 6);
-  }
-
-  // the phone at hinge angle `deg` (0 closed .. 180 flat)
-  function build(deg) {
-    const phi = rad(180 - deg), w = HALF_W, hh = HALF_H, m = new Mesh();
-    const radii = [CORNER, CORNER, HINGE_CORNER, HINGE_CORNER], left = LEFT, right = RIGHT(phi);
-    slab(m, left, [0, w, -hh / 2, hh / 2], radii, [0, -THICK_L], FILLET, [ALU, FRONT, FRONT], 10);
-    slab(m, right, [0, w, -hh / 2, hh / 2], radii, [0, -THICK_R], FILLET, [ALU, FRONT, BACK], 10);
-    spine(m, phi);
-    const [px0, px1, py0, py1, ptop] = PLATEAU, pr = (py1 - py0) / 2 - 0.01;
-    slab(m, right, [px0, px1, py0, py1], [pr, pr, pr, pr], [-THICK_R + 1, -ptop], 8, [BACK, BACK, BACK], 12);
-    for (const cam of CAMS) tower(m, right, cam, -ptop + 1, -CAM_TOP, 40);
-    const backR = right.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, -ptop - 0.6]));
-    disc(m, backR, [FLASH[0], -FLASH[1], FLASH[2]], ALU, 20);
-    disc(m, backR, [MIC[0], -MIC[1], MIC[2]], DARK, 12);
-    for (const [y0, y1] of BUTTONS) {
-      const at = right.of(place([[0, 1, 0], [0, 0, 1], [1, 0, 0]], [w - 2, 0, 0])), [zc, hz, out] = BUTTON_Z, rb = hz - 0.01;
-      slab(m, at, [y0, y1, zc - hz, zc + hz], [rb, rb, rb, rb], [out + 2, 0], 2, [ALU, ALU, ALU], 6);
-    }
-    const bottom = right.of(place([[1, 0, 0], [0, 0, 1], [0, -1, 0]], [0, -hh / 2 - 0.6, 0]));
-    for (const x of SPEAKER) disc(m, bottom, [x, -46, 11], DARK, 10);
-    const top = left.of(place([[1, 0, 0], [0, 0, -1], [0, 1, 0]], [0, hh / 2 + 0.6, 0]));
-    for (const x of MICS) disc(m, top, [x, 46, 9], DARK, 10);
-    const backL = left.of(place([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0, 0, -THICK_L - 1.2]));
-    disc(m, backL, [HOLE[0], -HOLE[1], HOLE[2]], DARK, 24);
-    m.body = m.i.length;
-    const [sw, sh] = INNER, r = CORNER - BEZEL, z = [0, 0, 1], zr = right.n(z), zs = add(z, zr);
-    // closed, the two fronts face each other: the crease faces out of the fold
-    const creaseN = zs[0] * zs[0] + zs[1] * zs[1] + zs[2] * zs[2] < 1e-6 ? [1, 0, 0] : norm(zs);
-    screen(m, [-sw / 2, sw / 2, -sh / 2, sh / 2], r, [40, 28], INNER_SCREEN, (x, y) =>
-      x < -0.01 ? [[x, y, 0], z] : x > 0.01 ? [right.p([x, y, 0]), zr] : [scale(add([0, y, 0], right.p([0, y, 0])), 0.5), creaseN],
-    (x, y) => [(x + sw / 2) / sw, (sh / 2 - y) / sh]);
-    // the outer screen on the left half's back (its own x runs out from the hinge: seen from behind, left to right)
-    const [ow, oh] = OUTER, ox0 = w / 2 - ow / 2;
-    screen(m, [ox0, ox0 + ow, -oh / 2, oh / 2], r, [20, 28], OUTER_SCREEN, (x, y) => [left.p([x, y, -THICK_L]), [0, 0, -1]], (x, y) => [(x - ox0) / ow, (oh / 2 - y) / oh]);
-    return { v: new Float32Array(m.v), i: new Uint32Array(m.i), body: m.body, n: m.n };
-  }
-  // its touch surfaces: the body hides, the screens are touched (uv: the picture point with y up, as a model's st)
-  function hitMeshOf(mesh) {
-    const n = mesh.n, V = mesh.v, p = new Float32Array(n * 3), uv = new Float32Array(n * 2);
-    for (let k = 0; k < n; k++) { p.set(V.subarray(k * 9, k * 9 + 3), k * 3); uv[k * 2] = V[k * 9 + 6]; uv[k * 2 + 1] = 1 - V[k * 9 + 7]; }
-    const nt = mesh.i.length / 3, kind = new Uint8Array(nt);
-    for (let t = 0; t < nt; t++) { const m = V[mesh.i[t * 3] * 9 + 8]; kind[t] = m === INNER_SCREEN ? 1 : m === OUTER_SCREEN ? 2 : 0; }
-    return { p, uv, i: mesh.i, kind };
-  }
-
-  // ---- Apple's model (devicemodel.rs Model::web): "X86M", a u32 header length, the JSON header, then the vertices
+  // ---- the model (devicemodel.rs Model::web): "X86M", a u32 header length, the JSON header, then the vertices
   // (48 bytes: position f32x3, normal i16x4, st f32x2, st1 f32x2, joints u8x4, weights u8x4, material u16, pad), the
   // u32 indices, the joint matrices (frames x joints x 16 f32, column-major; 1.5 degrees of bend a frame from flat)
   // and the images
@@ -289,83 +120,7 @@
 
 
   // ---- drawing (gpu.rs), GLSL ES 3.00
-  const VS = `#version 300 es
-precision highp float;
-uniform mat3 u_rot; uniform vec3 u_c; uniform vec4 u_fit; uniform vec3 u_dnf;
-in vec3 a_p; in vec3 a_n; in vec2 a_uv; in float a_m;
-out vec3 v_n; out vec3 v_p; out vec2 v_uv; out float v_m;
-void main() {
-  vec3 p = u_rot * a_p - u_c;
-  float w = u_dnf.x - p.z;
-  gl_Position = vec4(p.x * u_dnf.x * u_fit.x + u_fit.z * w, p.y * u_dnf.x * u_fit.y + u_fit.w * w,
-    ((w - u_dnf.y) / (u_dnf.z - u_dnf.y) * 2.0 - 1.0) * w, w);
-  v_n = u_rot * a_n; v_p = p; v_uv = a_uv; v_m = a_m;
-}`;
-  const FS = `#version 300 es
-precision highp float;
-uniform sampler2D u_inner; uniform sampler2D u_outer; uniform vec3 u_dnf;
-in vec3 v_n; in vec3 v_p; in vec2 v_uv; in float v_m;
-out vec4 frag;
-float box(float x, float a, float b, float soft) { return smoothstep(a - soft, a + soft, x) * (1.0 - smoothstep(b - soft, b + soft, x)); }
-vec3 studio(vec3 d) {
-  float up = d.y * 0.5 + 0.5;
-  vec3 c = mix(vec3(0.008, 0.008, 0.009), vec3(0.07, 0.071, 0.075), smoothstep(0.2, 0.9, up));
-  c += vec3(2.0) * smoothstep(0.6, 0.8, d.y) * box(d.x, -0.55, 0.55, 0.12) * box(d.z, -0.2, 0.9, 0.15);
-  c += vec3(1.05, 1.03, 1.0) * smoothstep(0.78, 0.9, -d.x) * box(d.y, -0.3, 0.65, 0.12);
-  c += vec3(0.38, 0.40, 0.45) * smoothstep(0.8, 0.92, d.x) * box(d.y, -0.2, 0.6, 0.15);
-  c += vec3(0.05) * smoothstep(0.8, 0.97, d.z);
-  return c;
-}
-vec3 lin(vec3 g) { return pow(g, vec3(2.2)); }
-vec3 srgb(vec3 l) { return pow(clamp(l, 0.0, 1.0), vec3(1.0 / 2.2)); }
-vec3 tone(vec3 c) { return c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14); }
-// the studio seen in a rough surface (Apple's model's shader): its lights spread and dimmed with the roughness
-vec3 studioR(vec3 d, float r) {
-  float s = r * r, k = 1.0 / (1.0 + 5.0 * s), e = 0.9 * s;
-  float up = d.y * 0.5 + 0.5;
-  vec3 c = mix(vec3(0.008, 0.008, 0.009), vec3(0.07, 0.071, 0.075), smoothstep(0.2 - e, 0.9 + e, up));
-  c += vec3(2.0) * k * smoothstep(0.6 - e, 0.8 + e * 0.5, d.y) * box(d.x, -0.55, 0.55, 0.12 + e) * box(d.z, -0.2, 0.9, 0.15 + e);
-  c += vec3(1.05, 1.03, 1.0) * k * smoothstep(0.78 - e, 0.9 + e * 0.2, -d.x) * box(d.y, -0.3, 0.65, 0.12 + e);
-  c += vec3(0.38, 0.40, 0.45) * k * smoothstep(0.8 - e, 0.92 + e * 0.2, d.x) * box(d.y, -0.2, 0.6, 0.15 + e);
-  c += vec3(0.05) * smoothstep(0.8 - e, 0.97, d.z);
-  return c + vec3(0.12) * s;
-}
-void main() {
-  vec3 n = normalize(v_n);
-  vec3 v = normalize(vec3(0.0, 0.0, u_dnf.x) - v_p);
-  if (dot(n, v) < 0.0) n = -n;
-  vec3 r = reflect(-v, n);
-  float cosv = max(dot(n, v), 0.0);
-  float fres = pow(1.0 - cosv, 5.0);
-  vec3 col;
-  if (v_m > 2.5 && v_m < 4.5) {
-    vec3 pic = lin(v_m < 3.5 ? texture(u_inner, v_uv).rgb : texture(u_outer, v_uv).rgb);
-    vec3 refl = studio(r) * (0.04 + 0.96 * fres);
-    frag = vec4(srgb(pic + refl * 0.3), 1.0);
-    return;
-  }
-  if (v_m < 0.5) {
-    // the frame: polished warm titanium (a metal: it shows its surroundings tinted by its colour)
-    vec3 f0 = vec3(0.89, 0.85, 0.78);
-    col = (f0 + (vec3(1.0) - f0) * fres) * studioR(r, 0.05);
-  } else if (v_m > 4.5 && v_m < 5.5) {
-    // the spine bar and the camera rings: brushed metal of the same colour
-    vec3 f0 = vec3(0.89, 0.86, 0.80);
-    col = (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
-  } else if (v_m < 1.5) {
-    // the right half's back: frosted white glass
-    vec3 base = vec3(0.98, 0.975, 0.95);
-    vec3 f0 = mix(vec3(0.04), base, 0.1);
-    col = base * 0.9 * studioR(n, 1.0) * 1.6 + (f0 + (max(vec3(0.5), f0) - f0) * fres) * studioR(r, 0.5);
-  } else if (v_m < 2.5) {
-    col = vec3(0.003) + studio(r) * (0.04 + 0.96 * fres) * 0.45;
-  } else {
-    col = vec3(0.01) + studio(r) * 0.02;
-  }
-  frag = vec4(srgb(tone(col)), 1.0);
-}`;
-
-  // Apple's model (gpu.rs AVS / AFS, the same source): skinned, UsdPreviewSurface lit by the photo studio
+  // skinned, UsdPreviewSurface lit by a photo studio around the camera (gpu.rs AVS / AFS, the same source)
   const AVS = `#version 300 es
 precision highp float;
 uniform mat3 u_rot; uniform vec3 u_c; uniform vec4 u_fit; uniform vec3 u_dnf;
@@ -393,7 +148,7 @@ uniform vec3 u_base; uniform vec4 u_mat; uniform vec2 u_coat; uniform vec3 u_dnf
 in vec3 v_n; in vec3 v_p; in vec2 v_uv; in vec2 v_uv1;
 
 float box(float x, float a, float b, float soft) { return smoothstep(a - soft, a + soft, x) * (1.0 - smoothstep(b - soft, b + soft, x)); }
-// the photo studio (gpu.rs FS), its lights spread and dimmed as the surface gets rougher (r 0 sharp .. 1 diffuse)
+// the photo studio, its lights spread and dimmed as the surface gets rougher (r 0 sharp .. 1 diffuse)
 vec3 studio(vec3 d, float r) {
     float s = r * r, k = 1.0 / (1.0 + 5.0 * s), e = 0.9 * s;
     float up = d.y * 0.5 + 0.5;
@@ -467,7 +222,7 @@ void main() {
     return true;
   }
 
-  function program(gl, vs = VS, fs = FS, attrs = ["a_p", "a_n", "a_uv", "a_m"]) {
+  function program(gl, vs, fs, attrs) {
     const p = gl.createProgram();
     for (const [kind, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
       const s = gl.createShader(kind);
@@ -482,9 +237,17 @@ void main() {
     return p;
   }
 
+  // the model, fetched once per page: null when the server has none (the page then shows the phone flat)
+  let loading = null;
+  function load() {
+    if (!loading) loading = fetch("/devicemodel/duo", { credentials: "same-origin" }).then((r) => (r.ok ? r.arrayBuffer() : null))
+      .then((buf) => buf && parseModel(buf)).catch(() => null);
+    return loading;
+  }
+
   // ---- one phone's view
-  // opts: control (touches go to the phone), send(obj), codec ("h264" | "jpeg"), onFrame(w, h) (an inner or outer
-  // picture shown), onNoH264() (this browser can't decode the stream)
+  // opts: model (load()'s), control (touches go to the phone), send(obj), codec ("h264" | "jpeg"), onFrame(w, h) (an
+  // inner or outer picture shown), onNoH264() (this browser can't decode the stream)
   function create(opts) {
     const canvas = document.createElement("canvas");
     canvas.className = "duo3d";
@@ -496,18 +259,10 @@ void main() {
     el.append(shadow, canvas);
     const gl = glOf(canvas);
     if (!gl) return null;
-    const prog = program(gl);
-    const U = {};
-    for (const n of ["u_rot", "u_c", "u_fit", "u_dnf", "u_inner", "u_outer"]) U[n] = gl.getUniformLocation(prog, n);
-    const vao = gl.createVertexArray(), vbo = gl.createBuffer(), ibo = gl.createBuffer();
-    gl.bindVertexArray(vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    [[3, 0], [3, 12], [2, 24], [1, 32]].forEach(([n, off], i) => { gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, n, gl.FLOAT, false, 36, off); });
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-    gl.bindVertexArray(null);
+    const M = opts.model;
     const aniso = gl.getExtension("EXT_texture_filter_anisotropic");
 
-    // Apple's model, once fetched (the procedural one meanwhile, or for good when the server has none)
+    // the model's GL objects, once its textures are decoded (nothing is drawn until then)
     let apple = null;
     async function appleGL(M) {
       const p = program(gl, AVS, AFS, ["a_p", "a_n", "a_uv", "a_uv1", "a_j", "a_w"]);
@@ -539,19 +294,14 @@ void main() {
       const black = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, black);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
-      return { M, p, U, vao, tex, black, bones: null, bonesDeg: NaN };
+      return { M, p, U, vao, tex, black };
     }
-    fetch("/devicemodel/duo", { credentials: "same-origin" }).then((r) => (r.ok ? r.arrayBuffer() : null)).then(async (buf) => {
-      const M = buf && parseModel(buf);
-      if (!M || !alive) return;
-      const a = await appleGL(M);
-      if (alive) { apple = a; hits = null; fit = null; dirty = true; }
-    }).catch(() => {});
-    // Apple's model drawn: the opaque groups, the screens a little nearer, then the see-through ones blended
+    appleGL(M).then((a) => { if (alive) { apple = a; dirty = true; } }).catch((e) => console.warn("duo3d:", e));
+    // the model drawn: the opaque groups, the screens a little nearer, then the see-through ones blended
     function drawApple(a) {
       const { M, U } = a;
       gl.useProgram(a.p);
-      gl.uniformMatrix4fv(U.u_bones, false, a.bones.subarray(0, 32 * 16));
+      gl.uniformMatrix4fv(U.u_bones, false, bones.subarray(0, 32 * 16));
       for (let k = 0; k < 6; k++) gl.uniform1i(U["u_t" + k], k);
       gl.uniform1i(U.u_pic, 6);
       gl.bindVertexArray(a.vao);
@@ -674,7 +424,7 @@ void main() {
     let viewDeg = NaN;
     // zoom: the wheel's (1: the phone fits); zoomShown: the one drawn (the wheel moves both, a reset only the first)
     let orbit = [0, 0], zoom = 1, zoomShown = 1, proj = null;
-    let cssW = 300, cssH = 300, mesh = null, meshDeg = NaN;
+    let cssW = 300, cssH = 300, bones = null, bonesDeg = NaN;
 
     function state(m) {
       if (m.hinge != null) hinge = Number(m.hinge);
@@ -761,26 +511,16 @@ void main() {
       const [r0, t0] = placement(orient || "portrait", phi);
       const roll = r0 + placeOff[0], tilt = t0 + placeOff[1];
       const view = (p) => rotX(rotY(rotX(rotZ(p, roll), tilt), yaw), pitch);
-      if (apple) {
-        if (apple.bonesDeg !== shown) { apple.bones = poseOf(apple.M, shown); apple.bonesDeg = shown; }
-      } else if (shown !== meshDeg || !mesh) {
-        mesh = build(shown);
-        meshDeg = shown;
-        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-        gl.bufferData(gl.ARRAY_BUFFER, mesh.v, gl.DYNAMIC_DRAW);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.i, gl.DYNAMIC_DRAW);
-      }
+      if (bonesDeg !== shown) { bones = poseOf(M, shown); bonesDeg = shown; }
       const size = 2 * HALF_W + HALF_H, dist = 2.4 * size;
       // the view-space box's centre is the picture's middle; the projected box fits the area
       const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
       const pts = [];
-      // the points the framing fits: every 8th vertex of Apple's model, posed, or the procedural mesh's
-      const src = [];
-      if (apple) { const q = new Float32Array(3); for (let k = 0; k < apple.M.nv; k += 8) { skin(apple.M, apple.bones, k, q, 0); src.push([q[0], q[1], q[2]]); } }
-      else for (let i = 0; i < mesh.v.length; i += 9) src.push([mesh.v[i], mesh.v[i + 1], mesh.v[i + 2]]);
-      for (const v of src) {
-        const p = view(v);
+      // the points the framing fits: every 8th vertex of the model, posed
+      const q = new Float32Array(3);
+      for (let k = 0; k < M.nv; k += 8) {
+        skin(M, bones, k, q, 0);
+        const p = view([q[0], q[1], q[2]]);
         pts.push(p);
         for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); }
       }
@@ -814,28 +554,14 @@ void main() {
       gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-      const cam3 = (P, UU) => {
-        gl.useProgram(P);
+      if (apple) {
+        const UU = apple.U;
+        gl.useProgram(apple.p);
         gl.uniformMatrix3fv(UU.u_rot, false, [ex[0], ex[1], ex[2], ey[0], ey[1], ey[2], ez[0], ez[1], ez[2]]);
         gl.uniform3f(UU.u_c, fc[0], fc[1], fc[2]);
         gl.uniform4f(UU.u_fit, s / hw, s / hh, (off[0] - hw) / hw, -(off[1] - hh) / hh);
         gl.uniform3f(UU.u_dnf, dist, Math.max(dist - size, 1), dist + size);
-      };
-      if (apple) { cam3(apple.p, apple.U); drawApple(apple); } else {
-      cam3(prog, U);
-      gl.uniform1i(U.u_inner, 0);
-      gl.uniform1i(U.u_outer, 1);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, scr.inner.tex);
-      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, scr.outer.tex);
-      gl.bindVertexArray(vao);
-      gl.drawElements(gl.TRIANGLES, mesh.body, gl.UNSIGNED_INT, 0);
-      // the screens lie on the glass: drawn nearer by a depth offset
-      gl.enable(gl.POLYGON_OFFSET_FILL);
-      gl.polygonOffset(-1, -4);
-      gl.drawElements(gl.TRIANGLES, mesh.i.length - mesh.body, gl.UNSIGNED_INT, mesh.body * 4);
-      gl.disable(gl.POLYGON_OFFSET_FILL);
-      gl.bindVertexArray(null);
-      gl.activeTexture(gl.TEXTURE0);
+        drawApple(apple);
       }
 
       // a soft shadow on the floor under the phone
@@ -871,10 +597,7 @@ void main() {
     // the posed surfaces at the drawn angle (made once per angle)
     let hits = null;
     function surfaces() {
-      if (!hits || hits.deg !== proj.deg || hits.apple !== !!apple) {
-        const H = apple ? appleHitMesh(apple.M, poseOf(apple.M, proj.deg)) : hitMeshOf(build(proj.deg));
-        hits = { deg: proj.deg, apple: !!apple, H };
-      }
+      if (!hits || hits.deg !== proj.deg) hits = { deg: proj.deg, H: appleHitMesh(M, poseOf(M, proj.deg)) };
       return hits.H;
     }
     // the nearest surface under the pointer; a screen there is touched: surface 1 the inner screen's left half, 2 its
@@ -1057,7 +780,7 @@ void main() {
     }
     // for scripted checks: the drawn hinge and where a screen point is on the page
     const debug = { get shown() { return shown; }, get proj() { return proj; }, get orbit() { return orbit; }, get zoom() { return zoom; }, get orient() { return orient; }, hit,
-      // n frames drawn back to back, GPU included: ms per frame (the hinge swept so the mesh is rebuilt each time)
+      // n frames drawn back to back, GPU included: ms per frame (the hinge swept so the model is posed each time)
       bench(n = 60, sweep = true) {
         const t0 = performance.now(), keep = hinge;
         for (let i = 0; i < n; i++) { if (sweep) { shown = 30 + (i * 2.5) % 140; } render(performance.now() / 1000); }
@@ -1076,5 +799,5 @@ void main() {
     return { el, canvas, packet, state, command, pose, resize, reset, resetView, close, debug };
   }
 
-  window.Duo3D = { supported, create };
+  window.Duo3D = { supported, load, create };
 })();

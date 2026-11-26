@@ -362,9 +362,9 @@ function phoneView(id) {
   const canH264 = "VideoDecoder" in window && window.isSecureContext;
   let codec = prefs.codec === "jpeg" || !canH264 ? "jpeg" : "h264";
   let quality = prefs.quality ?? 1, fps = prefs.fps ?? 30;
-  // a two-screen phone in 3D (duo3d.js) where WebGL2 is there, else the flat stream
-  const duoOK = !!(window.Duo3D && Duo3D.supported());
-  let duo = null;
+  // a two-screen phone in 3D (duo3d.js) where WebGL2 is there and the server has Apple's model, else the flat stream
+  let duoOK = !!(window.Duo3D && Duo3D.supported());
+  let duo = null, duoLoading = false;
   // the hinge panel's slider following the hinge as it is (hingePanel sets it)
   // every hinge panel on the page (the fold, the strip's popup) follows the hinge as it moves
   const hingeSyncs = new Set();
@@ -653,8 +653,19 @@ function phoneView(id) {
 
   // --- the 3D phone (duo3d.js) in place of the flat canvas
   function startDuo() {
+    if (duoLoading) return;
+    duoLoading = true;
+    Duo3D.load().then((model) => {
+      duoLoading = false;
+      if (duo || !alive) return;
+      // no model on the server: the phone flat, its own stream
+      if (!model) { duoOK = false; connect(); return; }
+      showDuo(model);
+    });
+  }
+  function showDuo(model) {
     duo = Duo3D.create({
-      control, send,
+      model, control, send,
       onFrame: (w, hh, s) => { frames++; overlay.hidden = true; if (s === "inner" || !fw) { fw = w; fh = hh; } },
       onNoH264: () => { toast("This browser can't decode H.264: using JPEG"); codec = "jpeg"; connect(); },
       onLost: () => { duo.close(); duo = null; canvas.hidden = false; connect(); },

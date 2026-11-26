@@ -2,7 +2,7 @@
 //! never committed or shipped with x86Sim. `tools/devicemodels/extract-devicemodels.py` copies them out of the user's
 //! own Xcode.xip (`x86sim account download-xcode`, `x86sim dev setup sdk --xip` do it) into `dir()`, and the launcher's
 //! 3D phone (gui duo3d) and the web page's (share/web/duo3d.js, served by `x86sim-serve`) draw them when they are
-//! there, else their own procedural model.
+//! there; without them both show the phone flat.
 //!
 //! The model is read with a pure Rust USD reader (openusd) and turned into one skinned mesh in the 3D phone's space
 //! (`Model`): inner-screen pixels, x from the hinge (the left half at x < 0), y up, the inner screen at z = 0 facing +z.

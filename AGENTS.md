@@ -23,7 +23,7 @@
     on Linux by `tools/devicetypes/extract-devicetypes.py`; which ones a runtime takes comes from the runtime's profile.
   - The iPhone Duo's 3D model (Xcode DeviceHub's `V68.usdz`, Apple's) is never committed or shipped: each user's own
     Xcode.xip gives it (`tools/devicemodels/extract-devicemodels.py`, run by `account download-xcode` / `dev setup sdk
-    --xip`) into ~/.local/share/x86sim/devicemodels; without it the launcher and web page draw their procedural model.
+    --xip`) into ~/.local/share/x86sim/devicemodels; without it the launcher and web page show the Duo flat.
 
 ## Stopping processes
 
