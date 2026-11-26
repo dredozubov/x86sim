@@ -94,6 +94,7 @@ fn piece_icon(id: &str) -> &'static str {
         "xtool" => icon::HAMMER,
         "sdk" => icon::APPLE_LOGO,
         "cocoapods" => icon::PACKAGE,
+        "swiftbuild" => icon::HAMMER,
         _ => icon::DEVICE_MOBILE,
     }
 }
@@ -210,6 +211,11 @@ impl App {
                         ("cocoapods", s) if s != "ok" => {
                             if ui.add(Btn::primary(if s == "stale" { "Update" } else { "Install" }).icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Ruby and CocoaPods, pinned, into your home folder (about 70 MB): for React Native, Expo and Flutter plugins with a Podfile").clicked() {
                                 start = Some(("cocoapods", vec![]));
+                            }
+                        }
+                        ("swiftbuild", s) if s != "ok" => {
+                            if ui.add(Btn::primary("Install").icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Apple's open-source Swift Build with sweetpad's Linux front end, into your home folder (about 220 MB): builds Xcode projects and workspaces").clicked() {
+                                start = Some(("swiftbuild", vec![]));
                             }
                         }
                         ("packages", "missing") => {

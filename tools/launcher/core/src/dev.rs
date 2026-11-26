@@ -329,6 +329,10 @@ pub fn status() -> Status {
     // Rust apps (optional)
     let (state, detail, fix) = crate::devrust::status();
     v.push(piece("rust", "Rust", state, detail, fix));
+    // Swift Build (optional: Xcode projects and workspaces)
+    if let Some(p) = crate::devxcode::status_piece() {
+        v.push(p);
+    }
 
     // the Swift toolchain's lldb for `x86sim debug` (optional: /usr/bin/lldb is the fallback)
     if let Some(p) = swift_lldb_status() {
@@ -373,6 +377,7 @@ fn job_steps(kind: &str) -> &'static [&'static str] {
         "verify" => &["== verify: new project", "== verify: build"],
         "lldb" => &["== swift lldb: /", "== swift lldb: download", "== swift lldb: unpack", "== swift lldb: toolchain view"],
         "cocoapods" => &["== cocoapods", "== Ruby", "== CocoaPods"],
+        "swiftbuild" => &["== swiftbuild", "== download sweetpad"],
         "repair" => &["== repair", "Installed actool", "Building OpenAppleMacrosServer"],
         // Download Xcode (account.rs get_xcode)
         "xcode" => &["== xcode: sign-in", "== xcode: download", "== xcode: verify", "== xcode: sdk", "== xcode: device types", "== xcode: done"],
@@ -435,7 +440,7 @@ pub fn start_job(kind: &str, args: &[String]) -> Result<Job> {
     if let Some(j) = job().filter(|j| j.running) {
         bail!("a setup job is already running ({}, pid {}): wait for it or cancel it", j.kind, j.pid);
     }
-    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "cocoapods" | "all" | "xcode"), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb, cocoapods, xcode or all");
+    anyhow::ensure!(matches!(kind, "swift" | "toolchain" | "sdk" | "repair" | "verify" | "lldb" | "cocoapods" | "swiftbuild" | "all" | "xcode"), "unknown setup step {kind:?}: swift, toolchain, sdk, repair, verify, lldb, cocoapods, swiftbuild, xcode or all");
     let d = work_dir();
     std::fs::create_dir_all(&d)?;
     for f in ["job.rc", "job.log"] {
@@ -698,7 +703,7 @@ pub struct Project {
     pub name: String,
     /// xtool (Package.swift + xtool.yml: builds here), dotnet (a net*-ios .csproj: builds here), flutter, expo /
     /// reactnative (package.json: CocoaPods workspace built by the fork's xcbuild.py), rust (a cargo package: builds
-    /// here with rust/build.py), swiftpm (no xtool.yml), xcodeproj (convert it first)
+    /// here with rust/build.py), swiftpm (no xtool.yml), xcodeproj (an .xcodeproj / .xcworkspace: Swift Build)
     pub kind: String,
     pub bundle_id: String,
     /// the last simulator build's .app, if any
@@ -722,12 +727,13 @@ pub fn project(dir: &Path) -> Result<Project> {
         k
     } else if let Some(r) = crate::devrust::detect(&dir) {
         return Ok(Project { name: r.name, kind: "rust".into(), bundle_id: r.bundle_id, app: r.app, dir });
-    } else if dir.join("Package.swift").exists() {
-        "swiftpm"
     } else if crate::devdotnet::csproj(&dir).is_some() {
         "dotnet"
-    } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj")) {
+    } else if std::fs::read_dir(&dir)?.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".xcodeproj") || e.file_name().to_string_lossy().ends_with(".xcworkspace")) {
+        // before a bare Package.swift: libraries ship one next to the Xcode project of their demo app
         "xcodeproj"
+    } else if dir.join("Package.swift").exists() {
+        "swiftpm"
     } else {
         bail!("{}: not an app project (no xtool.yml + Package.swift, pubspec.yaml, net*-ios .csproj, Cargo.toml or .xcodeproj)", dir.display());
     };
@@ -738,6 +744,8 @@ pub fn project(dir: &Path) -> Result<Project> {
     let name = yml_value(&y, "product").unwrap_or(base);
     let app = if matches!(kind, "expo" | "reactnative") {
         crate::devpods::last_app(&dir)
+    } else if kind == "xcodeproj" {
+        crate::devxcode::last_app(&dir)
     } else {
         std::fs::read_dir(dir.join("xtool")).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"))
     };
@@ -835,7 +843,21 @@ pub fn build(dir: &Path, o: &BuildOpts, say: &mut dyn FnMut(&str)) -> Result<Pat
         "rust" if o.platform != "ios" => bail!("{}: Rust apps build for iOS phones here (aarch64-apple-ios-sim); this phone runs {}", p.dir.display(), o.platform),
         "rust" => {}
         "flutter" => bail!("{}: Flutter apps build for real iPhones only (x86sim dev device / ship); simulator builds need an xtool project", p.dir.display()),
-        "xcodeproj" => bail!("{}: an Xcode project: convert it first (x86sim dev convert {}/<App>.xcodeproj)", p.dir.display(), p.dir.display()),
+        "xcodeproj" => {
+            let _lock = BuildLock::take(say)?;
+            let log_path = work_dir().join(format!("build-{}.log", p.name));
+            let mut log = std::fs::File::create(&log_path).ok();
+            let r = crate::devxcode::build(&p.dir, &o.platform, o.release, &mut |l: &str| {
+                if let Some(f) = log.as_mut() {
+                    let _ = writeln!(f, "{l}");
+                }
+                say(l);
+            });
+            let app = r.with_context(|| format!("log: {}", log_path.display()))?;
+            remember(&p.dir, None);
+            say(&format!("app: {}", app.display()));
+            return Ok(app);
+        }
         _ => bail!("{}: a SwiftPM package without xtool.yml (add one: `version: 1` and `bundleID: com.you.App`)", p.dir.display()),
     }
     let st = status();
@@ -1115,13 +1137,13 @@ pub fn mcp_tools() -> Vec<serde_json::Value> {
     vec![
         json!({"name": "dev_status", "description": "Develop (omarchy-apple-dev): the app toolchain's state: Swift, xtool, the iOS SDK (and its simulator platforms), device tools; ready_sim says whether simulator builds work. Includes the running / last setup job with its step and log tail, and the recent projects.",
                "inputSchema": {"type": "object", "properties": {}}}),
-        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use), cocoapods (a pinned user-local Ruby and CocoaPods, ~70 MB: pod install for React Native / Expo apps and Flutter plugins with a Podfile).",
-               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb", "cocoapods"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
+        json!({"name": "dev_setup", "description": "Start installing a piece of the toolchain in the background (no root needed; poll dev_status for its progress). step: all (Swift if missing, then the installer, then a test build), swift (swift.org's toolchain into the user's data dir), toolchain (xtool built from source ~7 min, rcodesign, ipsw, pymobiledevice3), sdk (needs xip: the path of an Xcode 27 .xip the user downloaded from developer.apple.com), repair (re-register the SDK after a Swift swap), verify (build a new app end to end), lldb (the Swift toolchain's lldb for debug_start: a private libpython, ~75 MB; debug_start also does it on first use), cocoapods (a pinned user-local Ruby and CocoaPods, ~70 MB: pod install for React Native / Expo apps and Flutter plugins with a Podfile), swiftbuild (Apple's open-source Swift Build with sweetpad's Linux front end, ~220 MB: builds Xcode projects and workspaces, and the xcodebuild stand-in).",
+               "inputSchema": {"type": "object", "properties": {"step": {"type": "string", "enum": ["all", "swift", "toolchain", "sdk", "repair", "verify", "lldb", "cocoapods", "swiftbuild"]}, "mode": {"type": "string", "enum": ["full", "no-xcode"]}, "xip": {"type": "string"}}, "required": ["step"]}}),
         json!({"name": "dev_setup_cancel", "description": "Stop the running setup job.", "inputSchema": {"type": "object", "properties": {}}}),
         json!({"name": "dev_new", "description": "Make a new SwiftUI app project (xtool new) in parent (default: ~/x86sim-apps), set up for every simulator platform. Returns its directory.",
                "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "a Swift identifier, e.g. HelloApp"}, "parent": {"type": "string"}}, "required": ["name"]}}),
         json!({"name": "dev_projects", "description": "Recently built app projects: name, kind, bundle id, directory, last build.", "inputSchema": {"type": "object", "properties": {}}}),
-        json!({"name": "dev_build", "description": "Build an xtool project (omarchy-apple-dev ship.sh --simulator) or a Rust app (a cargo package; rust/build.py) for the simulator, for a device's platform (or platform: ios, tvos, watchos, xros). Returns the .app path and the build log's tail.",
+        json!({"name": "dev_build", "description": "Build an app project for the simulator (xtool: omarchy-apple-dev ship.sh --simulator; an .xcodeproj / .xcworkspace: Swift Build; React Native / Expo: CocoaPods + xcbuild; a Rust cargo package: rust/build.py; .NET for iOS: dotnet/build.sh; Kotlin Multiplatform: kmp/build-app.sh), for a device's platform (or platform: ios, tvos, watchos, xros). Returns the .app path and the build log's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "phone": phone, "platform": {"type": "string", "enum": ["ios", "tvos", "watchos", "xros"]}, "release": {"type": "boolean"}}, "required": ["project"]}}),
         json!({"name": "dev_run", "description": "Build an app project for a device, install it and launch it (the edit-build-run loop). start=true boots the device first when it is off (minutes). args go to the app. Returns the bundle id, the install / launch answers and the log's tail.",
                "inputSchema": {"type": "object", "properties": {"project": project, "phone": phone, "start": {"type": "boolean"}, "release": {"type": "boolean"}, "no_build": {"type": "boolean"}, "args": args}, "required": ["project"]}}),
