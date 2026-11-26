@@ -71,6 +71,13 @@ import SafariServices
 #if canImport(ClassKit) && (os(iOS) || os(visionOS))
 import ClassKit
 #endif
+#if canImport(BrowserEngineKit) && os(iOS)
+import BrowserEngineKit
+import XPC
+#endif
+#if canImport(ImageCaptureCore) && (os(iOS) || os(visionOS))
+import ImageCaptureCore
+#endif
 
 /// a Decodable type decoded from `json`: "ok", or the decoder's answer ("key <first missing key>", "type <path>", ...)
 func p28tDecode<T: Decodable>(_ t: T.Type, _ json: String) -> String {
@@ -109,6 +116,7 @@ extension Registry {
         var c: [Check] = []
         c += p28tWorkout + p28tEnergy + p28tTelephony + p28tWiFiAware + p28tNFC + p28tRoomPlan + p28tPaperKit
         c += p28tIdentityLookup + p28tMessages + p28tNetworkExtension + p28tCallKit + p28tNearby + p28tVSA + p28tBrowserKit + p28tExposure + p28tPhotos + p28tAccessorySetup + p28tWebKit + p28tSafari + p28tClassKit
+        c += p28tBrowserEngine + p28tImageCapture
         return c
     }
 }
@@ -862,6 +870,97 @@ extension Registry {
             try expect(act.progress == 0.5 && prim == "nil" && extra.isEmpty, "activity items \(prim) \(extra), progress \(act.progress)")
             let back = try p27sRoundTrip(item) as? CLSBinaryItem
             return "activity progress after range \(afterRange), set \(act.progress), items \(prim) + \(extra); binary item archive \(back == nil ? "nil" : "ok")"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: BrowserEngineKit: accessibility / text / context-menu / download objects, media environments and capabilities,
+// the content filter; the process and extension types (no browser entitlement)
+
+#if canImport(BrowserEngineKit) && os(iOS)
+final class P28TDragDelegate: NSObject, BEDragInteractionDelegate {
+    func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] { [] }
+}
+#endif
+
+extension Registry {
+    static var p28tBrowserEngine: [Check] {
+        var c: [Check] = []
+#if canImport(BrowserEngineKit) && os(iOS)
+        c.append(check("BrowserEngineKit", "p28-objects", timeout: 30) {
+            let r = try await onMain { () throws -> String in
+                let re = BEAccessibilityRemoteElement(identifier: "p28-remote", hostPid: getpid())
+                let he = BEAccessibilityRemoteHostElement(identifier: "p28-host", remotePid: getpid())
+                let ctx = BETextDocumentContext(selectedText: "sel", contextBefore: "before ", contextAfter: " after", markedText: nil, selectedRangeInMarkedText: NSRange(location: 0, length: 0))
+                ctx.addTextRect(CGRect(x: 0, y: 0, width: 10, height: 10), forCharacterRange: NSRange(location: 0, length: 3))
+                let menu = BEContextMenuConfiguration(identifier: "p28" as NSString, previewProvider: nil, actionProvider: nil)
+                let d = P28TDragDelegate()
+                let drag = BEDragInteraction(delegate: d)
+                let host = LayerHierarchyHostingView(frame: CGRect(x: 0, y: 0, width: 10, height: 10))
+                let menuOK = (menu.identifier as? NSString) == "p28"
+                let parts = [menuOK, drag.delegate === d, host.handle == nil, NSStringFromClass(type(of: host)) == "BELayerHierarchyHostingView", !re.description.isEmpty, !he.description.isEmpty]
+                try expect(!parts.contains(false), "objects \(parts) \(NSStringFromClass(type(of: host))) \(String(describing: menu.identifier))")
+                return "remote elements, document context, context menu, drag interaction, hosting view"
+            }
+            let mk = BEAccessibilityTextMarker(), range = BEAccessibilityTextMarker.Range()
+            range.startMarker = mk; range.endMarker = mk.copy() as! BEAccessibilityTextMarker
+            let rb = try p27sRoundTrip(range) as? BEAccessibilityTextMarker.Range
+            try expect(rb != nil && (range.copy() as? BEAccessibilityTextMarker.Range) != nil && NSStringFromClass(type(of: range)) == "BEAccessibilityTextMarkerRange", "marker range round trip")
+            let dir = FileManager.default.temporaryDirectory
+            let mon = BEDownloadMonitor(sourceURL: URL(string: "https://x86sim.test/p28.bin")!, destinationURL: dir.appendingPathComponent("p28.bin"),
+                                        observedProgress: Progress(totalUnitCount: 10), liveActivityAccessToken: Data())
+            let tok = BEDownloadMonitor.createAccessToken()
+            let locName = p28tName(BEDownloadMonitor.Location.self)
+            try expect(mon.sourceURL.lastPathComponent == "p28.bin" && NSStringFromClass(BEDownloadMonitor.Location.self) == "BEDownloadMonitorLocation", "download monitor \(locName)")
+            // media environment: through its XPC representation and back
+            let env = MediaEnvironment(webPage: URL(string: "https://x86sim.test/media")!)
+            let envBack = try MediaEnvironment(xpcRepresentation: env.createXPCRepresentation())
+            let caps: [ProcessCapability] = [.background, .foreground, .suspended, .mediaPlaybackAndCapture(environment: envBack)]
+            let revs = RestrictedSandboxRevision.allCases.sorted()
+            let feature: RenderingExtensionFeature = .coreML
+            // the content filter (Screen Time's): not active, a URL is not blocked
+            let shouldEval = BEWebContentFilter.shouldEvaluateURLs
+            let fb = P28TBox<String>()
+            BEWebContentFilter().evaluateURL(URL(string: "https://x86sim.test/")!) { block, page in fb.set("block \(block) page \(page?.count ?? 0)") }
+            let fAns = await fb.wait(10) ?? "no answer in 10 s"
+            let cls = p28tClasses([("BEAutoFillTextSuggestion", "BETextSuggestion"), ("BEKeyEntry", "NSObject"), ("BEKeyEntryContext", "NSObject"), ("BELayerHierarchy", "NSObject"),
+                                   ("BELayerHierarchyHandle", "NSObject"), ("BELayerHierarchyHostingTransactionCoordinator", "NSObject"), ("BEMediaEnvironment", "NSObject"),
+                                   ("BEProcessCapability", "NSObject"), ("BEScrollViewScrollUpdate", "NSObject"), ("BETextAlternatives", "NSObject"), ("BETextDocumentRequest", "NSObject"),
+                                   ("BENetworkingProcess", "NSObject"), ("BERenderingProcess", "NSObject"), ("BEWebContentProcess", "NSObject")])
+            let meta = [p28tName((any NetworkingExtension).self), p28tName((any RenderingExtension).self), p28tName((any WebContentExtension).self),
+                        p28tName((any RestrictedSandboxAppliable).self), p28tName(NetworkingExtensionConfiguration.self), p28tName(RenderingExtensionConfiguration.self),
+                        p28tName(WebContentExtensionConfiguration.self)]
+            try expect(cls.isEmpty && revs.count >= 1 && revs == RestrictedSandboxRevision.allCases.sorted() && caps.count == 4 && "\(feature)" == "coreML" && meta.allSatisfy { $0.contains("BrowserEngineKit.") }, "\(cls) \(meta)")
+            return "\(r); marker range round trip; download monitor, token \(tok == nil ? "nil" : "\(tok!.count) B"); media environment XPC round trip; \(revs.count) sandbox revisions; filter evaluates \(shouldEval), \(fAns)"
+        })
+#endif
+        return c
+    }
+}
+
+// MARK: ImageCaptureCore: the camera / scanner object model (no device on a simulator); a file fingerprint
+
+extension Registry {
+    static var p28tImageCapture: [Check] {
+        var c: [Check] = []
+#if canImport(ImageCaptureCore) && (os(iOS) || os(visionOS))
+        c.append(check("ImageCaptureCore", "p28-object-model") {
+            let rows: [(String, String)] = [("ICCameraDevice", "ICDevice"), ("ICCameraItem", "NSObject"), ("ICCameraFile", "ICCameraItem"), ("ICCameraFolder", "ICCameraItem"),
+                                            ("ICScannerDevice", "ICDevice"), ("ICScannerBandData", "NSObject"), ("ICScannerFeature", "NSObject"), ("ICScannerFeatureBoolean", "ICScannerFeature"),
+                                            ("ICScannerFeatureEnumeration", "ICScannerFeature"), ("ICScannerFeatureRange", "ICScannerFeature"),
+                                            ("ICScannerFunctionalUnitDocumentFeeder", "ICScannerFunctionalUnit"), ("ICScannerFunctionalUnitFlatbed", "ICScannerFunctionalUnit"),
+                                            ("ICScannerFunctionalUnitNegativeTransparency", "ICScannerFunctionalUnit"), ("ICScannerFunctionalUnitPositiveTransparency", "ICScannerFunctionalUnit")]
+            let present = rows.filter { NSClassFromString($0.0) != nil }
+            let wrong = p28tClasses(present)
+            let f = FileManager.default.temporaryDirectory.appendingPathComponent("p28-fp.bin")
+            try Data(repeating: 0x5a, count: 4096).write(to: f)
+            let fp = ICCameraFile.fingerprintForFile(at: f)
+            let fp2 = ICCameraFile.fingerprintForFile(at: f)
+            try expect(wrong.isEmpty && fp == fp2, "\(wrong) fingerprint \(String(describing: fp))")
+            let types: [AnyClass] = [ICCameraDevice.self, ICCameraFolder.self]
+            return "\(present.count)/\(rows.count) classes present (\(types.count) camera types named); fingerprint \(fp.map { "\($0.count) chars" } ?? "nil")"
         })
 #endif
         return c
