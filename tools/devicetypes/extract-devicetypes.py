@@ -358,4 +358,5 @@ def main():
     print(f"{len(out)} device types ({len(written)} capability files) for iOS {rtver} {build}")
 
 
-main()
+if __name__ == "__main__":
+    main()
