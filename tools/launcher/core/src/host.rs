@@ -179,11 +179,14 @@ pub struct HubSettings {
     pub channel: String,
     /// "system" (the Omarchy theme, else the desktop's light or dark preference) | "dark" | "light"
     pub appearance: String,
+    /// keep every version's pre-translated image up to date on its own (the launcher's automatic runs); off: only
+    /// when the user starts a run (issue #63)
+    pub aot_auto: bool,
 }
 
 impl Default for HubSettings {
     fn default() -> Self {
-        HubSettings { thumbnails: true, open_on_start: false, card_w: 250.0, sort: "name".into(), check_updates: true, channel: String::new(), appearance: "system".into() }
+        HubSettings { thumbnails: true, open_on_start: false, card_w: 250.0, sort: "name".into(), check_updates: true, channel: String::new(), appearance: "system".into(), aot_auto: true }
     }
 }
 

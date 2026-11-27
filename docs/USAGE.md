@@ -25,7 +25,8 @@ The launcher is what the AppImage opens. Its pages:
   only its files, or also its pre-translated code and caches. Devices that use it are listed, and a running one has
   to be stopped first.
 - **Pre-translate**: build or update the ahead-of-time image for a runtime (picked from a list grouped by platform),
-  and see what it takes on disk. The launcher keeps the images up to date by itself.
+  and see what it takes on disk. The launcher keeps the images up to date by itself
+  (Options > Automatic off: only when you press Start or Update).
 - **Settings**: appearance (System, Dark or Light), graphics (GPU or software), screen scaling, memory cap and
   clean-up, disk use, updates, and the Apple Account sign-in ([BUILDING-APPS.md](BUILDING-APPS.md#apple-account)).
 - **Setup**: the first-run steps, which stay available afterwards as a check of the computer.
