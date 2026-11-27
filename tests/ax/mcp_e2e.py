@@ -246,10 +246,15 @@ class Run:
         s, _ = self.m.snap()
         self.check("land: Safari turned with the phone", s["screen"][0] > s["screen"][1], "%s rot %s" % (s["screen"], s.get("rot")))
         text, _, err, _ = self.m.call("tap", target="Item 2", after="none")
-        time.sleep(1.5)
-        s, _ = self.m.snap()
-        wv = els(s, role="^webview$")
-        url = wv[0].get("value", "") if wv else ""
+        # the page's URL changes once WebContent has handled the click (seconds on a busy host): wait for it
+        url, t_end = "", time.monotonic() + 8
+        while time.monotonic() < t_end:
+            s, _ = self.m.snap()
+            wv = els(s, role="^webview$")
+            url = wv[0].get("value", "") if wv else ""
+            if url.endswith("#i2"):
+                break
+            time.sleep(0.5)
         self.check("land: tap a link in landscape Safari", url.endswith("#i2"), "%s; url %s" % (text.split("\n")[0], url))
         self.portrait()
         self.home()
