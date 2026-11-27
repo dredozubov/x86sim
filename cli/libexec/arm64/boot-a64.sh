@@ -342,6 +342,11 @@ MIN="com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.appl
 # AppIntents' RelevantEntities.updateEntities failed com.apple.CascadeSets.Set 3, where Apple's 27.2 simulator takes them
 # (P28_Intents.swift func:AppIntents.p28-shortcuts-schemas). Mach services only (no RunAtLoad / KeepAlive, pressured exit);
 # idle it costs ~100 MB RSS (44 MB anonymous) and no CPU.
+# webbookmarksd (iOS, on demand, sdkcov P27; on visionOS since r24, below): SafariServices asks it for a Safari
+# extension's state. Without it SFSafariExtensionManager.stateOfExtension(withIdentifier:) never answered, where Apple's
+# 27.2 simulator answers SFErrorDomain 1 (no such extension) (P27_Services.swift
+# func:SafariServices.p27-blockers-extensions-config). Its notifyd launch events start it once SpringBoard is up
+# (Apple's simulator runs it too); idle ~90 MB RSS (11 MB anonymous), no CPU, pressured exit.
 UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd com.apple.SpringBoard com.apple.sleepd com.apple.TextInput.kbd com.apple.FileCoordination
 	com.apple.usernotificationsd com.apple.InputUI com.apple.assistantd com.apple.assetsd com.apple.geod com.apple.navd com.apple.Maps.mapssyncd
 	com.apple.campo com.apple.FileProvider com.apple.DesktopServicesHelper com.apple.revisiond com.apple.PosterBoard com.apple.financed
@@ -361,7 +366,7 @@ UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd c
 	com.apple.linkd com.apple.mediaanalysisd com.apple.mediaanalysisd.service com.apple.translationd
 	com.apple.telephonyutilities.callservicesd com.apple.UsageTrackingAgent com.apple.ScreenTimeAgent com.apple.dmd
 	com.apple.videosubscriptionsd com.apple.managedappdistributiond com.apple.shazamd com.apple.backgroundassets.user
-	com.apple.merchantd com.apple.itunescloudd com.apple.sensorkitd com.apple.biomed"
+	com.apple.merchantd com.apple.itunescloudd com.apple.sensorkitd com.apple.biomed com.apple.WebBookmarks.webbookmarksd"
 UI_SLIM="com.apple.backboardd com.apple.SpringBoard com.apple.TextInput.kbd com.apple.FileCoordination com.apple.InputUI
 	com.apple.assistantd com.apple.sleepd"
 FULLUI="com.apple.chronod"
