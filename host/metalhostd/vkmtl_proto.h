@@ -56,6 +56,8 @@ enum {
 	// {u64 id, u64 library, u32 nameLen, u32 nconst, name, nconst x vkmtl_fconst + bytes} -> {i32 status, u32 functionType, err}
 	VKMTL_FUNC_NEW = 16,
 	// {u64 id, u64 function, u32 maxTotalThreadsPerThreadgroup, u32 tgSizeIsMultipleOfTEW}
+	//   [x86Sim, optional: u32 hasStageInput, u32 indexType, u32 indexBufferIndex, u32 nlayouts, u32 nattrs, u32 pad,
+	//    nlayouts x vkmtl_vlayout (stride ~0: MTLBufferLayoutStrideDynamic), nattrs x vkmtl_vattr (MTLAttributeFormat)]
 	//   -> {i32 status, u32 threadExecutionWidth, u32 maxTotalThreadsPerThreadgroup, u32 staticThreadgroupMemoryLength, err}
 	VKMTL_CPS_NEW = 17,
 	// {u64 id, vkmtl_samplerdesc} -> {i32 status, u32 pad, u64 gpuResourceID}
@@ -127,6 +129,7 @@ enum {
 	VKMTL_C_CS_END = 20,        // {}
 	VKMTL_C_CS_BUFFER_OFFSET = 21, // {u64 offset, u32 index, u32 pad}
 	VKMTL_C_CS_DISPATCH_INDIRECT = 22, // {u64 indirectBuffer, u64 indirectOffset, u64 group[3]}  (MTLDispatchThreadgroupsIndirectArguments)
+	VKMTL_C_CS_STAGE_IN_REGION = 23, // {u64 origin[3], u64 size[3]}  (setStageInRegion:; mtlvk starts each encoder at 0/0)
 	// render encoder (stage 5): VKMTL_C_RENDER_PASS begins it, then state and draws, then RE_END
 	// (stage: 0 vertex, 1 fragment)
 	VKMTL_C_RE_PIPELINE = 30,   // {u64 renderPipelineState}
