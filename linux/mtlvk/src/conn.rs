@@ -2,15 +2,16 @@
 use crate::proto::*;
 use metal2vulkan::library::{FunctionConstantValue, FunctionConstantValues, FunctionStage, Library};
 use metal2vulkan::metal::{
-    BlendFactor, BlendOperation, ColorWriteMask, CompareFunction, CullMode, DataType, DepthClipMode, IndexType,
+    AttributeFormat, BlendFactor, BlendOperation, ColorWriteMask, CompareFunction, CullMode, DataType, DepthClipMode, IndexType,
     PixelFormat, PrimitiveTopologyClass, PrimitiveType, SamplerAddressMode, SamplerBorderColor, SamplerMinMagFilter,
-    SamplerMipFilter, StencilOperation, TextureType, TextureUsage, TriangleFillMode, VertexFormat, VertexStepFunction,
+    SamplerMipFilter, StencilOperation, StepFunction, TextureType, TextureUsage, TriangleFillMode, VertexFormat, VertexStepFunction,
     Winding,
 };
 use metal2vulkan::metal::state::{DepthStencilDescriptor, StencilDescriptor};
 use metal2vulkan::pipeline::{
-    ColorAttachmentDescriptor, FunctionDescriptor, RenderPipelineDescriptor, VertexAttributeDescriptor,
-    VertexBufferLayoutDescriptor, VertexDescriptor,
+    ColorAttachmentDescriptor, FunctionDescriptor, RenderPipelineDescriptor, StageInputAttributeDescriptor,
+    StageInputDescriptor, StageInputLayoutDescriptor, VertexAttributeDescriptor, VertexBufferLayoutDescriptor,
+    VertexDescriptor,
 };
 use metal2vulkan::bind::SamplerDescriptor;
 use metal2vulkan::pipeline::{ComputePipelineDescriptor, StageSource};
@@ -29,6 +30,33 @@ use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 type Res<T> = Result<T, String>;
+
+
+/// x86Sim: VKMTL_CPS_NEW's trailing stage input descriptor (MTLComputePipelineDescriptor.stageInputDescriptor):
+/// {u32 has, u32 indexType, u32 indexBufferIndex, u32 nlayouts, u32 nattrs, u32 pad, nlayouts x vkmtl_vlayout,
+///  nattrs x vkmtl_vattr}; a layout's stride ~0 is MTLBufferLayoutStrideDynamic.
+fn stage_input_desc(r: &mut Rd) -> Res<Option<StageInputDescriptor>> {
+    let (has, index_type, index_buffer, nl, na, _) = (r.u32(), r.u32(), r.u32(), r.u32(), r.u32(), r.u32());
+    let mut d = StageInputDescriptor::new();
+    d.index_type = IndexType::try_from(index_type).map_err(err("stage input index type"))?;
+    d.index_buffer_index = index_buffer;
+    for _ in 0..nl {
+        let (index, stride, step, rate) = (r.u32(), r.u32(), r.u32(), r.u32());
+        let mut l = StageInputLayoutDescriptor::new(if stride == u32::MAX { None } else { Some(stride) });
+        l.step_function = StepFunction::try_from(step).map_err(err("stage input step function"))?;
+        l.step_rate = rate;
+        d.layouts.insert(index, l);
+    }
+    for _ in 0..na {
+        let (index, format, offset, bi) = (r.u32(), r.u32(), r.u32(), r.u32());
+        let f = AttributeFormat::try_from(format).map_err(err("stage input attribute format"))?;
+        d.attributes.insert(index, StageInputAttributeDescriptor::new(f, offset, bi));
+    }
+    if r.short {
+        return Err("truncated CPS_NEW stage input".into());
+    }
+    Ok(if has != 0 { Some(d) } else { None })
+}
 
 fn err<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> String + '_ {
     move |e| format!("{what}: {e}")
@@ -770,7 +798,9 @@ impl State {
             }
             CPS_NEW => {
                 let (id, f, max_total, multiple) = (r.u64(), r.u64(), r.u32(), r.u32());
-                match self.cps_new(id, f, max_total, multiple != 0) {
+                // x86Sim: an optional stage input descriptor follows (older metalhostd sends none)
+                let stage_input = if r.at < r.b.len() { stage_input_desc(&mut r) } else { Ok(None) };
+                match stage_input.and_then(|si| self.cps_new(id, f, max_total, multiple != 0, si)) {
                     Ok((tew, max, stat)) => {
                         w.i32(0).u32(tew).u32(max).u32(stat);
                     }
@@ -982,7 +1012,7 @@ impl State {
         Ok(ty)
     }
 
-    fn cps_new(&mut self, id: u64, f: u64, max_total: u32, multiple: bool) -> Res<(u32, u32, u32)> {
+    fn cps_new(&mut self, id: u64, f: u64, max_total: u32, multiple: bool, stage_input: Option<StageInputDescriptor>) -> Res<(u32, u32, u32)> {
         if let Some((_, name)) = self.func_src.get(&f) {
             self.pso_names.insert(id, name.clone());
         }
@@ -990,6 +1020,12 @@ impl State {
         let mut desc = ComputePipelineDescriptor::new(StageSource::Function(f.clone()));
         desc.max_total_threads_per_threadgroup = if max_total == 0 { None } else { Some(max_total) };
         desc.threadgroup_size_is_multiple_of_execution_width = multiple;
+        if self.log {
+            if let Some(si) = &stage_input {
+                eprintln!("mtlvk: compute pipeline {id:#x}: stage input {si:?}");
+            }
+        }
+        desc.stage_input = stage_input;
         let t0 = std::time::Instant::now();
         let p = self.device.new_compute_pipeline_state(&desc, sampler_ids).map_err(err("new_compute_pipeline_state"))?;
         let r = (p.thread_execution_width(), p.max_total_threads_per_threadgroup(), p.static_threadgroup_memory_length());
@@ -1444,7 +1480,11 @@ impl State {
                     enc.end()?;
                     let dt = if c.u32() == 1 { DispatchType::Concurrent } else { DispatchType::Serial };
                     self.skip_draws.set(false);
-                    enc = Enc::Compute(cb.compute_command_encoder(dt).map_err(err("compute encoder"))?);
+                    let mut ce = cb.compute_command_encoder(dt).map_err(err("compute encoder"))?;
+                    // x86Sim: Apple's simulator fetches a [[stage_in]] kernel's elements on an encoder that never
+                    // set a stage-in region (origin 0, nothing clamped); the runtime wants one set
+                    ce.set_stage_in_region(Region { origin: [0; 3], size: [0; 3] });
+                    enc = Enc::Compute(ce);
                 }
                 C_CS_END => {
                     enc.end()?;
@@ -1786,6 +1826,11 @@ impl State {
             C_CS_BUFFER_OFFSET => {
                 let (off, index) = (c.u64(), c.u32());
                 enc.set_buffer_offset(off, index).map_err(e)?;
+            }
+            C_CS_STAGE_IN_REGION => {
+                let v = [c.u64(), c.u64(), c.u64(), c.u64(), c.u64(), c.u64()];
+                let w = |i: usize| u32::try_from(v[i]).unwrap_or(u32::MAX);
+                enc.set_stage_in_region(Region { origin: [w(0), w(1), w(2)], size: [w(3), w(4), w(5)] });
             }
             C_CS_BYTES => {
                 let (index, len) = (c.u32(), c.u32());
@@ -2646,3 +2691,49 @@ pub fn selftest_compute(device: &Device, metallib: &[u8]) -> Res<()> {
     Ok(())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// VKMTL_CPS_NEW's stage input block as metalhostd writes it (vk_put_stage_input): the check
+    /// p27-pipeline-layout-descriptors' two floats per thread in x, plus a dynamic-stride layout and an indexed step.
+    #[test]
+    fn stage_input_block_decodes_as_metalhostd_writes_it() {
+        let mut w = Wr::default();
+        // has, MTLIndexTypeUInt32, index buffer 4, 2 layouts, 3 attributes, pad
+        w.u32(1).u32(1).u32(4).u32(2).u32(3).u32(0);
+        w.u32(0).u32(8).u32(5).u32(1); // buffer 0: stride 8, threadPositionInGridX, rate 1
+        w.u32(3).u32(u32::MAX).u32(7).u32(2); // buffer 3: MTLBufferLayoutStrideDynamic, x indexed, rate 2
+        w.u32(0).u32(28).u32(0).u32(0); // float at 0 of buffer 0
+        w.u32(1).u32(28).u32(4).u32(0); // float at 4 of buffer 0
+        w.u32(5).u32(9).u32(0).u32(3); // uchar4 normalized at 0 of buffer 3
+        let d = stage_input_desc(&mut Rd::new(&w.0)).unwrap().expect("a stage input descriptor");
+        assert_eq!(d.index_type, IndexType::UInt32);
+        assert_eq!(d.index_buffer_index, 4);
+        let l0 = d.layouts[&0];
+        assert_eq!((l0.stride, l0.step_function, l0.step_rate), (Some(8), StepFunction::ThreadPositionInGridX, 1));
+        let l3 = d.layouts[&3];
+        assert_eq!((l3.stride, l3.step_function, l3.step_rate), (None, StepFunction::ThreadPositionInGridXIndexed, 2));
+        assert_eq!(d.attributes[&1], StageInputAttributeDescriptor::new(AttributeFormat::Float, 4, 0));
+        assert_eq!(d.attributes[&5], StageInputAttributeDescriptor::new(AttributeFormat::UChar4Normalized, 0, 3));
+    }
+
+    /// A descriptor without attributes travels as has = 0: the pipeline is built without one, as before.
+    #[test]
+    fn stage_input_block_without_attributes_is_none() {
+        let mut w = Wr::default();
+        w.u32(0).u32(0).u32(0).u32(0).u32(0).u32(0);
+        assert!(stage_input_desc(&mut Rd::new(&w.0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn stage_input_block_truncated_or_bad_is_refused() {
+        let mut w = Wr::default();
+        w.u32(1).u32(0).u32(0).u32(1).u32(0).u32(0).u32(0).u32(8);
+        assert!(stage_input_desc(&mut Rd::new(&w.0)).is_err());
+        let mut w = Wr::default();
+        w.u32(1).u32(0).u32(0).u32(0).u32(1).u32(0).u32(0).u32(999).u32(0).u32(0);
+        assert!(stage_input_desc(&mut Rd::new(&w.0)).is_err());
+    }
+}

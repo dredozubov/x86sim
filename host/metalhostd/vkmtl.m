@@ -1296,6 +1296,15 @@ uint32_t vk_constant_values(MTLFunctionConstantValues* cv, wbuf* out) {
 	uint32_t c[2] = { (uint32_t)n, (uint32_t)i };
 	[_cb addCommand:VKMTL_C_CS_TGMEM data:c size:sizeof(c)];
 }
+// x86Sim: the region a [[stage_in]] kernel's thread-position fetch is offset by and clamped to
+- (void)setStageInRegion:(MTLRegion)r {
+	uint64_t c[6] = { r.origin.x, r.origin.y, r.origin.z, r.size.width, r.size.height, r.size.depth };
+	[_cb addCommand:VKMTL_C_CS_STAGE_IN_REGION data:c size:sizeof(c)];
+}
+- (void)setStageInRegionWithIndirectBuffer:(id<MTLBuffer>)b indirectBufferOffset:(NSUInteger)o {
+	(void)b; (void)o;
+	VKLOG("setStageInRegionWithIndirectBuffer: not supported (the encoder keeps its region)");
+}
 - (void)vkDispatch:(uint32_t)kind grid:(MTLSize)g group:(MTLSize)t {
 	struct { uint32_t kind, pad; uint64_t g[3], t[3]; } c = { kind, 0, { g.width, g.height, g.depth }, { t.width, t.height, t.depth } };
 	[_cb addCommand:VKMTL_C_CS_DISPATCH data:&c size:sizeof(c)];
@@ -2336,6 +2345,37 @@ static NSUInteger vk_arg_offset(MTLStructType* st, NSUInteger idx, NSUInteger ba
 - (id<MTLLibrary>)newLibraryWithFile:(NSString*)path error:(NSError**)error { return [self newLibraryWithURL:[NSURL fileURLWithPath:path] error:error]; }
 - (id<MTLComputePipelineState>)vkComputeWithFunction:(id<MTLFunction>)f maxTotal:(NSUInteger)maxTotal multiple:(BOOL)multiple icb:(BOOL)icb
 	label:(NSString*)label error:(NSError**)error {
+	return [self vkComputeWithFunction:f maxTotal:maxTotal multiple:multiple icb:icb stageInput:nil label:label error:error];
+}
+// x86Sim: the stage input descriptor of a [[stage_in]] kernel (MTLComputePipelineDescriptor.stageInputDescriptor) follows
+// VKMTL_CPS_NEW's fields: without it mtlvk's kernel fetched nothing (its attributes read 0)
+static void vk_put_stage_input(wbuf* b, MTLStageInputOutputDescriptor* sd) {
+	wbuf lay = { 0 }, att = { 0 };
+	uint32_t nl = 0, na = 0, used = 0;
+	for (uint32_t i = 0; sd && i < 31; i++) {
+		MTLAttributeDescriptor* a = sd.attributes[i];
+		if (!a || a.format == MTLAttributeFormatInvalid) continue;
+		vkmtl_vattr va = { i, (uint32_t)a.format, (uint32_t)a.offset, (uint32_t)a.bufferIndex };
+		wb_put(&att, &va, sizeof(va)); na++;
+		if (a.bufferIndex < 32) used |= 1u << a.bufferIndex;
+	}
+	for (uint32_t i = 0; sd && i < 31; i++) {
+		MTLBufferLayoutDescriptor* l = sd.layouts[i];
+		if (!l || !(used & (1u << i))) continue;
+		// MTLBufferLayoutStrideDynamic (NSUIntegerMax) travels as ~0
+		uint32_t stride = l.stride > UINT32_MAX ? UINT32_MAX : (uint32_t)l.stride;
+		vkmtl_vlayout vl = { i, stride, (uint32_t)l.stepFunction, (uint32_t)l.stepRate };
+		wb_put(&lay, &vl, sizeof(vl)); nl++;
+	}
+	// a descriptor's stageInputDescriptor is never nil: one without attributes is sent as none (pipelines as before)
+	wb_u32(b, na != 0); wb_u32(b, sd ? (uint32_t)sd.indexType : 0); wb_u32(b, sd ? (uint32_t)sd.indexBufferIndex : 0);
+	wb_u32(b, nl); wb_u32(b, na); wb_u32(b, 0);
+	if (lay.n) wb_put(b, lay.p, lay.n);
+	if (att.n) wb_put(b, att.p, att.n);
+	free(lay.p); free(att.p);
+}
+- (id<MTLComputePipelineState>)vkComputeWithFunction:(id<MTLFunction>)f maxTotal:(NSUInteger)maxTotal multiple:(BOOL)multiple icb:(BOOL)icb
+	stageInput:(MTLStageInputOutputDescriptor*)stageInput label:(NSString*)label error:(NSError**)error {
 	if (![(id)f isKindOfClass:[VKMTLFunction class]]) {
 		VKLOG("compute pipeline: function %s is not ours", f ? class_getName([(id)f class]) : "nil");
 		if (error) *error = vk_error(MTLLibraryErrorDomain, MTLLibraryErrorInternal, "no function", 11);
@@ -2344,6 +2384,7 @@ static NSUInteger vk_arg_offset(MTLStructType* st, NSUInteger idx, NSUInteger ba
 	uint64_t id_ = vk_new_id();
 	wbuf b = { 0 };
 	wb_u64(&b, id_); wb_u64(&b, vid(f)); wb_u32(&b, (uint32_t)maxTotal); wb_u32(&b, multiple);
+	if (stageInput) vk_put_stage_input(&b, stageInput);
 	uint32_t rs = 0;
 	char* r = vk_call(VKMTL_CPS_NEW, b.p, (uint32_t)b.n, &rs);
 	free(b.p);
@@ -2379,7 +2420,8 @@ static NSUInteger vk_arg_offset(MTLStructType* st, NSUInteger idx, NSUInteger ba
 	(void)o;
 	if (refl) *refl = nil;
 	return [self vkComputeWithFunction:d.computeFunction maxTotal:d.maxTotalThreadsPerThreadgroup
-		multiple:d.threadGroupSizeIsMultipleOfThreadExecutionWidth icb:d.supportIndirectCommandBuffers label:d.label error:error];
+		multiple:d.threadGroupSizeIsMultipleOfThreadExecutionWidth icb:d.supportIndirectCommandBuffers stageInput:d.stageInputDescriptor
+		label:d.label error:error];
 }
 - (id<MTLSamplerState>)newSamplerStateWithDescriptor:(MTLSamplerDescriptor*)d {
 	vkmtl_samplerdesc sd = { (uint32_t)d.minFilter, (uint32_t)d.magFilter, (uint32_t)d.mipFilter, (uint32_t)d.sAddressMode,

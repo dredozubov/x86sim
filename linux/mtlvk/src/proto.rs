@@ -52,6 +52,7 @@ pub const C_CS_USE: u32 = 19;
 pub const C_CS_END: u32 = 20;
 pub const C_CS_BUFFER_OFFSET: u32 = 21;
 pub const C_CS_DISPATCH_INDIRECT: u32 = 22;
+pub const C_CS_STAGE_IN_REGION: u32 = 23;
 pub const C_RE_PIPELINE: u32 = 30;
 pub const C_RE_BUFFER: u32 = 31;
 pub const C_RE_BYTES: u32 = 32;
