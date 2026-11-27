@@ -43,7 +43,7 @@ fi
 }
 mkdir -p "$DL"
 SRC=$DL/mesa-$MESA_VER.tar.xz
-if [ ! -s "$SRC" ]; then curl -fsSL --retry 3 -o "$SRC.part" "$MESA_URL" && mv "$SRC.part" "$SRC"; fi
+if [ ! -s "$SRC" ]; then curl -fsSL --retry 3 --retry-all-errors -o "$SRC.part" "$MESA_URL" && mv "$SRC.part" "$SRC"; fi
 h=$(sha256sum "$SRC" | cut -d' ' -f1)
 [ "$h" = "$MESA_SHA" ] || { echo "lavapipe: $SRC: sha256 $h, expected $MESA_SHA" >&2; exit 1; }
 rm -rf "$DL/mesa-$MESA_VER" "$DL/build" "$DL/inst"

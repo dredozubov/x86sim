@@ -31,7 +31,7 @@ DNS_VER=2.8.0
 DNS_SHA=${DNS_SHA:-01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af}
 
 fetch() {  # <url> <file> [sha256]: cached in downloads/, checked when a hash is given, the hash printed otherwise
-	if [ ! -s "$DL/$2" ]; then curl -fsSL --retry 3 -o "$DL/$2.part" "$1" && mv "$DL/$2.part" "$DL/$2"; fi
+	if [ ! -s "$DL/$2" ]; then curl -fsSL --retry 3 --retry-all-errors -o "$DL/$2.part" "$1" && mv "$DL/$2.part" "$DL/$2"; fi
 	h=$(sha256sum "$DL/$2" | cut -d' ' -f1)
 	if [ -n "$3" ] && [ "$3" != "$h" ]; then echo "appimage: $2: sha256 $h, expected $3" >&2; exit 1; fi
 	echo "  $2 sha256 $h"
