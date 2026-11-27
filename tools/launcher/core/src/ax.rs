@@ -1158,7 +1158,14 @@ pub fn find_all<'a>(snap: &'a Snapshot, target: &Target) -> Vec<&'a El> {
 
 /// find_all, text matches no worse than `worst` (0 exact label, 1 exact id / value, 2 label prefix, 3 substring)
 pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a El> {
-    let mut v: Vec<(u8, &El)> = Vec::new();
+    let mut v: Vec<(u8, bool, &El)> = Vec::new();
+    // the label exactly as written, case and all: "Sign Up" is the button scrolled out of view, not the title "Sign
+    // up" on screen (case-blind, both were exact matches and the one on screen won)
+    let ws = |s: &str| s.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect::<String>();
+    let as_written = match target {
+        Target::Text(t) => Some(ws(t)),
+        _ => None,
+    };
     for e in &snap.elements {
         let q = match target {
             Target::Ref(r) => (e.r == *r).then_some(0),
@@ -1190,13 +1197,14 @@ pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a
             }
         };
         if let Some(q) = q.filter(|q| *q <= worst) {
-            v.push((q, e));
+            let exact_case = q == 0 && as_written.as_deref().is_some_and(|w| e.label.as_deref().map(ws).as_deref() == Some(w));
+            v.push((q, exact_case, e));
         }
     }
     // the front-most app's element wins a tie (iPadOS: two windows with a Back button each)
     let front_rank = |app: &str| snap.front.iter().position(|f| f == app).unwrap_or(usize::MAX);
-    v.sort_by_key(|(q, e)| (e.offscreen || e.covered, layer_rank(&e.layer), *q, front_rank(&e.app), !actionable(&e.role), e.role == "webview"));
-    v.into_iter().map(|x| x.1).collect()
+    v.sort_by_key(|(q, exact_case, e)| (!*exact_case, e.offscreen || e.covered, layer_rank(&e.layer), *q, front_rank(&e.app), !actionable(&e.role), e.role == "webview"));
+    v.into_iter().map(|x| x.2).collect()
 }
 
 /// `hay` holds `needle` (at its start with `prefix`), and not as a part of a longer number: "Score: 1" is not in
@@ -1429,7 +1437,21 @@ pub fn drag(inst: &Instance, sp: Space, from: (f64, f64), to: (f64, f64), ms: u6
 pub fn resolve(inst: &Instance, target: &str) -> Result<(El, Snapshot)> {
     let snap = snapshot(inst, SnapOpts::default())?;
     let err = match find(&snap, target) {
-        Ok(e) => return Ok((e.clone(), snap)),
+        Ok(e) => {
+            // text that matched only case-blind ("Sign up" for "Sign Up"): an element out of view with the label as
+            // written is what was meant (the default snapshot leaves far ones out)
+            let ws = |s: &str| s.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect::<String>();
+            if let Target::Text(t) = parse_target(target) {
+                if e.label.as_deref().map(ws) != Some(ws(&t)) && e.label.as_deref().is_some_and(|l| l.to_lowercase() == t.to_lowercase()) {
+                    if let Ok(s2) = snapshot(inst, SnapOpts { all: true, ..Default::default() }) {
+                        if let Some(x) = find_all(&s2, &parse_target(target)).into_iter().next().filter(|x| x.label.as_deref().map(ws) == Some(ws(&t))) {
+                            return Ok((x.clone(), s2));
+                        }
+                    }
+                }
+            }
+            return Ok((e.clone(), snap));
+        }
         Err(e) => e,
     };
     // a ref from snapshot all=true: an element scrolled far out of view, which the default snapshot leaves out (the

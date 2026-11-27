@@ -9,7 +9,8 @@ test app tests/apps/x86forms (tests/apps/build.sh x86forms):
   controls set_value on a slider (number, percentage), switch, stepper, segmented control, wheel picker, date and
            time pickers: the app's bindings see each value; a value a control does not take is an error naming them
   drag     a list row dragged by its reorder handle to another place; an item dragged (held to lift) onto a drop box
-  match    wait_for and expect find text as tap does: exact, then prefix, then a part of the label
+  match    wait_for and expect find text as tap does: exact, then prefix, then a part of the label; a label as written
+           (case and all) wins over a case-blind one, also when it is out of view
   kbd      a Return typed (type submit=true) leaves the software keyboard as it was: it still shows on the next focus
            (a hardware Return made UIKit hide it for good, so later forms laid out without it)
   far      a ref from snapshot all=true of a button far out of view keeps its ref once scrolled in: tap by that ref
@@ -245,6 +246,13 @@ class Run:
         self.check("match: expect a part of a label", not err, text.split("\n")[0])
         text, _, err, _ = self.m.call("wait_for", target="ign u", gone=True, timeout=1)
         self.check("match: gone waits while a part of a label still shows", err, text.split("\n")[0])
+        # the label as written wins over a case-blind match: "Sign Up" is the button far down, not the title "Sign up"
+        text, _, err, _ = self.m.call("tap", target="Sign Up", after="none")
+        self.check("match: tap's exact case wins over the case-blind title on screen", not err and 'button "Sign Up"' in text, text.split("\n")[0])
+        self.check("match: and the app got the press", self.state("submitted").startswith("submitted: name="), self.state("submitted"))
+        self.launch()
+        text, _, err, _ = self.m.call("tap", target="Sign up", after="none")
+        self.check("match: the title as written is the title", not err and 'text "Sign up"' in text, text.split("\n")[0])
 
     # -- batch
     def batch(self):
