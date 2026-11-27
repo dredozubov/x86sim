@@ -120,6 +120,10 @@ class Run:
         a, text = self.app_info()
         e = a.get("last_exit") or {}
         self.check("state: terminated: not running, last exit recorded", not a.get("running") and "SIGKILL" in e.get("how", ""), text[:300])
+        # launchd's own accounting: how long the run took (it ran ~10 s here; proc_pid_rusage's start / exit times in
+        # the guest's timebase, not "ran for 12293544232889ms")
+        ran = re.search(r"ran for (\d+)ms", e.get("line", ""))
+        self.check("state: launchd's 'ran for' is the run's length", ran and 1000 <= int(ran.group(1)) <= 600000, e.get("line", "")[-60:])
 
     # -- launch: an app that dies at once
     def launch(self):
