@@ -20,7 +20,7 @@ SELF=build/release/ci.sh
 COMPONENTS="darling arm64jit mtlvk launcher lavapipe"
 
 inputs() { case $1 in
-	darling) echo external/darling host/arm64host tools/debug/set_macho_platform.py build/release/build.sh build/release/deps-ubuntu.sh ;;
+	darling) echo $SELF external/darling host/arm64host tools/debug/set_macho_platform.py build/release/build.sh build/release/deps-ubuntu.sh ;;
 	arm64jit) echo $SELF external/dynarmic linux/arm64jit build/release/build.sh build/release/deps-ubuntu.sh ;;
 	mtlvk) echo $SELF external/metal2vulkan linux/mtlvk build/release/build.sh ;;
 	# include_str!/include_bytes! of files outside the crate: features.rs, desktop.rs
