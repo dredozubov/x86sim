@@ -3,7 +3,7 @@
 
 A 1206-wide BGRA frame has tight rows of 4824 bytes and a 64-byte-aligned stride of 4864.
 Decoding with Pillow frombuffer/frombytes without the real stride (or with w*4) shifts every
-row by 40 bytes and produces thin diagonal lines — the artifact in docs/screens/arm64/31-speed1b-gpu-home.png.
+row by 40 bytes and produces thin diagonal lines (the artifact an early GPU home-screen capture showed).
 """
 import os, struct, subprocess, sys, tempfile
 

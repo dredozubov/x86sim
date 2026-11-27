@@ -41,7 +41,7 @@ Projects (DIR defaults to the current directory)
   test --xctest [DIR] [--phone P] [-- x86sim test OPTIONS]
                        the package's XCTest / Swift Testing tests: swift build --build-tests for the phone's
                        simulator, run in the phone by `x86sim test --spm` (per-test results, junit.xml; exit 1 if one
-                       failed). App-hosted and UI test bundles come from Xcode: see README (Tests)
+                       failed). App-hosted and UI test bundles come from Xcode: see docs/TESTING.md
 
 Real devices and publishing (pass-throughs to omarchy-apple-dev, run in DIR)
   device [DIR] [ARGS]  device-run.sh: build, install and launch on a USB / tailnet iPhone (--lldb, --console, ...)

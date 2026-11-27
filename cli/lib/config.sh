@@ -26,7 +26,7 @@ fi
 : "${X86SIM_MTLVK:=$X86SIM_ROOT/linux/mtlvk/target/release/mtlvk}"
 : "${X86SIM_MAC:=}"
 : "${X86SIM_FM_RELAY:=}"   # FoundationModels through a Mac (x86sim.env.example)
-: "${X86SIM_SCREENS:=$X86SIM_ROOT/docs/screens}"
+: "${X86SIM_SCREENS:=$X86SIM_SCRATCH/screens}"   # working screenshots (docs/screens holds the published images only)
 : "${X86SIM_BOOT_SECS:=86400}"
 # Darling build directory (cmake -B)
 : "${X86SIM_DARLING_BUILD:=$X86SIM_ROOT/external/darling/build}"
