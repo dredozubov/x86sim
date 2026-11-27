@@ -60,8 +60,28 @@ pub fn repo_root() -> PathBuf {
     here.ancestors().nth(3).map(Path::to_path_buf).unwrap_or(here)
 }
 
+/// $X86SIM_SCRATCH; else X86SIM_SCRATCH in the root's x86sim.env; else, for an AppImage install (its data dir holds
+/// app/<version>/ and cli -> app/...), ${XDG_CACHE_HOME:-~/.cache}/x86sim as its AppRun sets it; else ~/scratch/x86sim
+/// (a checkout). As cli/lib/config.sh: a tool started from a shell used to act on another cache than the launcher's
+/// phones (#51).
 pub fn scratch() -> PathBuf {
-    std::env::var("X86SIM_SCRATCH").map(PathBuf::from).unwrap_or_else(|_| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("scratch/x86sim"))
+    if let Some(s) = std::env::var_os("X86SIM_SCRATCH").filter(|s| !s.is_empty()) {
+        return PathBuf::from(s);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let root = repo_root();
+    if let Some(v) = std::fs::read_to_string(root.join("x86sim.env")).ok().and_then(|t| {
+        t.lines().rev().find_map(|l| l.trim().strip_prefix("X86SIM_SCRATCH=").map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string()))
+    }) {
+        if !v.is_empty() && !v.contains('$') {
+            return PathBuf::from(v.strip_prefix("~/").map(|r| home.join(r).to_string_lossy().into_owned()).unwrap_or(v));
+        }
+    }
+    if root.join("app").is_dir() && root.join("cli").is_symlink() {
+        let cache = std::env::var_os("XDG_CACHE_HOME").filter(|s| !s.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join(".cache"));
+        return cache.join("x86sim");
+    }
+    home.join("scratch/x86sim")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

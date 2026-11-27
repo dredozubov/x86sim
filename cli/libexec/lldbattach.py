@@ -32,7 +32,21 @@ import x86config  # noqa: E402
 import swiftlldb  # noqa: E402
 
 SYSTEM_LLDB = "/usr/bin/lldb"
-RUN = "/run/user/%d" % os.getuid()
+
+
+def debug_dir():
+    """Where the phone's processes put their debug sockets and read run-time requests (issue #55): its sim.env's
+    X86SIM_A64_DEBUG_DIR (mksimdevice.py), else this user's run dir, as x86config chooses it."""
+    try:
+        for l in open(os.path.join(x86config.device(), "sim.env")):
+            if l.startswith("X86SIM_A64_DEBUG_DIR="):
+                return l.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return x86config.run_dir()
+
+
+RUN = debug_dir()
 
 
 def die(msg, code=1, js=False):
@@ -87,31 +101,62 @@ def prune(u):
                 pass
 
 
-def ensure_stub(u, gpid, wait=15):
-    """The process's debug stub socket: asks a running process to start it (SIGUSR1 + request file)."""
+class Gone(Exception):
+    """The process ended before its debug stub was up (x86sim debug --wait looks for the app again)."""
+
+
+def is_exe(hp, exe):
+    """True once the host process runs exe (its argv[0]): a process found by bundle id at its start can still be the
+    launch helper (xpcproxy_sim) that execs into the app."""
+    try:
+        a0 = open("/proc/%d/cmdline" % hp, "rb").read().split(b"\0")[0].decode(errors="replace")
+    except OSError:
+        return False
+    return os.path.basename(a0) == os.path.basename(exe)
+
+
+def ensure_stub(u, gpid, wait=15, exe=None):
+    """The process's debug stub socket: asks a running process to start it (SIGUSR1 + request file). exe: wait until
+    the process runs it first; the request is sent again every 2 s until the socket is there. (x86sim debug --wait
+    found an app while it was still its launch helper: the helper took the request or the signal came before the
+    translator listened, and the app itself was never asked.)"""
     prune(u)
     p = sock_path(u, gpid)
     hp = linux_pid(gpid, u)
     if hp is None:
         if os.path.exists(p):
             os.unlink(p)   # a dead process's socket
+        if exe:
+            raise Gone()
         die("no process %d in this device" % gpid)
+    end = time.monotonic() + wait
+    if exe:
+        while not is_exe(hp, exe) and time.monotonic() < end:
+            time.sleep(0.1)
+            if linux_pid(gpid, u) is None:
+                raise Gone()
+        if os.path.exists(p) and not is_exe(hp, exe):
+            os.unlink(p)
     # (never probed with connect(): the stub takes every connection as a debugger and stops the process. One debugger
     # at a time: a second waits until the first detaches.)
-    if not os.path.exists(p):
-        open("%s/x86sim-dbg-req-%s-%d" % (RUN, u, gpid), "w").close()
-        # sigqueue with the translator's tool value (host.cpp on_usr1): taken even when the guest handles SIGUSR1
-        try:
-            import ctypes
-            libc = ctypes.CDLL(None, use_errno=True)
-            if libc.sigqueue(hp, signal.SIGUSR1, ctypes.c_void_p(0x78367331)) != 0:
-                raise OSError(ctypes.get_errno(), "sigqueue")
-        except (OSError, AttributeError):
-            os.kill(hp, signal.SIGUSR1)
-    end = time.monotonic() + wait
+    asked = 0.0
     while time.monotonic() < end:
         if os.path.exists(p):
             return p
+        if time.monotonic() - asked > 2:
+            asked = time.monotonic()
+            open("%s/x86sim-dbg-req-%s-%d" % (RUN, u, gpid), "w").close()
+            # sigqueue with the translator's tool value (host.cpp on_usr1): taken even when the guest handles SIGUSR1
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None, use_errno=True)
+                if libc.sigqueue(hp, signal.SIGUSR1, ctypes.c_void_p(0x78367331)) != 0:
+                    raise OSError(ctypes.get_errno(), "sigqueue")
+            except (OSError, AttributeError):
+                try:
+                    os.kill(hp, signal.SIGUSR1)
+                except OSError:
+                    die("no process %d in this device" % gpid)
         time.sleep(0.1)
     die("process %d did not start its debug stub (an older translator: use --launch)" % gpid)
 
@@ -428,7 +473,15 @@ def main(a):
     ll = choose_lldb(js)
     u = udid()
     gpid, exe = resolve(target, launch, wait)
-    sock = ensure_stub(u, gpid)
+    # --wait: the first process found can be one that never becomes the app (a launch that was replaced): look again
+    for _ in range(20):
+        try:
+            sock = ensure_stub(u, gpid, exe=exe if wait else None)
+            break
+        except Gone:
+            gpid, exe = resolve(target, False, True)
+    else:
+        die("%s kept ending before its debug stub was up" % target)
     cmds = setup_commands(exe, sock, find_symbols(exe, syms), ll)
     env = swiftlldb.lldb_env(ll["info"])
     if mode == "start":

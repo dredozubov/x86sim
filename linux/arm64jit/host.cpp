@@ -25,6 +25,7 @@ namespace Dynarmic::Backend { bool IsJitCodeAddress(unsigned long host_pc); }
 #include <ctime>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
@@ -1088,6 +1089,35 @@ static void start_memlog() {
 // shared emitter lock held for each 2 MB step (every write to translated code happens under it), so a site being
 // linked can never lose its new copy-on-write page. X86SIM_A64_FILETRIM_IMAGE=0: leave the image alone.
 std::mutex g_text_patch_mu;
+// Issue #53: the 2 MB chunks of [a, b) that hold a present file page, from one PAGEMAP_SCAN ioctl (Linux 6.7+) instead
+// of a 4 KB pread of pagemap per chunk (thousands per trim across a cache's read-only gigabytes, every 3 s in every
+// process). Only those chunks are stepped; the step still re-reads its chunk's pagemap under its lock before any
+// madvise, so a page made private meanwhile is never dropped. false: no PAGEMAP_SCAN (an older kernel), walk them all.
+struct PmRegion { u64 start, end, categories; };
+struct PmScanArg { u64 size, flags, start, end, walk_end, vec, vec_len, max_pages, category_inverted, category_mask,
+                   category_anyof_mask, return_mask; };
+static bool present_file_chunks(int pm, u64 a, u64 b, std::vector<u64> &out) {
+    static bool unsupported;
+    if (unsupported) return false;
+    constexpr u64 kPresent = 1u << 3, kFile = 1u << 2;  // PAGE_IS_PRESENT, PAGE_IS_FILE (linux/fs.h)
+    constexpr unsigned long kScan = 0xc0606610;          // PAGEMAP_SCAN = _IOWR('f', 16, struct pm_scan_arg)
+    static PmRegion vec[256];
+    out.clear();
+    for (u64 s = a; s < b;) {
+        PmScanArg arg{sizeof(PmScanArg), 0, s, b, 0, (u64)vec, 256, 0, 0, kPresent | kFile, 0, kPresent | kFile};
+        const long n = ioctl(pm, kScan, &arg);
+        if (n < 0) {
+            if (errno == ENOTTY || errno == EINVAL || errno == EOPNOTSUPP) unsupported = true;
+            return false;
+        }
+        for (long i = 0; i < n; i++)
+            for (u64 c = vec[i].start & ~0x1fffffull; c < vec[i].end; c += 0x200000)
+                if (out.empty() || out.back() != std::max(c, a)) out.push_back(std::max(c, a));
+        if (arg.walk_end <= s) break;
+        s = arg.walk_end;
+    }
+    return true;
+}
 std::shared_mutex g_cache_prot_mu;
 bool with_shared_code_lock(void (*fn)(void *), void *arg);  // jit.cpp
 static long rss_file_kb() {
@@ -1222,19 +1252,33 @@ static void file_trim_once() {
             }
             fclose(f);
         }
+        std::vector<u64> cs;
         for (const V &m : w) {
             st.ok = true;
+            const bool scanned = present_file_chunks(pm, m.a, m.b, cs);
+            size_t k = 0;
             for (u64 s = m.a; s < m.b && st.ok; s = st.e) {  // 2 MB-aligned chunks (a page table each)
+                if (scanned) {
+                    if (k == cs.size()) break;
+                    s = cs[k++];
+                }
                 st.s = s; st.e = std::min(m.b, (s | 0x1fffff) + 1);
                 if (m.kind == 4) { std::lock_guard t(g_text_patch_mu); step(&st); }
                 else step(&st);
             }
         }
     }
+    std::vector<u64> cs;
     for (const V &m : v) {
         if (m.kind == 1) { madvise((void *)m.a, m.b - m.a, MADV_DONTNEED); continue; }
         st.ok = true;
+        const bool scanned = present_file_chunks(pm, m.a, m.b, cs);
+        size_t k = 0;
         for (u64 s = m.a; s < m.b && st.ok; s = st.e) {
+            if (scanned) {
+                if (k == cs.size()) break;
+                s = cs[k++];
+            }
             st.s = s; st.e = std::min(m.b, (s | 0x1fffff) + 1);
             if (m.kind == 0) { std::lock_guard g(g_text_patch_mu); step(&st); }
             else if (!with_shared_code_lock(step, &st)) break;

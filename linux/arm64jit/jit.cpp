@@ -696,6 +696,10 @@ struct Forward final : Dynarmic::A64::UserCallbacks {
     std::optional<uint32_t> MemoryReadCode(u64 a) override {
         if (__builtin_expect(g_dbg_nbp.load(std::memory_order_relaxed) != 0, 0))
             if (auto w = dbg_read_code(a)) return w;
+        // lldb's image list notifier is a "ret" only the code fetch has (gdbstub.cpp), also before lldb set any
+        // breakpoint: a process started under the debugger (X86SIM_A64_DEBUG=wait, x86sim debug --launch) reached it
+        // from dyld's first image list change with none set and ran its header padding (EXC_BAD_INSTRUCTION, udf)
+        if (__builtin_expect((a & GuestThread::kTbi) == dbg_notifier(), 0) && a) return 0xD65F03C0u;
         if (auto w = swiftconf_read_code(a)) return w;
         if (auto w = dyld_scan_read_code(a)) return w;
         if (auto w = swifttype_read_code(a)) return w;
@@ -1417,6 +1421,7 @@ void GuestThread::CallSVC(uint32_t swi) {
 std::optional<uint32_t> GuestThread::MemoryReadCode(u64 a) {
     if (__builtin_expect(g_dbg_nbp.load(std::memory_order_relaxed) != 0, 0))
         if (auto w = dbg_read_code(a)) return w;
+    if (__builtin_expect((a & GuestThread::kTbi) == dbg_notifier(), 0) && a) return 0xD65F03C0u;  // see Forward
     return guest_code_word(a);
 }
 

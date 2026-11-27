@@ -607,6 +607,9 @@ def main():
         # Speed 8: on the host, in x86config.run_dir() (/run/user/<uid>; the arm64 container's /dev/shm is private,
         # X86SIM_PRIVATE_SHM); boot-a64.sh links /dev/shm/<its name> to it for the host's viewers
         "SIMFB_RING": frame_ring(device),
+        # Issue #55: where libarm64jit's debug stub and profiler requests live (gdbstub.cpp dbg_dir): the host's run dir,
+        # as the tools look there. A user-namespace phone's (the AppImage's) uid 0 gave /run/user/0, which isn't there.
+        "X86SIM_A64_DEBUG_DIR": os.environ.get("X86SIM_A64_DEBUG_DIR") or x86config.run_dir(),
         # Speed 3: launchd jobs only see Bootstrap.Child, so the JIT flags must be copied here to reach backboardd and
         # SpringBoard. Speed 6: every X86SIM_A64_* flag (was a list that missed new ones, e.g. PERFMAP). X86SIM_SCRATCH: the
         # JIT's scratch dir (a64-penv, a64-slim-park, gbt, crash dumps); without it the JIT falls back to the home of its
