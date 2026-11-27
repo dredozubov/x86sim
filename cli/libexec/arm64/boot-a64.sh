@@ -333,7 +333,7 @@ MIN="com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.appl
 # simulator answers .developerTokenRequestFailed and MPErrorDomain 2 (P27_Services.swift func:MusicKit.p27-requests).
 # sensorkitd (iOS, on demand, sdkcov P27): SensorKit's reader/writer service. Without it SRSensorReader.fetchDevices failed
 # NSCocoaErrorDomain 4099, where Apple answers SRErrorDomain 1 (no authorization) (func:SensorKit.p27-sensors-readers).
-# biomed (iOS, on demand, sdkcov P28): Biome's daemon, also CascadeSets' com.apple.cascade.SetChangeRelayService. Without it
+# biomed (iOS and visionOS, on demand, sdkcov P28): Biome's daemon, also CascadeSets' com.apple.cascade.SetChangeRelayService. Without it
 # AppIntents' RelevantEntities.updateEntities failed com.apple.CascadeSets.Set 3, where Apple's 27.2 simulator takes them
 # (P28_Intents.swift func:AppIntents.p28-shortcuts-schemas). Mach services only (no RunAtLoad / KeepAlive, pressured exit);
 # idle it costs ~100 MB RSS (44 MB anonymous) and no CPU.
@@ -487,6 +487,8 @@ WATCH_UI_SLIM="com.apple.backboardd com.apple.Carousel com.apple.TextInput.kbd c
 # (func:SafariServices.reading-list-add-xros; Apple's visionOS simulator runs the daemon).
 # medialibraryd (on demand, as on iOS above): without it an app's MPMediaQuery opened the never-created music library
 # database and died (ML3DatabaseException "no such table: _MLDatabaseProperties"; func:MediaPlayer.library-authorized-queries).
+# biomed (on demand, as on iOS above): without it RelevantEntities.updateEntities failed com.apple.CascadeSets.Set 3 here
+# too, where Apple's visionOS simulator takes them (idle ~115 MB RSS, 44 MB anonymous, no CPU).
 XR_UI="com.apple.installcoordinationd com.apple.backboardd com.apple.SurfBoard com.apple.vhmdd com.apple.wakeboardd
 	com.apple.homed com.apple.healthd com.apple.geod com.apple.navd
 	com.apple.RealityEnvironment
@@ -503,7 +505,7 @@ XR_UI="com.apple.installcoordinationd com.apple.backboardd com.apple.SurfBoard c
 	com.apple.gamed com.apple.gamesaved
 	com.apple.linkd com.apple.mediaanalysisd com.apple.mediaanalysisd.service com.apple.siriactionsd
 	com.apple.managedassetsd com.apple.eligibilityd com.apple.telephonyutilities.callservicesd com.apple.videosubscriptionsd com.apple.shazamd
-	com.apple.WebBookmarks.webbookmarksd com.apple.medialibraryd com.apple.backgroundassets.user com.apple.itunescloudd"
+	com.apple.WebBookmarks.webbookmarksd com.apple.medialibraryd com.apple.backgroundassets.user com.apple.itunescloudd com.apple.biomed"
 XR_UI_SLIM="com.apple.backboardd com.apple.SurfBoard com.apple.vhmdd com.apple.wakeboardd com.apple.RealityEnvironment com.apple.TextInput.kbd
 	com.apple.FileCoordination"
 # No fpsim2host on tvOS / watchOS: their FileProvider has no FPSimulatorSupportInterface (no Files app), so it exited 1
