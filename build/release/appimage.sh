@@ -43,7 +43,7 @@ mkdir -p "$P" "$S/bin" "$S/pylib"
 
 echo "== payload (version $VERSION)"
 # our files, as committed (no gitignored Apple data can come along)
-git -C "$X" ls-files -z -- cli host linux tools/debug tools/runtime tests docs/RELEASE.md README.md LICENSE* \
+git -C "$X" ls-files -z -- cli host linux tools/debug tools/runtime tools/devicetypes tools/devicemodels tests docs/RELEASE.md README.md LICENSE* \
 	| (cd "$X" && xargs -0 cp --parents -t "$P" 2>/dev/null) || true
 rm -rf "$P/linux/mtlvk/src" "$P/tests/metal/shaders"
 # omarchy-apple-dev (submodule, our fork): the scripts and tools `x86sim dev` runs, not its receipts, docs, tests or
@@ -52,7 +52,7 @@ O=$X/external/omarchy-apple-dev
 [ -f "$O/install-toolchain.sh" ] || { echo "appimage: external/omarchy-apple-dev is not checked out (git submodule update --init external/omarchy-apple-dev)" >&2; exit 1; }
 mkdir -p "$P/external/omarchy-apple-dev"
 git -C "$O" ls-files -z -- install-toolchain.sh ship.sh ship-mac.sh device-run.sh tools sdk-free flutter kmp patches compat \
-	swiftbuild linux-bin cocoapods carthage xcodegen tuist rust dotnet shells fastlane \
+	swiftbuild linux-bin cocoapods carthage xcodegen tuist rust dotnet shells fastlane bazel \
 	LICENSE README.md CHANGELOG.md docs/DISTROS.md | (cd "$O" && xargs -0 cp --parents -t "$P/external/omarchy-apple-dev")
 echo "  omarchy-apple-dev $(git -C "$O" describe --tags --always), $(du -sh "$P/external/omarchy-apple-dev" | cut -f1)"
 # build outputs at the paths the scripts and the launcher expect (repo-relative)
