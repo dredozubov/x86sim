@@ -144,8 +144,23 @@ and the one a running device renders on.
 - **Lifetime**: an mtlvk's users are counted by the resolved socket path in the environment of other devices'
   darlingservers and booting boot-a64.sh processes; it is stopped only when none is left. Stopping a device
   (`A64_STOP_ONLY=1`) starts no mtlvk.
-- **lavapipe for `cpu`**: when no software driver is installed system-wide, `MTLVK_LAVAPIPE_ICD=<lvp_icd.json>` or
-  `~/.local/share/x86sim/lavapipe/lvp_icd.json` adds one to the loader's search (`VK_ADD_DRIVER_FILES`).
+- **lavapipe for `cpu`**: x86Sim comes with its own lavapipe, so `cpu` is a choice on every computer: one with no GPU,
+  one with no Vulkan driver or loader installed, or one whose user wants a device off the GPU. `build/lavapipe.sh`
+  builds it from Mesa's pinned source release (26.2.5, sha256 checked) with only llvmpipe and lavapipe, no window
+  system, and Ubuntu 24.04's LLVM 20 linked in statically: `libvulkan_lvp.so` (about 75 MB, 18 MB compressed) needs
+  only libc, libm, zlib, zstd and libdrm, and a copy of `libdrm.so.2` and of the Vulkan loader (`libvulkan.so.1`) sit
+  beside it. One source change: lavapipe offers `VK_KHR_swapchain` only when a window system is built in, and the
+  runtime's floor asks for the extension, so the script turns it on for Mesa's headless surfaces. The result is in
+  `linux/mtlvk/target/lavapipe` (`make lavapipe` in a checkout, which needs an LLVM with static libraries; an
+  AppImage's payload has it at the same path), where mtlvk looks beside its own binary.
+  Which lavapipe `cpu` uses (`gpus.rs` `lavapipe_icd`): `MTLVK_LAVAPIPE_ICD=<lvp_icd.json>`, else
+  `~/.local/share/x86sim/lavapipe/lvp_icd.json` (a user's own), else the distribution's when one is installed (the
+  loader finds it itself; adding ours would list the CPU twice), else ours, added to the loader's search with
+  `VK_ADD_DRIVER_FILES`. It is added only for `--list-gpus` and for `cpu`: `auto` and a named GPU never load it. On a
+  computer without a Vulkan loader, mtlvk first loads the copy beside our lavapipe, so the runtime's own
+  `dlopen("libvulkan.so.1")` finds it loaded. Checked in a container with no Vulkan and no DRM libraries
+  (`mtlvk --list-gpus` lists llvmpipe as usable) and with an iPhone 17 Pro booted on it to its home screen and
+  Settings.
 
 ## How buffers reach the GPU
 

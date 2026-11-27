@@ -27,7 +27,7 @@ if [ -f "$DEST/VERSION" ] && [ "$(cat "$DEST/VERSION")" = "webkit2gtk-4.1 $WK_VE
 fi
 mkdir -p "$DL"
 PKG=$DL/webkit2gtk-4.1-$WK_VER.pkg.tar.zst
-if [ ! -s "$PKG" ]; then curl -fsSL --retry 3 -o "$PKG.part" "$WK_URL" && mv "$PKG.part" "$PKG"; fi
+if [ ! -s "$PKG" ]; then curl -fsSL --retry 3 --retry-all-errors -o "$PKG.part" "$WK_URL" && mv "$PKG.part" "$PKG"; fi
 h=$(sha256sum "$PKG" | cut -d' ' -f1)
 [ "$h" = "$WK_SHA" ] || { echo "webinspector: $PKG: sha256 $h, expected $WK_SHA" >&2; exit 1; }
 T=$DEST.tmp$$

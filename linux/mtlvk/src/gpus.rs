@@ -79,17 +79,57 @@ pub fn want() -> String {
     }
 }
 
-/// A software Vulkan driver's manifest to add to the loader's search when none is installed system-wide:
-/// MTLVK_LAVAPIPE_ICD, else $XDG_DATA_HOME/x86sim/lavapipe/lvp_icd.json (a user's own unpacked lavapipe).
+/// The lavapipe that comes with x86Sim (build/lavapipe.sh: Mesa's CPU Vulkan driver with LLVM linked in, and a copy of
+/// the Vulkan loader): `<mtlvk's dir>/../lavapipe`, which is linux/mtlvk/target/lavapipe in a checkout and in an
+/// AppImage's payload
+fn bundled_dir() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let d = exe.parent()?.parent()?.join("lavapipe");
+    d.join("lvp_icd.json").exists().then_some(d)
+}
+
+/// Whether a lavapipe is installed where the Vulkan loader looks by itself (the distribution's package)
+fn system_lavapipe() -> bool {
+    let mut dirs: Vec<std::path::PathBuf> = ["/usr/share/vulkan/icd.d", "/usr/local/share/vulkan/icd.d", "/etc/vulkan/icd.d"].iter().map(Into::into).collect();
+    if let Some(d) = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share"))) {
+        dirs.push(d.join("vulkan/icd.d"));
+    }
+    dirs.iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().flatten().any(|e| e.file_name().to_string_lossy().starts_with("lvp_icd"))
+}
+
+/// A software Vulkan driver's manifest to add to the loader's search: MTLVK_LAVAPIPE_ICD, else
+/// $XDG_DATA_HOME/x86sim/lavapipe/lvp_icd.json (a user's own unpacked lavapipe), else, when the distribution has none
+/// installed (the loader finds that one itself, and two would list the CPU twice), the one that comes with x86Sim.
 fn lavapipe_icd() -> Option<String> {
     if let Some(p) = std::env::var_os("MTLVK_LAVAPIPE_ICD").filter(|p| !p.is_empty()) {
         return Some(p.to_string_lossy().into_owned());
     }
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")))?;
-    let p = data.join("x86sim/lavapipe/lvp_icd.json");
-    p.exists().then(|| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")));
+    if let Some(p) = data.map(|d| d.join("x86sim/lavapipe/lvp_icd.json")).filter(|p| p.exists()) {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    if system_lavapipe() {
+        return None;
+    }
+    bundled_dir().map(|d| d.join("lvp_icd.json").to_string_lossy().into_owned())
+}
+
+/// A host with no Vulkan loader at all (a server, a container): load the copy beside the bundled lavapipe, so the
+/// runtime's own dlopen of "libvulkan.so.1" finds it loaded (glibc matches a loaded library by its soname)
+fn ensure_loader() {
+    // SAFETY: dlopen of a library by name; the handle is kept for the life of the process (never closed)
+    unsafe {
+        if !libc::dlopen(c"libvulkan.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL).is_null() {
+            return;
+        }
+        let Some(lib) = bundled_dir().map(|d| d.join("libvulkan.so.1")).filter(|p| p.exists()) else { return };
+        let Ok(c) = std::ffi::CString::new(lib.to_string_lossy().as_bytes()) else { return };
+        if libc::dlopen(c.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL).is_null() {
+            eprintln!("mtlvk: no Vulkan loader on this computer, and {} did not load", lib.display());
+        }
+    }
 }
 
 /// Before the Vulkan instance: let the loader also find a lavapipe that is not installed system-wide, when the list
@@ -98,6 +138,7 @@ pub fn prepare_loader(listing: bool) {
     if !(listing || want() == "cpu") {
         return;
     }
+    ensure_loader();
     let Some(icd) = lavapipe_icd() else { return };
     let mut v = std::env::var("VK_ADD_DRIVER_FILES").unwrap_or_default();
     if !v.split(':').any(|p| p == icd) {

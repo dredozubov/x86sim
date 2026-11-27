@@ -43,6 +43,11 @@ usr/share/x86sim/
                                a64hugecopy, arm64host
   bin/ipsw (MIT), bin/7zz + 7z (7-Zip, LGPL-2.1 + unRAR), bin/rcodesign (MPL-2.0: re-signs converted .ipa / device
                                builds), pylib/dns (dnspython, ISC)
+  payload/linux/mtlvk/target/lavapipe/
+                               lavapipe for a device's GPU setting "cpu" (build/lavapipe.sh: Mesa 26.2.5 from source,
+                               sha256 pinned, LLVM 20 linked in; MIT + Apache-2.0 with LLVM exceptions, its LICENSE),
+                               with libdrm.so.2 and the Vulkan loader beside it. About 76 MiB unpacked, 18 MiB of the
+                               AppImage ([METAL.md](METAL.md#gpu-selection))
   webinspector/                WebKit's Web Inspector frontend for `x86sim inspect` (build/webinspector.sh: the
                                WebInspectorUI files of Arch's webkit2gtk-4.1 2.54.3-1 package, sha256 pinned; BSD-2 + MIT,
                                its LICENSE); AppRun copies it to <app>/webinspector. 227 files, 6.3 MiB unpacked,

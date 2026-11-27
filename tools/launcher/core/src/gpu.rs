@@ -153,7 +153,7 @@ pub fn parse(input: &str, l: &[Gpu]) -> Result<String> {
         "auto" | "default" => return Ok("auto".into()),
         "cpu" | "none" | "no-gpu" | "nogpu" | "lavapipe" | "llvmpipe" | "software" => {
             if !l.iter().any(|g| g.usable && g.kind == "cpu") {
-                bail!("no CPU Vulkan device: install lavapipe (Arch: vulkan-swrast, Debian/Ubuntu: mesa-vulkan-drivers, Fedora: mesa-vulkan-drivers), or put its lvp_icd.json in ~/.local/share/x86sim/lavapipe/");
+                bail!("no CPU Vulkan device: x86Sim's own lavapipe is missing (a checkout: build/lavapipe.sh, or install your distribution's: Arch vulkan-swrast, Debian/Ubuntu/Fedora mesa-vulkan-drivers)");
             }
             return Ok("cpu".into());
         }
