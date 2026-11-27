@@ -381,7 +381,8 @@ impl App {
                 // greyed out for the others; a runtime that refuses a model (24B8117: the iPhone Duo) is greyed out for it, as
                 // CoreSimulator decides it (sim::runtime_allows)
                 let fits = |r: &x86sim_core::host::Runtime| r.platform == mp && (r.restricted_to.is_empty() || r.restricted_to.contains(&mid)) && !r.unsupported.contains(&mid);
-                if d.model != d.last_model {
+                // again when the pick no longer fits: a download that just finished (the Duo's build) is taken at once
+                if d.model != d.last_model || !self.runtimes.get(d.runtime).is_some_and(|r| r.present && fits(r)) {
                     d.last_model = d.model;
                     if let Some(i) = self.runtimes.iter().position(|r| r.present && r.platform == mp && r.restricted_to.contains(&mid)) {
                         d.runtime = i;
@@ -403,16 +404,26 @@ impl App {
                         }
                     });
                 } else {
-                    // none of this platform installed: offer its default build
-                    let (ver, build) = x86sim_core::sim::platform_default_build(mp);
-                    let what = format!("{pname} {ver}");
+                    // none installed that takes this model: offer the build that does (issue #64: the iPhone Duo's own
+                    // build beside 24B8117, not 24B8117 again), else the platform's default build
+                    let cat = self.catalogue.lock().unwrap().clone().unwrap_or_default();
+                    let pick = x86sim_core::host::build_for_model(mp, &mid, &self.runtimes, &cat);
                     ui.horizontal(|ui| {
-                        if let Some(f) = self.fetching.get(build) {
+                        let Some((ver, build)) = pick else {
+                            ui.label(muted("Not installed"));
+                            if ui.add(Btn::secondary(format!("{pname} versions")).icon(icon::DOWNLOAD_SIMPLE)).clicked() {
+                                self.download("", "");
+                                close = true;
+                            }
+                            return;
+                        };
+                        let what = if build == x86sim_core::sim::platform_default_build(mp).1 { format!("{pname} {ver}") } else { format!("{pname} {ver} ({build})") };
+                        if let Some(f) = self.fetching.get(&build) {
                             busy(ui, &format!("{what}: {}", fetch_line(f)));
                         } else {
                             ui.label(muted("Not installed"));
                             if ui.add(Btn::secondary(format!("Download {what}")).icon(icon::DOWNLOAD_SIMPLE)).clicked() {
-                                self.download(build, &what);
+                                self.download(&build, &what);
                             }
                         }
                     });

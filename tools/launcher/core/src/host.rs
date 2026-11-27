@@ -108,6 +108,31 @@ pub fn catalogue(refresh: bool) -> Vec<Catalogue> {
     v
 }
 
+/// The (version, build) to download for a model no installed runtime takes: the build in Apple's list beside an
+/// installed one that refuses the model (iOS 27.2 24B91016s for the iPhone Duo, beside 24B8117, which refuses it), else
+/// the platform's default build when that is not here yet. None: nothing known to fetch (Apple's list not loaded).
+/// Offering the default build again for a model it refuses downloaded it over and over (issue #64).
+pub fn build_for_model(platform: &str, model_id: &str, have: &[Runtime], cat: &[Catalogue]) -> Option<(String, String)> {
+    let mine = |r: &&Runtime| r.platform == platform;
+    let installed = |b: &str| have.iter().any(|r| r.build == b && r.present);
+    let refuses = |r: &&Runtime| r.unsupported.iter().any(|m| m == model_id) || (!r.restricted_to.is_empty() && !r.restricted_to.iter().any(|m| m == model_id));
+    // which devices a build beside a general one is for is only in its own profile (known once downloaded): the
+    // general build's unsupported list is what says the model needs one of them
+    let mut alts: Vec<&Catalogue> = have
+        .iter()
+        .filter(mine)
+        .filter(|r| r.present && r.restricted_to.is_empty() && refuses(r))
+        .flat_map(|r| cat.iter().filter(move |c| c.platform == platform && c.alt_of == r.build))
+        .filter(|c| !installed(&c.build))
+        .collect();
+    alts.sort_by_key(|c| c.beta);
+    if let Some(c) = alts.first() {
+        return Some((c.version.clone(), c.build.clone()));
+    }
+    let (ver, build) = crate::sim::platform_default_build(platform);
+    (!installed(build)).then(|| (ver.to_string(), build.to_string()))
+}
+
 pub fn fetch_log(build: &str) -> PathBuf {
     scratch().join(format!("launcher-fetch-{build}.log"))
 }
@@ -338,4 +363,74 @@ pub fn discard_download(r: &Runtime) -> Result<()> {
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rt(build: &str, restricted_to: &[&str], unsupported: &[&str]) -> Runtime {
+        Runtime { dir: format!("ios-27.2-{build}-arm64"), platform: "ios".into(), version: "27.2".into(), build: build.into(), root: PathBuf::new(), present: true, partial: false, jc: PathBuf::new(), restricted_to: restricted_to.iter().map(|s| s.to_string()).collect(), unsupported: unsupported.iter().map(|s| s.to_string()).collect() }
+    }
+
+    fn cat(build: &str, alt_of: &str) -> Catalogue {
+        Catalogue { version: "27.2".into(), build: build.into(), name: String::new(), gb: 8.0, platform: "ios".into(), beta: false, alt_of: alt_of.into() }
+    }
+
+    // issue #64: with only 24B8117 here (it refuses the Duo), the Duo's download is its own build, not 24B8117 again
+    #[test]
+    fn duo_gets_its_own_build() {
+        let have = [rt("24B8117", &[], &["iPhone19,4"])];
+        let c = [cat("24B8117", ""), cat("24B91016s", "24B8117")];
+        assert_eq!(build_for_model("ios", "iPhone19,4", &have, &c), Some(("27.2".into(), "24B91016s".into())));
+        // any other iPhone fits 24B8117: nothing to fetch for it
+        assert_eq!(build_for_model("ios", "iPhone18,1", &have, &c), None);
+    }
+
+    #[test]
+    fn nothing_installed_offers_the_default() {
+        assert_eq!(build_for_model("ios", "iPhone19,4", &[], &[cat("24B8117", ""), cat("24B91016s", "24B8117")]), Some(("27.2".into(), "24B8117".into())));
+    }
+
+    // no model on any platform loops: from any set of installed builds, downloading what the dialog offers until the
+    // model fits never offers the same build twice (an offered build is never one already here) and ends on one that
+    // takes it, or on nothing to offer
+    #[test]
+    fn no_model_loops() {
+        // (platform, build, alt_of, restricted_to, unsupported): the real iOS 27.2 pair, the other platforms' defaults,
+        // and made-up builds for some devices on them (as Apple ships for new hardware)
+        let all: &[(&str, &str, &str, &[&str], &[&str])] = &[
+            ("ios", "24B8117", "", &[], &["iPhone19,4"]),
+            ("ios", "24B91016s", "24B8117", &["iPhone19,4"], &[]),
+            ("tvos", "24K150", "", &[], &["AppleTV18,1"]),
+            ("tvos", "24K9000", "24K150", &["AppleTV18,1"], &[]),
+            ("watchos", "24S118", "", &[], &["Watch8,1", "Watch8,4"]),
+            ("watchos", "24S9001", "24S118", &["Watch8,4"], &[]),
+            ("watchos", "24S9002", "24S118", &["Watch8,1"], &[]),
+            ("xros", "24N120", "", &[], &[]),
+        ];
+        let models: &[(&str, &str)] = &[("ios", "iPhone19,4"), ("ios", "iPhone18,1"), ("ios", "iPad17,4"), ("tvos", "AppleTV18,1"), ("tvos", "AppleTV14,1"), ("watchos", "Watch8,1"), ("watchos", "Watch8,4"), ("watchos", "Watch7,18"), ("xros", "RealityDevice14,1")];
+        let cat: Vec<Catalogue> = all.iter().map(|a| Catalogue { platform: a.0.into(), ..cat(a.1, a.2) }).collect();
+        let mk = |a: &(&str, &str, &str, &[&str], &[&str])| Runtime { platform: a.0.into(), ..rt(a.1, a.3, a.4) };
+        for &(plat, mid) in models {
+            let mine: Vec<_> = all.iter().filter(|a| a.0 == plat).collect();
+            for mask in 0..(1u32 << mine.len()) {
+                let mut have: Vec<Runtime> = mine.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, a)| mk(a)).collect();
+                let fits = |h: &[Runtime]| h.iter().any(|r| (r.restricted_to.is_empty() || r.restricted_to.iter().any(|m| m == mid)) && !r.unsupported.iter().any(|m| m == mid));
+                let mut offered = vec![];
+                while !fits(&have) {
+                    let Some((_, b)) = build_for_model(plat, mid, &have, &cat) else { break };
+                    assert!(!offered.contains(&b) && !have.iter().any(|r| r.build == b), "{mid} from {mask:b}: {b} offered again ({offered:?})");
+                    offered.push(b.clone());
+                    have.push(mk(all.iter().find(|a| a.1 == b).unwrap()));
+                }
+                assert!(fits(&have), "{mid} from {mask:b}: stuck after {offered:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_catalogue_no_refetch_of_the_default() {
+        assert_eq!(build_for_model("ios", "iPhone19,4", &[rt("24B8117", &[], &["iPhone19,4"])], &[]), None);
+    }
 }
