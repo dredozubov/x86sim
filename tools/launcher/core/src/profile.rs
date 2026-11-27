@@ -103,9 +103,10 @@ pub fn resolve(inst: &Instance, app: &str) -> Result<Target> {
     Ok(Target { udid, gpid, hpid, label: app.to_string() })
 }
 
+/// Where the phone's processes read run-time requests: the launcher's run dir, which mksimdevice.py also gives them as
+/// X86SIM_A64_DEBUG_DIR (issue #55: an AppImage phone's uid 0 had looked in /run/user/0).
 fn run_dir() -> PathBuf {
-    // SAFETY: getuid has no preconditions
-    PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
+    crate::rundir::run_dir().to_path_buf()
 }
 
 fn request(t: &Target, body: &str) -> Result<()> {

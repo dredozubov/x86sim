@@ -32,7 +32,21 @@ import x86config  # noqa: E402
 import swiftlldb  # noqa: E402
 
 SYSTEM_LLDB = "/usr/bin/lldb"
-RUN = "/run/user/%d" % os.getuid()
+
+
+def debug_dir():
+    """Where the phone's processes put their debug sockets and read run-time requests (issue #55): its sim.env's
+    X86SIM_A64_DEBUG_DIR (mksimdevice.py), else this user's run dir, as x86config chooses it."""
+    try:
+        for l in open(os.path.join(x86config.device(), "sim.env")):
+            if l.startswith("X86SIM_A64_DEBUG_DIR="):
+                return l.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return x86config.run_dir()
+
+
+RUN = debug_dir()
 
 
 def die(msg, code=1, js=False):
