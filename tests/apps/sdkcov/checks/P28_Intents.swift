@@ -1021,8 +1021,13 @@ extension Registry {
             #endif
             step("push info")
             let push = try await p7Within(10) { await WidgetCenter.shared.currentPushInfo.map { "\($0.token.count) B" } ?? "nil" }
-            // Apple's simulator answers nil at once (no push handler token for this app)
+            // Apple's iOS simulator answers nil at once (no push handler token for this app); Apple's visionOS simulator
+            // never answers (no answer in 10 s, twice)
+            #if os(visionOS)
+            t("push info", push == nil, "\(push ?? "no answer in 10 s") (Apple: no answer in 10 s)")
+            #else
             t("push info", push == "nil", "\(push ?? "no answer in 10 s") (Apple: nil)")
+            #endif
             let pc = WidgetPreviewContext(family: .accessoryRectangular)
             _ = pc
             // an accessory widget group and an accented image, drawn outside a widget
