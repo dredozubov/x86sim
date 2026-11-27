@@ -149,7 +149,7 @@ pub fn checks() -> Vec<Check> {
     let rel = read("/proc/sys/kernel/osrelease").trim().to_string();
     let mut it = rel.split(|c: char| !c.is_ascii_digit()).filter_map(|x| x.parse::<u32>().ok());
     let (maj, min) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
-    let overlay = read("/proc/filesystems").lines().any(|l| l.trim_end().ends_with("overlay")) || Path::new(&format!("/lib/modules/{rel}/kernel/fs/overlayfs")).exists() || Path::new(&format!("/usr/lib/modules/{rel}/kernel/fs/overlayfs")).exists();
+    let overlay = overlay_available(&rel);
     v.push(if !overlay {
         check("Linux kernel", Level::Fail, format!("{rel}: no overlayfs"), "Darling mounts each device's system with overlayfs: use a kernel with CONFIG_OVERLAY_FS.")
     } else if (maj, min) < (5, 15) {
@@ -180,13 +180,10 @@ pub fn checks() -> Vec<Check> {
     // GPU: a Vulkan loader and a driver (ICD); software rendering otherwise
     let loader = unsafe { !libc::dlopen(c"libvulkan.so.1".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL).is_null() };
     let mut icds: Vec<String> = vec![];
-    let home_icd = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/vulkan/icd.d"));
-    for dir in [Some(PathBuf::from("/usr/share/vulkan/icd.d")), Some(PathBuf::from("/etc/vulkan/icd.d")), Some(PathBuf::from("/usr/local/share/vulkan/icd.d")), home_icd].into_iter().flatten() {
-        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if n.ends_with(".json") && !n.contains("lvp") {
-                icds.push(n.trim_end_matches(".json").trim_end_matches(".x86_64").trim_end_matches("_icd").to_string());
-            }
+    for f in vulkan_icd_files() {
+        let n = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if !n.contains("lvp") {
+            icds.push(n.trim_end_matches(".json").trim_end_matches(".x86_64").trim_end_matches("_icd").to_string());
         }
     }
     icds.sort();
@@ -276,11 +273,79 @@ pub fn checks() -> Vec<Check> {
         DarlingState::Ready if userns() => check("Darling", Level::Ok, "runs without root (user namespace)", ""),
         DarlingState::Ready if nonroot() => check("Darling", Level::Ok, "runs without root or namespaces (nonroot mode: each device's prefix is a copy)", ""),
         DarlingState::Ready => check("Darling", Level::Ok, format!("installed ({})", darling_bin().display()), ""),
-        DarlingState::Missing => check("Darling", Level::Fail, "not installed yet", "Install it below (asks for your password once)."),
+        DarlingState::Missing => check("Darling", Level::Fail, "not installed yet", match userns_blocker() {
+            Some(why) => format!("Install it below (asks for your password once). No-root mode is not available: {why}."),
+            None => "Install it below (asks for your password once).".to_string(),
+        }),
         DarlingState::NotSetuid => check("Darling", Level::Fail, "bin/darling is not setuid root", "Install it below (asks for your password once)."),
         DarlingState::Outdated { installed } => check("Darling", Level::Warn, format!("an older build is installed ({})", if installed.is_empty() { "unknown" } else { &installed }), "Update it below (asks for your password once)."),
     });
     v
+}
+
+/// overlayfs (Darling's container): registered, or built as a module (a mount loads it, also in a user namespace; #35).
+/// Modules are looked for where distributions keep them (NixOS: /run/current-system/kernel-modules), then in the
+/// kernel's own config.
+fn overlay_available(rel: &str) -> bool {
+    if read("/proc/filesystems").lines().any(|l| l.trim_end().ends_with("overlay")) {
+        return true;
+    }
+    let roots = ["/lib/modules", "/usr/lib/modules", "/run/current-system/kernel-modules/lib/modules", "/run/booted-system/kernel-modules/lib/modules"];
+    if roots.iter().any(|r| Path::new(&format!("{r}/{rel}/kernel/fs/overlayfs")).exists()) {
+        return true;
+    }
+    roots.iter().any(|r| read(&format!("{r}/{rel}/modules.builtin")).lines().any(|l| l.ends_with("/overlay.ko")))
+        || Command::new("zcat").arg("/proc/config.gz").stderr(Stdio::null()).output().is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout).lines().any(|l| l == "CONFIG_OVERLAY_FS=y" || l == "CONFIG_OVERLAY_FS=m")
+        })
+}
+
+/// The Vulkan driver manifests the loader would find: VK_DRIVER_FILES / VK_ICD_FILENAMES (files or directories) when
+/// set, else vulkan/icd.d under XDG_CONFIG_DIRS, /etc, XDG_DATA_HOME and XDG_DATA_DIRS, plus NixOS's
+/// /run/opengl-driver (which AppRun adds to XDG_DATA_DIRS; #35). VK_ADD_DRIVER_FILES adds to either.
+fn vulkan_icd_files() -> Vec<PathBuf> {
+    let list = |v: &str| std::env::var(v).ok().filter(|s| !s.is_empty()).map(|s| s.split(':').filter(|x| !x.is_empty()).map(PathBuf::from).collect::<Vec<_>>());
+    let mut places = match list("VK_DRIVER_FILES").or_else(|| list("VK_ICD_FILENAMES")) {
+        Some(v) => v,
+        None => {
+            let mut dirs: Vec<PathBuf> = vec![];
+            let xdg = |v: &str, d: &str| std::env::var(v).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| d.to_string());
+            dirs.extend(xdg("XDG_CONFIG_DIRS", "/etc/xdg").split(':').filter(|x| !x.is_empty()).map(PathBuf::from));
+            dirs.push(PathBuf::from("/etc"));
+            if let Some(h) = std::env::var_os("XDG_DATA_HOME").filter(|h| !h.is_empty()).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))) {
+                dirs.push(h);
+            }
+            dirs.extend(xdg("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(':').filter(|x| !x.is_empty()).map(PathBuf::from));
+            dirs.extend(["/usr/local/share", "/usr/share", "/run/opengl-driver/share"].map(PathBuf::from));
+            dirs.into_iter().map(|d| d.join("vulkan/icd.d")).collect()
+        }
+    };
+    places.extend(list("VK_ADD_DRIVER_FILES").unwrap_or_default());
+    let mut files = vec![];
+    for p in places {
+        if p.is_dir() {
+            files.extend(std::fs::read_dir(&p).into_iter().flatten().flatten().map(|e| e.path()).filter(|f| f.extension().is_some_and(|x| x == "json")));
+        } else if p.is_file() {
+            files.push(p);
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Why the AppImage's no-root (userns) mode cannot run here, as AppRun probes it (#13, #35): None when it can.
+pub fn userns_blocker() -> Option<&'static str> {
+    let ok = |args: &[&str]| Command::new("unshare").args(args).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if !ok(&["-r", "-m"]) {
+        Some("this system blocks unprivileged user namespaces")
+    } else if !Path::new("/opt").is_dir() {
+        Some("/opt does not exist (create it once: sudo mkdir /opt; on NixOS systemd.tmpfiles.rules = [ \"d /opt 0755 root root -\" ])")
+    } else if !ok(&["-r", "-m", "-p", "-f", "--mount-proc"]) {
+        Some("a new process namespace cannot mount its /proc here (a container that masks parts of /proc)")
+    } else {
+        None
+    }
 }
 
 /// Links an iOS runtime that's already on disk (another checkout's runtimes/<dir>, or a previous install) into
