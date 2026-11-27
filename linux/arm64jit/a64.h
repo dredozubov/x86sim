@@ -175,6 +175,7 @@ constexpr u32 kDbgSvc = 0xffce;
 extern std::atomic<int> g_dbg_on;   // a debugger is attached (or awaited): threads check the safe points
 extern std::atomic<int> g_dbg_nbp;  // breakpoints set: the code fetch looks them up
 std::optional<uint32_t> dbg_read_code(u64 a);
+u64 dbg_notifier();  // lldb's image list notifier address (gdbstub.cpp), 0 if none
 bool dbg_bp_active(u64 a);
 void dbg_set_notifier(u64 a);
 std::unique_ptr<Dynarmic::A64::Jit> dbg_make_jit(GuestThread &t);  // jit.cpp

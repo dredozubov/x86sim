@@ -136,6 +136,7 @@ bool dbg_started() { return g_started.load(std::memory_order_relaxed); }
 
 static u64 g_notifier;  // host.cpp: lldb's image list notifier, a "ret" only the code fetch has
 void dbg_set_notifier(u64 a) { g_notifier = a; }
+u64 dbg_notifier() { return g_notifier; }
 
 // Translator code fetch: "svc #kDbgSvc" at a breakpoint; "ret" at the notifier.
 std::optional<uint32_t> dbg_read_code(u64 a) {
