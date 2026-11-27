@@ -114,7 +114,10 @@ Darling's `bin/darling` must be setuid root and its prefix is fixed; an AppImage
   can't raise its FD limit above the hard limit or renice itself to -10 (warnings). Inside the namespace `/opt` shows
   only `x86sim/` (the host's other `/opt` entries are hidden from Darling, not from Linux).
   **Not available** where unprivileged user namespaces are blocked: Ubuntu 23.10+ (AppArmor
-  `kernel.apparmor_restrict_unprivileged_userns=1`), hardened kernels, some containers. AppRun probes `unshare -r -m true`.
+  `kernel.apparmor_restrict_unprivileged_userns=1`), hardened kernels, some containers. AppRun probes what the mode
+  needs: `unshare -r -m true`, `/opt` to bind onto (NixOS has none, #35) and `unshare -r -m -p -f --mount-proc true` (a
+  container that masks parts of `/proc`, e.g. podman, refuses darlingserver's procfs mount: #13). Setup's Darling row
+  names the one that failed (setup.rs `userns_blocker`).
 - **system (one password prompt).** The wizard copies `usr/share/x86sim/darling` out of the mount (root can't read a
   user's FUSE mount) to the cache, then `pkexec sh install-helper.sh install <dir> <id>`: copy to
   `/opt/x86sim/darling-<id>`, `chown -R root:root`, `chmod 4755 bin/darling`, atomically switch the

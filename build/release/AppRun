@@ -58,12 +58,15 @@ done
 # X86SIM_DARLING_MODE picks one; auto: system when this build is installed there, else userns when the kernel allows
 # it, else nonroot in a container (which has a PID namespace of its own: guests see small pids, as XNU's are; on a bare
 # host they would get the host's, up to 4194304), else system (the wizard then asks to install).
+# userns needs all of what darling-userns.sh and darlingserver do there: a user + mount namespace, /opt to bind the
+# tree onto (NixOS has none, #35), and a PID namespace that mounts its own /proc (refused in containers that mask parts
+# of /proc, e.g. podman: "Cannot mount procfs: Operation not permitted", #13). setup.rs userns_blocker() says which.
 DID=$(cat "$S/DARLING_ID")
 mode=${X86SIM_DARLING_MODE:-auto}
 if [ "$mode" = auto ]; then
 	if [ -u /opt/x86sim/darling/bin/darling ] && [ "$(cat /opt/x86sim/darling/.x86sim-complete 2>/dev/null)" = "$DID" ]; then
 		mode=system
-	elif unshare -r -m true 2>/dev/null; then
+	elif [ -d /opt ] && unshare -r -m true 2>/dev/null && unshare -r -m -p -f --mount-proc true 2>/dev/null; then
 		mode=userns
 	elif [ -e /run/.containerenv ] || [ -e /.dockerenv ]; then
 		mode=nonroot
@@ -76,6 +79,10 @@ if [ "$mode" = userns ] || [ "$mode" = nonroot ]; then
 	if [ ! -f "$APP/darling/.x86sim-copied" ]; then
 		rm -rf "$APP/darling.tmp"
 		cp -a "$S/darling" "$APP/darling.tmp"
+		# bin/darling is setuid in the payload (for the system install); here it must not be: as root in a container
+		# whose AppImage was unpacked by another uid it ran as that uid, and Darling refused a launcher with privileges
+		# but not root ("started with privileges, but not as root", #13)
+		chmod -R u-s,g-s "$APP/darling.tmp"
 		touch "$APP/darling.tmp/.x86sim-copied"
 		mv "$APP/darling.tmp" "$APP/darling"
 	fi
@@ -101,6 +108,12 @@ if [ -n "${APPIMAGE:-}" ] && [ -f "$APPIMAGE" ] && [ -L "$DATA/x86sim.AppImage" 
 	ln -sfn "$APPIMAGE" "$DATA/x86sim.AppImage.new" && mv -Tf "$DATA/x86sim.AppImage.new" "$DATA/x86sim.AppImage"
 fi
 export X86SIM_DARLING_MODE=$mode
+# NixOS keeps the Vulkan drivers in /run/opengl-driver/share/vulkan/icd.d, which the loader finds only through
+# XDG_DATA_DIRS (#35): without it mtlvk drew on the CPU
+if [ -d /run/opengl-driver/share/vulkan/icd.d ]; then
+	case ":${XDG_DATA_DIRS:-}:" in *:/run/opengl-driver/share:*) ;; *)
+		export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/run/opengl-driver/share" ;; esac
+fi
 export X86SIM_ROOT="$DATA" X86SIM_SCRATCH="$CACHE" X86SIM_APP="$APP" X86SIM_VERSION="$VER"
 export X86SIM_DARLING_ID="$(cat "$APP/DARLING_ID")" X86SIM_DARLING_STAGE="$S/darling" X86SIM_PYLIB="$APP/pylib"
 # the Darling build tree is not shipped: nothing to heal the prefix from

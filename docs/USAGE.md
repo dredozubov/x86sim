@@ -206,3 +206,39 @@ restarts of the server; `x86sim serve --bg` runs it as its own systemd user serv
 beside a device's screen opens it in the browser, and its Share section turns tunnels on and off, copies links and
 stops sharing. Tailscale must be logged in, with Serve (and Funnel) enabled for the tailnet; `x86sim serve` shows
 the admin link when they are not.
+
+## NixOS and containers
+
+**NixOS.** Run the AppImage with `appimage-run`.
+- **Vulkan:** the drivers in `/run/opengl-driver` are found by themselves.
+- **No-root mode** needs `/opt` to exist, and NixOS has none. Create it once with `sudo mkdir /opt`, or permanently
+  with `systemd.tmpfiles.rules = [ "d /opt 0755 root root -" ];`. Without it, Setup offers the install that asks for
+  your password.
+- **Overlayfs** may be built as a module. That is fine: a mount loads it.
+- **App toolchain** (`x86sim dev setup`): its build tools must be inside `appimage-run`'s environment, not just
+  installed on the system:
+
+```nix
+# nix-build this file, then run the AppImage with result/bin/appimage-run
+(import <nixpkgs> { }).appimage-run.override {
+  extraPkgs = p: with p; [
+    gcc gcc.cc glibc.dev          # swift.org clang wants /usr/lib/gcc/<triple>/<ver> (crtbeginS.o, libgcc) and libc headers
+    git zip unzip pkg-config curl
+    openssl openssl.dev
+    libimobiledevice libimobiledevice.dev libimobiledevice-glue libimobiledevice-glue.dev
+    libplist libplist.dev libusbmuxd usbmuxd libusb1.dev
+    xz.dev zlib.dev bzip2.dev libxml2.dev sqlite.dev curl.dev linuxHeaders
+    (python3.withPackages (ps: [ ps.pip ps.virtualenv ]))
+    libxml2 sqlite ncurses libedit zlib libuuid stdenv.cc.cc.lib
+  ];
+}
+```
+
+usbmuxd is only for a physical iPhone. If the Swift toolchain reports a missing `libncurses.so.6` / `libtinfo.so.6`,
+`x86sim dev setup` links them into the toolchain.
+
+**Containers (podman, docker).** Inside a container, Darling runs in nonroot mode: no namespaces, and each device's
+prefix is a copy of the system image. This also applies where the container allows user namespaces but masks parts of
+`/proc`, which a new process namespace then cannot mount. The overlay in the prefix falls back to fuse-overlayfs or to
+a copy by itself. Run x86Sim there as an ordinary user, as toolbox and distrobox do: as the container's root, Darling
+takes its root mode instead, which needs the namespaces the container does not give.

@@ -150,7 +150,7 @@ Agents that work from a shell can use the skill file in [skills/x86sim/SKILL.md]
 
 | | |
 |---|---|
-| **OS** | x86-64 Linux with glibc 2.39 or newer: Ubuntu 24.04+, Debian 13, Fedora 39+, Arch and derivatives |
+| **OS** | x86-64 Linux with glibc 2.39 or newer: Ubuntu 24.04+, Debian 13, Fedora 39+, Arch and derivatives, NixOS (with `appimage-run`, see [NixOS and containers](docs/USAGE.md#nixos-and-containers)); also in podman / docker containers |
 | **CPU** | x86-64 with SSE4.1, POPCNT and CX16 (any PC from the last decade) |
 | **GPU** | A Vulkan GPU and driver: NVIDIA (proprietary driver), AMD or Intel (Mesa). Optional: without one, or if you prefer, devices draw on the CPU |
 | **Memory** | 8 GB minimum, 16 GB recommended |
