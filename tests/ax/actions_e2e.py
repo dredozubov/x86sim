@@ -10,6 +10,8 @@ test app tests/apps/x86forms (tests/apps/build.sh x86forms):
            time pickers: the app's bindings see each value; a value a control does not take is an error naming them
   drag     a list row dragged by its reorder handle to another place; an item dragged (held to lift) onto a drop box
   match    wait_for and expect find text as tap does: exact, then prefix, then a part of the label
+  kbd      a Return typed (type submit=true) leaves the software keyboard as it was: it still shows on the next focus
+           (a hardware Return made UIKit hide it for good, so later forms laid out without it)
   far      a ref from snapshot all=true of a button far out of view keeps its ref once scrolled in: tap by that ref
            scrolls it in and presses it (a SwiftUI Form that simax's scroll does not move)
   batch    a log-in-like flow in one call (relaunch, wait, type, expect, screenshot): one line per step, the image,
@@ -192,6 +194,30 @@ class Run:
         self.check("wait_for: a condition that never holds times out as an error", err and "FAIL" in text, text.split("\n")[0])
 
     # -- match: wait_for / expect by a part of a label
+    # -- kbd: Return through the software keyboard
+    def keys_up(self):
+        s, _ = self.m.snap()
+        return sum(1 for e in s["elements"] if e.get("role") == "key" and not e.get("offscreen")) >= 10
+
+    def kbd(self):
+        if not self.launch():
+            return
+        self.m.call("tap", target="Email", after="none")
+        time.sleep(1.5)
+        if not self.keys_up():
+            self.m.call("sim_keyboard", keyboard="software", action="on", after="none")
+            time.sleep(1)
+        self.check("kbd: the software keyboard is up on a focused field", self.keys_up())
+        text, _, err, _ = self.m.call("type", text="kb@example.com", submit=True, after="none")
+        self.check("kbd: type submit=true presses Return", not err and "Return pressed" in text, text[:200])
+        self.m.call("tap", target="Password", after="none")
+        time.sleep(1.5)
+        self.check("kbd: the software keyboard still shows on the next field", self.keys_up())
+        self.launch()
+        self.m.call("tap", target="Email", after="none")
+        time.sleep(1.5)
+        self.check("kbd: and after a relaunch", self.keys_up())
+
     # -- far: refs of elements far out of view
     def far(self):
         if not self.launch():
@@ -259,7 +285,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["focus", "fill", "controls", "drag", "expect", "match", "far", "batch"]:
+        for name in ["focus", "fill", "controls", "drag", "expect", "match", "kbd", "far", "batch"]:
             if want(name):
                 getattr(r, name)()
     finally:

@@ -1815,10 +1815,19 @@ pub fn type_text(inst: &Instance, text: &str, clear: bool, submit: bool, keys: b
                 v = type_in_app(inst, &json!({"op": "type", "text": text, "clear": clear, "submit": false}))?;
             }
             TypeStep::Return => {
+                returns += 1;
+                // the software keyboard's own return key when it is up, as a person presses it: a hardware Return key
+                // press makes UIKit take a hardware keyboard as in use, and the software keyboard then never showed
+                // again on this device (not even after a relaunch), so every later form laid out without it
+                if let Some(k) = snapshot(inst, SnapOpts::default()).ok().and_then(|s| software_return_key(&s).cloned()) {
+                    if tap(inst, &format!("@{}", k.r), 60, After::None).is_ok() {
+                        std::thread::sleep(Duration::from_millis(if i + 1 < steps.len() { 600 } else { 400 }));
+                        continue;
+                    }
+                }
                 let h = h.get_or_insert_with(|| Hid::new(&inst.sock));
                 h.key(true, 0x28);
                 h.key(false, 0x28);
-                returns += 1;
                 // simhid can hold a key for up to ~1 s (the keyboard's attach settle, its guard after a touch's lift)
                 // and says nothing when it went out: text after it, or the screen after, waits for it
                 std::thread::sleep(Duration::from_millis(if i + 1 < steps.len() { 1200 } else { 1000 }));
@@ -2670,6 +2679,16 @@ pub fn hw_keyboard_connected(inst: &Instance) -> bool {
 fn simhid_up(inst: &Instance) -> bool {
     let p = std::fs::canonicalize(&inst.sock).unwrap_or_else(|_| inst.sock.clone());
     std::os::unix::net::UnixStream::connect(p).is_ok()
+}
+
+/// The software keyboard's return key, when the keyboard is up: its label is the field's return key type (return,
+/// Go, Search, Send, Done, Next, Join, ...), and it is the right-most key of the bottom row
+pub fn software_return_key(s: &Snapshot) -> Option<&El> {
+    if !software_keyboard_up(s) {
+        return None;
+    }
+    const NAMES: &[&str] = &["return", "go", "search", "send", "done", "next", "join", "route", "continue", "emergency call", "enter"];
+    s.elements.iter().filter(|e| e.role == "key" && !e.offscreen).find(|e| e.label.as_deref().is_some_and(|l| NAMES.contains(&l.to_lowercase().as_str())))
 }
 
 /// The software keyboard is on screen: its keys are in the snapshot (role "key", UIKit's keyboard-key trait)
