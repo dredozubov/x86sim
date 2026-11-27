@@ -17,6 +17,11 @@ for _k in $_x86sim_saved; do eval "$_k=\$_x86sim_env_$_k"; done
 : "${X86SIM_RUNTIME:=$X86SIM_ROOT/runtimes/ios-27.2-24B8117-arm64/RuntimeRoot}"
 : "${X86SIM_DEVICE:=$X86SIM_ROOT/var/device-a64}"
 : "${X86SIM_STATE:=$X86SIM_ROOT/var/run}"
+# An AppImage install (its data dir: app/<version>/ and cli -> app/...) keeps its scratch where its AppRun puts it,
+# ${XDG_CACHE_HOME:-~/.cache}/x86sim, also for tools started from a shell without AppRun (#51); a checkout: ~/scratch/x86sim
+if [ -z "${X86SIM_SCRATCH:-}" ] && [ -d "$X86SIM_ROOT/app" ] && [ -L "$X86SIM_ROOT/cli" ]; then
+	X86SIM_SCRATCH=${XDG_CACHE_HOME:-$HOME/.cache}/x86sim
+fi
 : "${X86SIM_SCRATCH:=$HOME/scratch/x86sim}"
 : "${X86SIM_MTLVK:=$X86SIM_ROOT/linux/mtlvk/target/release/mtlvk}"
 : "${X86SIM_MAC:=}"

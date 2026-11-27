@@ -107,6 +107,7 @@ struct disp {
 	size_t ring_slot_bytes;
 	uint64_t ring_frames;
 	uint64_t ring_last_ns;   // RAM 15: last frame copied; ring_trimmed: the slots but the latest given back
+	uint64_t ring_pub_ns;    // RAM 14: last publish (a copy, or a repeated frame republished)
 	bool ring_trimmed;
 	// presents waiting for the GPU, refresh pacing (see below)
 	struct waiting present[PRESENT_QUEUE];
@@ -422,7 +423,11 @@ EXPORT void SFBSwapchainSwapSetCallback(SFBSwapchainRef sc, void* context, dispa
 // is zeroed first and set after the copy, then the header's latest/seq are published (release order). The old
 // framebuffer.bgra file ($SIMFB_OUT) is still written, but at most every 2 s (and once more for the last frame), for
 // tools that read it. The header also carries present statistics (see struct ring_hdr).
-#define RING_SLOTS 4
+// RAM 14: 3 slots (were 4): a reader has two frame periods before the slot it copies is reused (and re-reads a torn
+// one). A screen that never stills (visionOS composites ~30 distinct frames/s) kept every slot resident: 32 MB a slot
+// on a Vision Pro. The header keeps room for RING_SLOT_RECS slot records (the statistics stay at 192).
+#define RING_SLOTS 3
+#define RING_SLOT_RECS 4
 #define RING_HDR 4096
 // x86Sim: age_us = publish time - the present's SwapSubmit time (us): a long frame interval with a small age was late
 // from CA (the app/render server), a large age was held by the GPU or the refresh pacing (tests/perf.py scroll)
@@ -431,9 +436,9 @@ struct ring_hdr {
 	uint32_t magic, version, nslots, slot_bytes, width, height, stride, pad0;
 	_Atomic uint64_t seq; _Atomic uint32_t latest; uint32_t pad1;
 	uint64_t pad2[2];
-	struct ring_slot slots[RING_SLOTS];                    // at 64
+	struct ring_slot slots[RING_SLOT_RECS];                // at 64 (RING_SLOTS used)
 
-	// statistics (at 64 + 32 * RING_SLOTS = 192): counts since the process started
+	// statistics (at 64 + 32 * RING_SLOT_RECS = 192): counts since the process started
 	uint64_t st_submits, st_superseded, st_watchdog, st_copied, st_ready_at_submit;
 	uint64_t st_wait_ns, st_wait_max_ns, st_copy_ns, st_copy_max_ns;
 	uint64_t st_pid;
@@ -461,8 +466,8 @@ static void ring_wake(void* addr) {
 static uint64_t now_ns(void) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb); return mach_absolute_time() * tb.numer / tb.denom; }
 static uint64_t wall_ns(void) { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec; }
 
-// RAM 15: a ring holds RING_SLOTS whole frames in a tmpfs file (shared memory: iPhone 17 4 x 12.2 MB, Pro Max 4 x 14.5,
-// iPad Pro 13 4 x 22.3, the Duo's inner screen 4 x 22.9 MB) and every slot stays resident once written, though only the
+// RAM 15: a ring holds RING_SLOTS whole frames in a tmpfs file (shared memory: iPhone 17 3 x 12.2 MB, Pro Max 3 x 14.5,
+// iPad Pro 13 3 x 22.3, the Duo's inner screen 3 x 22.9 MB) and every slot stays resident once written, though only the
 // latest one is read while the screen is still. After RING_IDLE_MS without a frame (a still home screen, the Duo's
 // hidden screen) the other slots go back to the system (MADV_REMOVE frees a shared tmpfs range; a later write takes new
 // zeroed pages): idle cost one frame per display. SIMFB_RING_IDLE_MS (default 1500; 0 = never trim).
@@ -568,8 +573,25 @@ static void dump(SFBSwapchainRef sc, IOSurfaceRef s, uint64_t submit_ns) {   // 
 	ring_open(D, stride, h);
 	struct ring_hdr* ring = D->ring;
 	size_t ring_slot_bytes = D->ring_slot_bytes;
+	// RAM 14: a present that repeats the latest frame (visionOS composites a still scene at 60 fps) is not copied into
+	// a new slot: the ring counts as idle and ring_trim_tick gives the other slots back (Vision Pro: 3 x 32 MB). The
+	// latest slot is republished at most once a second (seq and time only) for readers waiting on a newer frame.
+	struct ring_slot* cur = ring && ring->seq ? &ring->slots[atomic_load_explicit(&ring->latest, memory_order_relaxed)] : NULL;
+	if (cur && cur->width == w && cur->height == h && cur->stride == stride && (size_t)stride * h <= ring_slot_bytes &&
+	    !memcmp((char*)ring + RING_HDR + (size_t)(cur - ring->slots) * ring_slot_bytes, IOSurfaceGetBaseAddress(s), (size_t)stride * h)) {
+		IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
+		if (now_ns() - D->ring_pub_ns >= 1000000000ull) {
+			D->ring_pub_ns = now_ns();
+			cur->time_ns = wall_ns();
+			atomic_store_explicit(&cur->seq, ++D->ring_frames, memory_order_release);
+			atomic_store_explicit(&ring->seq, D->ring_frames, memory_order_release);
+			ring_wake((void*)&ring->seq);
+		}
+		return;
+	}
 	if (ring && (size_t)stride * h <= ring_slot_bytes) {
 		uint32_t slot = (atomic_load_explicit(&ring->latest, memory_order_relaxed) + 1) % RING_SLOTS;
+		D->ring_pub_ns = now_ns();
 		struct ring_slot* rs = &ring->slots[slot];
 		atomic_store_explicit(&rs->seq, 0, memory_order_relaxed);
 		atomic_thread_fence(memory_order_release);

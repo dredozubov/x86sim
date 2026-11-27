@@ -16,6 +16,9 @@ use crate::dyldcache::Cache;
 use crate::instance::Instance;
 use crate::macho::{function_entries, u32le, u64le, AddrSpace, FileImage, Header};
 use anyhow::{anyhow, bail, Context, Result};
+
+/// host.cpp on_usr1 kToolSigValue: a SIGUSR1 queued with this value is the translator's, whatever the guest handles
+pub const TOOL_SIGVAL: usize = 0x7836_7331;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
@@ -100,16 +103,18 @@ pub fn resolve(inst: &Instance, app: &str) -> Result<Target> {
     Ok(Target { udid, gpid, hpid, label: app.to_string() })
 }
 
+/// Where the phone's processes read run-time requests: the launcher's run dir, which mksimdevice.py also gives them as
+/// X86SIM_A64_DEBUG_DIR (issue #55: an AppImage phone's uid 0 had looked in /run/user/0).
 fn run_dir() -> PathBuf {
-    // SAFETY: getuid has no preconditions
-    PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
+    crate::rundir::run_dir().to_path_buf()
 }
 
 fn request(t: &Target, body: &str) -> Result<()> {
     let p = run_dir().join(format!("x86sim-prof-req-{}-{}", t.udid, t.gpid));
     std::fs::write(&p, body).with_context(|| format!("writing {}", p.display()))?;
-    // SAFETY: plain kill(2) of a pid we just looked up
-    if unsafe { libc::kill(t.hpid, libc::SIGUSR1) } != 0 {
+    // SAFETY: sigqueue(2) of a pid we just looked up
+    // sigqueue with the translator's tool value: taken even when the guest has a SIGUSR1 handler (host.cpp on_usr1)
+    if unsafe { libc::sigqueue(t.hpid, libc::SIGUSR1, libc::sigval { sival_ptr: TOOL_SIGVAL as *mut libc::c_void }) } != 0 {
         let _ = std::fs::remove_file(&p);
         bail!("process {} is gone", t.gpid);
     }
@@ -144,7 +149,7 @@ pub fn start(t: &Target, period_us: u32, max_s: u32) -> Result<Session> {
         std::thread::sleep(Duration::from_millis(50));
     }
     let _ = std::fs::remove_file(run_dir().join(format!("x86sim-prof-req-{}-{}", t.udid, t.gpid)));
-    bail!("process {} did not start the profiler (a translator without x86sim profile, or an app that handles SIGUSR1 itself)", t.gpid)
+    bail!("process {} did not start the profiler (a translator without x86sim profile)", t.gpid)
 }
 
 /// Stops it and waits for the complete raw file (a process that exited meanwhile leaves "<raw>.part": used as is).

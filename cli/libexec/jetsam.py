@@ -155,6 +155,9 @@ NEVER = ("SpringBoard.app/", "PosterBoard.app/", "InputUI.app/", "Campo.app/", "
          # tvOS's system overlay service (an angel, as InputUI / Campo): up from boot, it read as "the app in the
          # foreground" and every idle daemon waited 600 s, not 30 (TV home at 120 s: nothing reclaimed yet)
          "TVSystemUIService.app/",
+         # RAM 14: chronod's widget renderer, an .app on iPad (UIKitApplication:com.apple.chrono.WidgetRenderer-Default,
+         # as in Apple's simulator): it read as the app in the foreground, so every idle daemon waited 600 s, not 30
+         "WidgetRenderer_Default.app/",
          # Platforms 2: visionOS's SpringBoard (it has no visible scene until the compositor runs: killed at 90 s)
          "SurfBoard.app/", "RealityEnvironment.app/",
          # visionOS's system shell runs as separate apps (keyboard, notifications, HUD, Home View, ...), off screen
@@ -168,6 +171,21 @@ NEVER = ("SpringBoard.app/", "PosterBoard.app/", "InputUI.app/", "Campo.app/", "
 # suspended extension, it was killed and relaunched in a loop ("came back 0 s after its kill") and an unlock that hit
 # the gap never undimmed, then froze. A device keeps the active poster's extension alive too.
 NEVER_EXT = ("MercuryPosterExtension.appex/",)
+# Issue #48: an XCTest runner (<Target>-Runner.app, Xcode's XCTRunner.app) stays in the background for the whole of a
+# UI test while the app under test is in front; taken for an idle background app it was killed 30 s into the test
+# ("the test process exited before XCTest finished"). Apple's simulator never reclaims it; testmanagerd ends it after
+# the run. An app is a runner when its bundle carries an .xctest plug-in (or by the runner's name).
+_runner = {}
+def test_runner(exe):
+    if exe not in _runner:
+        app = exe[:exe.index(".app/") + 4] if ".app/" in exe else ""
+        local = app[len("/Volumes/SystemRoot"):] if app.startswith("/Volumes/SystemRoot/") else app
+        try:
+            plug = any(n.endswith(".xctest") for n in os.listdir(os.path.join(local, "PlugIns")))
+        except OSError:
+            plug = False
+        _runner[exe] = plug or app.endswith("-Runner.app") or app.endswith("/XCTRunner.app")
+    return _runner[exe]
 # Platforms 1: parked executables (X86SIM_A64_SLIM_PARK, boot-a64.sh: WidgetRenderer by default) hold no translated
 # code and next to no memory, so killing one frees nothing. On a watch Carousel asks for WidgetRenderer_Snapshots again
 # at once: it was killed and relaunched in a loop ("came back 0 s after its kill").
@@ -483,7 +501,8 @@ def sweep(verbose=False, status=False):
     apps, killed = [], []
     fg_app = False
     rows = [r for r in rows if not parked(r[2])]
-    app_rows = [r for r in rows if ".app/" in r[2] and ".appex/" not in r[2] and not any(k in r[2] for k in NEVER)]
+    app_rows = [r for r in rows if ".app/" in r[2] and ".appex/" not in r[2] and not any(k in r[2] for k in NEVER)
+                and not test_runner(r[2])]
     if app_rows and now - _front["asked"] > FRONT_EVERY:
         ask_front([r[0] for r in app_rows], now)
     fs = front_state()

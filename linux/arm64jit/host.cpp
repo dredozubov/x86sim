@@ -25,6 +25,7 @@ namespace Dynarmic::Backend { bool IsJitCodeAddress(unsigned long host_pc); }
 #include <ctime>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
@@ -137,7 +138,11 @@ static Mapped map_macho(const std::string &path, bool want_unixthread) {
         int prot = (sg->initprot & 1 ? PROT_READ : 0) | (sg->initprot & 2 ? PROT_WRITE : 0);  // guest code is never host-executed
         if (!prot) prot = PROT_READ;
         if (sg->filesize) {
-            void *p = mmap((void *)(sg->vmaddr + m.slide), sg->filesize, prot | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, slice + sg->fileoff);
+            // RAM 14: a segment the guest cannot write (__TEXT, __LINKEDIT) is mapped read-only, so the idle file trim
+            // (X86SIM_A64_FILETRIM, r-p mappings only) drops its clean pages: a daemon's own __TEXT stayed resident
+            // (locationd 17 of 19 MB). dyld_sim keeps write: dyldsim.cpp patches its __TEXT in place.
+            const int mprot = is_dyld || (sg->initprot & 2) ? prot | PROT_WRITE : prot;
+            void *p = mmap((void *)(sg->vmaddr + m.slide), sg->filesize, mprot, MAP_PRIVATE | MAP_FIXED, fd, slice + sg->fileoff);
             if (p == MAP_FAILED) die("cannot map %s %s", path.c_str(), sg->segname);
         }
         if (sg->vmsize > sg->filesize) {
@@ -1019,8 +1024,13 @@ static void memlog_once(bool with_save) {
 bool guest_sig_action_set(int sig);  // signals.cpp
 static sem_t g_memlog_sem;
 static void (*g_darling_usr1)(int, siginfo_t *, void *) = nullptr;
+// x86sim profile / x86sim debug send their SIGUSR1 with sigqueue and this value: the request is the translator's even
+// when the guest has a SIGUSR1 action of its own (callservicesd, a dispatch signal source), which made such processes
+// impossible to profile or attach to at run time.
+constexpr int kToolSigValue = 0x78367331;  // "x6s1"
 static void on_usr1(int sig, siginfo_t *si, void *uc) {
-    if (g_darling_usr1 && guest_sig_action_set(30 /* Darwin SIGUSR1 */)) { g_darling_usr1(sig, si, uc); return; }
+    const bool tool = si && si->si_code == SI_QUEUE && si->si_value.sival_int == kToolSigValue;
+    if (!tool && g_darling_usr1 && guest_sig_action_set(30 /* Darwin SIGUSR1 */)) { g_darling_usr1(sig, si, uc); return; }
     const int e = errno;
     sem_post(&g_memlog_sem);  // async-signal-safe
     errno = e;
@@ -1079,6 +1089,35 @@ static void start_memlog() {
 // shared emitter lock held for each 2 MB step (every write to translated code happens under it), so a site being
 // linked can never lose its new copy-on-write page. X86SIM_A64_FILETRIM_IMAGE=0: leave the image alone.
 std::mutex g_text_patch_mu;
+// Issue #53: the 2 MB chunks of [a, b) that hold a present file page, from one PAGEMAP_SCAN ioctl (Linux 6.7+) instead
+// of a 4 KB pread of pagemap per chunk (thousands per trim across a cache's read-only gigabytes, every 3 s in every
+// process). Only those chunks are stepped; the step still re-reads its chunk's pagemap under its lock before any
+// madvise, so a page made private meanwhile is never dropped. false: no PAGEMAP_SCAN (an older kernel), walk them all.
+struct PmRegion { u64 start, end, categories; };
+struct PmScanArg { u64 size, flags, start, end, walk_end, vec, vec_len, max_pages, category_inverted, category_mask,
+                   category_anyof_mask, return_mask; };
+static bool present_file_chunks(int pm, u64 a, u64 b, std::vector<u64> &out) {
+    static bool unsupported;
+    if (unsupported) return false;
+    constexpr u64 kPresent = 1u << 3, kFile = 1u << 2;  // PAGE_IS_PRESENT, PAGE_IS_FILE (linux/fs.h)
+    constexpr unsigned long kScan = 0xc0606610;          // PAGEMAP_SCAN = _IOWR('f', 16, struct pm_scan_arg)
+    static PmRegion vec[256];
+    out.clear();
+    for (u64 s = a; s < b;) {
+        PmScanArg arg{sizeof(PmScanArg), 0, s, b, 0, (u64)vec, 256, 0, 0, kPresent | kFile, 0, kPresent | kFile};
+        const long n = ioctl(pm, kScan, &arg);
+        if (n < 0) {
+            if (errno == ENOTTY || errno == EINVAL || errno == EOPNOTSUPP) unsupported = true;
+            return false;
+        }
+        for (long i = 0; i < n; i++)
+            for (u64 c = vec[i].start & ~0x1fffffull; c < vec[i].end; c += 0x200000)
+                if (out.empty() || out.back() != std::max(c, a)) out.push_back(std::max(c, a));
+        if (arg.walk_end <= s) break;
+        s = arg.walk_end;
+    }
+    return true;
+}
 std::shared_mutex g_cache_prot_mu;
 bool with_shared_code_lock(void (*fn)(void *), void *arg);  // jit.cpp
 static long rss_file_kb() {
@@ -1213,19 +1252,33 @@ static void file_trim_once() {
             }
             fclose(f);
         }
+        std::vector<u64> cs;
         for (const V &m : w) {
             st.ok = true;
+            const bool scanned = present_file_chunks(pm, m.a, m.b, cs);
+            size_t k = 0;
             for (u64 s = m.a; s < m.b && st.ok; s = st.e) {  // 2 MB-aligned chunks (a page table each)
+                if (scanned) {
+                    if (k == cs.size()) break;
+                    s = cs[k++];
+                }
                 st.s = s; st.e = std::min(m.b, (s | 0x1fffff) + 1);
                 if (m.kind == 4) { std::lock_guard t(g_text_patch_mu); step(&st); }
                 else step(&st);
             }
         }
     }
+    std::vector<u64> cs;
     for (const V &m : v) {
         if (m.kind == 1) { madvise((void *)m.a, m.b - m.a, MADV_DONTNEED); continue; }
         st.ok = true;
+        const bool scanned = present_file_chunks(pm, m.a, m.b, cs);
+        size_t k = 0;
         for (u64 s = m.a; s < m.b && st.ok; s = st.e) {
+            if (scanned) {
+                if (k == cs.size()) break;
+                s = cs[k++];
+            }
             st.s = s; st.e = std::min(m.b, (s | 0x1fffff) + 1);
             if (m.kind == 0) { std::lock_guard g(g_text_patch_mu); step(&st); }
             else if (!with_shared_code_lock(step, &st)) break;
@@ -1378,7 +1431,7 @@ static void start_file_trim() {
         long base = 0, prev = 0;
         const char *se = getenv("X86SIM_A64_FILETRIM_SETTLE");
         const long settle_kb = (se && *se ? atol(se) : 64) << 10;
-        double c0 = cpu(), w0 = now(), fc0 = c0, fw0 = w0;
+        double c0 = cpu(), w0 = now(), fc0 = c0, fw0 = w0, last_trim = 0;
         for (;;) {
             sleep(tick);
             const double c1 = cpu(), w1 = now(), busy = pct(c1 - c0, w1 - w0);
@@ -1395,14 +1448,20 @@ static void start_file_trim() {
             const long grew = r - prev;
             prev = r;
             const bool settled = settle_kb > 0 && busy < 25.0 && grew < 1024 && r - base >= settle_kb;
-            if (busy >= 3.0 && !settled) continue;
+            // RAM 14: a process that never drops under 25% (visionOS backboardd, compositing at 60 fps) kept its whole
+            // start-up fault-around: ~450 MB of image, index and cache pages on a Vision Pro. It is trimmed too once
+            // its file RSS grew by twice the settle size and stopped growing, at most once a minute (the pages it
+            // still runs fault back in from the page cache: minor faults).
+            const bool busy_settled = settle_kb > 0 && busy >= 25.0 && grew < 1024 && r - base >= 2 * settle_kb &&
+                                      w1 - last_trim >= 60e3;
+            if (busy >= 3.0 && !settled && !busy_settled) continue;
             if (r < 0 || r - base < 2048) continue;
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
             file_trim_once();
             clock_gettime(CLOCK_MONOTONIC, &t1);
             base = prev = rss_file_kb();
-            c0 = cpu(); w0 = now();
+            c0 = cpu(); w0 = last_trim = now();
             if (getenv("X86SIM_A64_FILETRIM_LOG"))
                 logf("filetrim: RssFile %ld -> %ld MB in %.1f ms (cpu %.1f%%%s)", r >> 10, base >> 10,
                      (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6, busy, busy >= 3.0 ? ", settled" : "");
