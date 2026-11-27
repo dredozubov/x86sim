@@ -953,7 +953,7 @@ extension Registry {
         })
         #endif
         #if canImport(WidgetKit) && !os(tvOS)
-        c.append(check("WidgetKit", "p28-configurations-controls-builders", timeout: 30) {
+        c.append(check("WidgetKit", "p28-configurations-controls-builders", timeout: 90) {
             var bad: [String] = [], n = 0, info: [String] = []
             func t(_ name: String, _ ok: Bool, _ d: @autoclosure () -> String = "") { n += 1; if !ok { bad.append("\(name) \(d())") } }
             func step(_ m: String) { FileHandle.standardError.write(Data("p28 widget step \(m)\n".utf8)) }
@@ -1020,14 +1020,11 @@ extension Registry {
             t("texture", WidgetTexture.glass != .paper)
             #endif
             step("push info")
-            let push = try await p7Within(10) { await WidgetCenter.shared.currentPushInfo.map { "\($0.token.count) B" } ?? "nil" }
-            // Apple's iOS simulator answers nil at once (no push handler token for this app); Apple's visionOS simulator
-            // never answers (no answer in 10 s, twice)
-            #if os(visionOS)
-            t("push info", push == nil, "\(push ?? "no answer in 10 s") (Apple: no answer in 10 s)")
-            #else
-            t("push info", push == "nil", "\(push ?? "no answer in 10 s") (Apple: nil)")
-            #endif
+            // Apple's simulators answer nil (no push handler token for this app): iOS at once, visionOS too once chronod
+            // runs. On a just-created visionOS simulator chronod takes 26-33 s from its spawn to its WidgetCenter listener
+            // (Apple's unified log), and the answer waits for it: hence 60 s, not 10
+            let push = try await p7Within(60) { await WidgetCenter.shared.currentPushInfo.map { "\($0.token.count) B" } ?? "nil" }
+            t("push info", push == "nil", "\(push ?? "no answer in 60 s") (Apple: nil)")
             let pc = WidgetPreviewContext(family: .accessoryRectangular)
             _ = pc
             // an accessory widget group and an accented image, drawn outside a widget
