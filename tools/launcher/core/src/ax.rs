@@ -1227,7 +1227,15 @@ pub fn find<'a>(snap: &'a Snapshot, target: &str) -> Result<&'a El> {
         if matches!(t, Target::Ref(_)) {
             anyhow!("no element {target} on screen now (refs come from the last snapshot; take a new one)")
         } else {
-            anyhow!("nothing on screen matches {target:?}")
+            // the home screen shows one page of icons: the app may be on another
+            let page = snap.elements.iter().find(|e| e.id.as_deref() == Some("spotlight-pill")).and_then(|e| e.value.clone()).filter(|v| v.starts_with("Page ") && !v.starts_with("Page 1 of 1"));
+            match page {
+                Some(p) => anyhow!(
+                    "nothing on screen matches {target:?} (the home screen shows {p}: icons on other pages are not listed; {})",
+                    if p.starts_with("Page 1 ") { "swipe left for the next page" } else { "press home for page 1, or swipe" }
+                ),
+                None => anyhow!("nothing on screen matches {target:?}"),
+            }
         }
     })
 }

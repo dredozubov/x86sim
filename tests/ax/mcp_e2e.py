@@ -155,6 +155,14 @@ class Run:
         self.m.call("press", button="home", after="none")
         time.sleep(1.5)
 
+    def first_page(self):
+        """The home screen's first page (Settings is there): with test apps installed it has two, and Home goes back
+        to the page last shown; a second Home press goes to the first"""
+        s, _ = self.m.snap()
+        pill = [e for e in s["elements"] if e.get("id") == "spotlight-pill"]
+        if pill and not (pill[0].get("value") or "").startswith("Page 1 "):
+            self.home()
+
     def portrait(self):
         self.m.call("sim_orientation", set="portrait")
         time.sleep(1.5)
@@ -218,6 +226,7 @@ class Run:
     # -- landscape
     def land(self, port):
         self.home()
+        self.first_page()
         self.m.call("sim_orientation", set="landscapeLeft")
         time.sleep(2)
         # the iPhone home screen stays portrait while the phone is held sideways
