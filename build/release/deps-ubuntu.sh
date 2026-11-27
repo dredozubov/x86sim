@@ -2,6 +2,7 @@
 # x86Sim release build: packages for building Darling + our Linux pieces on Ubuntu 24.04 (the CI runner and the local
 # docker check in build/release/README in docs/RELEASE.md). Run as root (CI: sudo). LLVM_VERSION picks clang from
 # apt.llvm.org (our Darling fork is developed with clang 23; -fno-objc-constant-literals needs a recent clang).
+# --pack: only appimage.sh's tools, no toolchain (CI, when every component comes from its cache).
 set -e
 LLVM_VERSION=${LLVM_VERSION:-23}
 export DEBIAN_FRONTEND=noninteractive
@@ -44,6 +45,11 @@ if [ -f /etc/apt/apt-mirrors.txt ]; then
 	fi
 fi
 apt-get update -q
+# --pack: only what appimage.sh needs (CI runs that restore every built component from its cache and only pack)
+if [ "${1:-}" = --pack ]; then
+	apt-get install -y -q --no-install-recommends curl git python3 file desktop-file-utils squashfs-tools zsync zstd libglib2.0-bin
+	exit 0
+fi
 # Darling's own list (external/darling/debian/control), minus i386 (TARGET_i386=OFF), plus what our pieces and the
 # AppImage need (boost for dynarmic, squashfs/zsync for packing, file/desktop-file-utils for appimagetool's checks)
 apt-get install -y -q --no-install-recommends \

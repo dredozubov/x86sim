@@ -1,13 +1,34 @@
-# x86Sim CI: build the AppImage on every push to main and every pull request (artifact only, no release).
+# x86Sim CI: build on every push to main and every pull request (artifact only, no release). Docs-only changes skip it.
+# Every component comes from its cache unless its inputs changed (build.yml). The AppImage is packed for pushes to main
+# and manual runs; a pull request packs one only while it carries the `appimage` label (adding the label starts a run).
+# A manual run (Actions > ci > Run workflow, or `gh workflow run ci --ref <branch>`) can skip packing or rebuild all.
 name: ci
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
+    inputs:
+      appimage:
+        description: pack the AppImage
+        type: boolean
+        default: true
+      fresh:
+        description: rebuild every component (ignore the component caches)
+        type: boolean
+        default: false
 concurrency:
-  group: ci-${{ github.ref }}
+  # another label being added must not cancel a running build: its (skipped) run gets a group of its own
+  group: ci-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'appimage' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 jobs:
   build:
+    if: github.event.action != 'labeled' || github.event.label.name == 'appimage'
     uses: ./.github/workflows/build.yml
+    with:
+      pack: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.appimage) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'appimage')) }}
+      zstd-level: "9"
+      fresh: ${{ github.event_name == 'workflow_dispatch' && inputs.fresh }}

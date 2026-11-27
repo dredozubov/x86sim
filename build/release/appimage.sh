@@ -4,6 +4,7 @@
 #   VERSION    release version (default: git describe of the checkout, e.g. v0.1.0-pre1-3-gabc1234)
 #   UPDATE_INFO  AppImage update information (default: GitHub releases of x86sim/x86sim, pre-releases included,
 #              zsync); "none" for no update info
+#   ZSTD_LEVEL squashfs zstd level (default 19, as releases; CI's non-release builds pack faster at a lower one)
 # Nothing from Apple goes in: the payload is `git ls-files` of our own dirs (the committed simulator-side binaries are
 # ours, built from host/ sources) plus build outputs; check_no_apple below refuses a tree with Apple runtime/SDK files.
 # Third-party tools are downloaded pinned (sha256 checked): ipsw (MIT), 7-Zip's 7zz (LGPL-2.1 + unRAR), dnspython (ISC),
@@ -14,6 +15,7 @@ OUT=$(cd "${OUT:-$X/build/release/out}" && pwd)
 VERSION=${VERSION:-$(git -C "$X" describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)}
 VERSION=${VERSION#v}
 UPDATE_INFO=${UPDATE_INFO:-gh-releases-zsync|x86sim|x86sim|latest-pre|x86sim-*-x86_64.AppImage.zsync}
+ZSTD_LEVEL=${ZSTD_LEVEL:-19}
 DL=$OUT/downloads
 A=$OUT/AppDir
 S=$A/usr/share/x86sim
@@ -62,7 +64,8 @@ for b in x86sim-launcher x86sim-aot x86sim-mcp x86sim-dev x86sim-ax x86sim-serve
 strip --strip-debug "$P/linux/mtlvk/target/release/mtlvk" "$P/tools/launcher/target/release/"*
 # lavapipe for a device's GPU setting "cpu", beside mtlvk (gpus.rs finds it at <mtlvk's dir>/../lavapipe): there on every
 # computer, with or without a GPU or a Vulkan driver
-LAVAPIPE_DL=$OUT/lavapipe-build "$X/build/lavapipe.sh" "$OUT/lavapipe"
+# (build.sh builds it; CI may restore it from its cache, on a runner without Mesa's build tools)
+[ -f "$OUT/lavapipe/libvulkan_lvp.so" ] || LAVAPIPE_DL=$OUT/lavapipe-build "$X/build/lavapipe.sh" "$OUT/lavapipe"
 cp -a "$OUT/lavapipe" "$P/linux/mtlvk/target/lavapipe"
 echo "$VERSION" > "$S/VERSION"
 
@@ -101,9 +104,18 @@ cp -a "$OUT/webinspector" "$S/webinspector"
 
 echo "== licenses"
 mkdir -p "$S/licenses"
-cp "$X/external/darling/LICENSE" "$S/licenses/darling-LICENSE" 2>/dev/null || true
-cp "$X/external/dynarmic/LICENSE.txt" "$S/licenses/dynarmic-LICENSE" 2>/dev/null || true
-for f in "$X"/external/metal2vulkan/LICENSE*; do [ -f "$f" ] && cp "$f" "$S/licenses/metal2vulkan-$(basename "$f")"; done
+# a submodule's license comes from its checkout, or (CI, where a component restored from its cache leaves its submodules
+# unchecked-out) from what build/release/ci.sh collect kept in $OUT/parts/<component>/licenses; a missing one is an error
+lic() {  # <licenses/ name> <checkout path> <component>
+	if [ -f "$2" ]; then cp "$2" "$S/licenses/$1"
+	elif [ -f "$OUT/parts/$3/licenses/$1" ]; then cp "$OUT/parts/$3/licenses/$1" "$S/licenses/$1"
+	else echo "appimage: no $2 (check out the submodule)" >&2; exit 1; fi
+}
+lic darling-LICENSE "$X/external/darling/LICENSE" darling
+lic dynarmic-LICENSE "$X/external/dynarmic/LICENSE.txt" arm64jit
+if [ -f "$X/external/metal2vulkan/LICENSE" ]; then
+	for f in "$X"/external/metal2vulkan/LICENSE*; do cp "$f" "$S/licenses/metal2vulkan-$(basename "$f")"; done
+else lic metal2vulkan-LICENSE "$X/external/metal2vulkan/LICENSE" mtlvk; cp "$OUT"/parts/mtlvk/licenses/metal2vulkan-* "$S/licenses/"; fi
 cp "$X/linux/arm64jit/third_party/astcenc/LICENSE.txt" "$S/licenses/astcenc-LICENSE" 2>/dev/null || true
 cp "$X/linux/arm64jit/third_party/lzfse/LICENSE" "$S/licenses/lzfse-LICENSE" 2>/dev/null || true
 cp "$X/LICENSE" "$S/licenses/x86sim-LICENSE"
@@ -133,7 +145,7 @@ fetch https://github.com/AppImage/appimagetool/releases/download/continuous/appi
 chmod +x "$DL/appimagetool.AppImage"
 NAME=x86sim-$VERSION-x86_64.AppImage
 rm -f "$OUT/$NAME" "$OUT/$NAME.zsync"
-set -- --comp zstd --mksquashfs-opt -Xcompression-level --mksquashfs-opt 19 --no-appstream
+set -- --comp zstd --mksquashfs-opt -Xcompression-level --mksquashfs-opt "$ZSTD_LEVEL" --no-appstream
 [ "$UPDATE_INFO" = none ] || set -- "$@" -u "$UPDATE_INFO"
 (cd "$OUT" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$DL/appimagetool.AppImage" "$@" "$A" "$OUT/$NAME") > "$OUT/appimagetool.log" 2>&1 \
 	|| { tail -30 "$OUT/appimagetool.log"; exit 1; }
