@@ -1002,6 +1002,9 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
         }
     }
     if n_answers == 0 {
+        if let Some(off) = device_off(inst) {
+            bail!("{off}");
+        }
         bail!("{}: no app answers (is the device running and booted to the home screen? its reader is host/simax)", inst.name);
     }
     if snap.elements.is_empty() && !silent.is_empty() && spaces.is_empty() {
@@ -2106,6 +2109,31 @@ pub fn scroll_to(inst: &Instance, target: &str, direction: &str, max_steps: u32,
 
 /// Waits until a target is on screen (or, `gone`, no longer is), matched as tap matches it (exact, prefix, substring).
 /// Wakes on new frames, not on a timer.
+/// Some(why) when the device is not running at all (no launchd_sim, no boot script): with the end of its boot
+/// output when a boot was tried, so a boot that died is told at once instead of as "no app answers" after a timeout
+pub fn device_off(inst: &Instance) -> Option<String> {
+    let st = crate::instance::Monitor::default().poll(std::slice::from_ref(inst)).into_iter().next()?;
+    if st.phase != crate::instance::Phase::Off {
+        return None;
+    }
+    let tail = |p: &std::path::Path| -> Vec<String> {
+        std::fs::read_to_string(p).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("==")).map(String::from).collect()
+    };
+    // only what reads as a failure: a device that was stopped ends its output with ordinary boot lines
+    let bad = |l: &String| {
+        let l = l.to_ascii_lowercase();
+        ["error", "timed out", "failed", "abort", "fatal", "no such file", "not found"].iter().any(|w| l.contains(w))
+    };
+    let mut lines: Vec<String> = tail(&st.state_dir.join("lsim.out")).into_iter().chain(tail(&crate::instance::boot_log(inst))).filter(bad).collect();
+    let n = lines.len();
+    let last = lines.split_off(n.saturating_sub(3)).join(" | ");
+    Some(if last.is_empty() {
+        format!("{} is off (start it: sim_start)", inst.name)
+    } else {
+        format!("{} is off (start it: sim_start); its last boot said: {last} (boot log {})", inst.name, crate::instance::boot_log(inst).display())
+    })
+}
+
 pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) -> Result<Outcome> {
     let t0 = Instant::now();
     let t = parse_target(target);
@@ -2134,6 +2162,12 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
                     None => format!("{target:?} gone after {ms} ms"),
                 };
                 return Ok(Outcome { did, screen: Some(snap.clone()), diff: None });
+            }
+        }
+        // a device that is off (never booted, or its boot died) answers nothing for the whole timeout: say so now
+        if let Err(e) = &snap {
+            if format!("{e:#}").contains(" is off") {
+                bail!("waiting for {target:?}: {e:#}");
             }
         }
         let left = timeout.saturating_sub(t0.elapsed());
