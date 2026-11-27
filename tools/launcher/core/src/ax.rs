@@ -2112,6 +2112,18 @@ pub fn scroll_to(inst: &Instance, target: &str, direction: &str, max_steps: u32,
 /// Some(why) when the device is not running at all (no launchd_sim, no boot script): with the end of its boot
 /// output when a boot was tried, so a boot that died is told at once instead of as "no app answers" after a timeout
 pub fn device_off(inst: &Instance) -> Option<String> {
+    device_off_impl(inst)
+}
+
+/// What `device_off`'s answer says: an error from a snapshot that holds it is final (the device will not answer)
+pub const OFF_MARK: &str = " is off (start it: sim_start)";
+
+/// An error from a snapshot / action that says the device is off: waiting on it is pointless
+pub fn is_off_error(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains(OFF_MARK)
+}
+
+fn device_off_impl(inst: &Instance) -> Option<String> {
     let st = crate::instance::Monitor::default().poll(std::slice::from_ref(inst)).into_iter().next()?;
     if st.phase != crate::instance::Phase::Off {
         return None;
@@ -2128,9 +2140,9 @@ pub fn device_off(inst: &Instance) -> Option<String> {
     let n = lines.len();
     let last = lines.split_off(n.saturating_sub(3)).join(" | ");
     Some(if last.is_empty() {
-        format!("{} is off (start it: sim_start)", inst.name)
+        format!("{}{OFF_MARK}", inst.name)
     } else {
-        format!("{} is off (start it: sim_start); its last boot said: {last} (boot log {})", inst.name, crate::instance::boot_log(inst).display())
+        format!("{}{OFF_MARK}; its last boot said: {last} (boot log {})", inst.name, crate::instance::boot_log(inst).display())
     })
 }
 
@@ -2166,7 +2178,7 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
         }
         // a device that is off (never booted, or its boot died) answers nothing for the whole timeout: say so now
         if let Err(e) = &snap {
-            if format!("{e:#}").contains(" is off") {
+            if is_off_error(e) {
                 bail!("waiting for {target:?}: {e:#}");
             }
         }

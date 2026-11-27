@@ -829,7 +829,7 @@ pub fn expect(inst: &Instance, target: &str, x: &Expect, timeout: Duration) -> R
             if left.is_zero() {
                 bail!("FAIL {}{}: {what}", x.describe(target), if timeout.is_zero() { String::new() } else { format!(" (waited {:.1} s)", timeout.as_secs_f64()) });
             }
-        } else if timeout.saturating_sub(t0.elapsed()).is_zero() {
+        } else if timeout.saturating_sub(t0.elapsed()).is_zero() || snap.as_ref().err().is_some_and(ax::is_off_error) {
             bail!("FAIL {}: no snapshot: {:#}", x.describe(target), snap.err().map(|e| e.to_string()).unwrap_or_default());
         }
         let left = timeout.saturating_sub(t0.elapsed());
