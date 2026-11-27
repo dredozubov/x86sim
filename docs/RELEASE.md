@@ -158,7 +158,7 @@ it stays in the sidebar afterwards. The same steps from a terminal: `x86sim.AppI
 4. **Pre-translate**: starts by itself as soon as iOS and Darling are ready. Afterwards the launcher keeps every
    installed version's image up to date on its own (at start, after a device stops, when versions change, every
    30 min), niced and while devices run; stopping a run pauses it until the next launcher start
-   (`X86SIM_NO_AUTO_AOT=1`: no automatic pass).
+   (Pre-translate > Options > Automatic off, or `X86SIM_NO_AUTO_AOT=1`: no automatic pass).
 5. **First phone**: the Add phone dialog; then Done.
 
 ## 5. Updates and versioning

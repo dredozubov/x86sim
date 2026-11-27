@@ -739,6 +739,7 @@ impl eframe::App for App {
             }
             self.aot.runtimes = present;
         }
+        self.aot.auto_off = !self.hub.aot_auto;
         self.aot.tick();
         if self.aot.building() {
             ctx.request_repaint_after(Duration::from_millis(500));

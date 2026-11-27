@@ -134,7 +134,8 @@ for the current placement assembled from the chunks that are up to date, then th
 per-process caches nothing uses any more) and `x86sim-aot status`, which notes in `$ST/aot-status.txt` how many chunks
 need rebuilding (`X86SIM_AOT_AUTOUPDATE=1` runs `x86sim-aot update` right away). Only stale chunks are rebuilt, each
 into its own slot. The launcher runs the same update by itself: at start, after a device stops, when versions
-change and every 30 min (`X86SIM_NO_AUTO_AOT=1` turns that off).
+change and every 30 min (Pre-translate > Options > Automatic, or `X86SIM_NO_AUTO_AOT=1`, turns that off: runs
+then start only from Start / Update).
 
 ## Booting: boot-a64.sh, simhost and launchd_sim
 

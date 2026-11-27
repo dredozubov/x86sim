@@ -48,6 +48,8 @@ pub struct Aot {
     auto_result: Arc<Mutex<Option<AutoCheck>>>,
     /// the user stopped a run: no automatic one until the next start of the launcher or a manual one
     pub auto_paused: bool,
+    /// Settings: automatic runs turned off (hub aot_auto = false, set by the app each frame): runs start only by hand
+    pub auto_off: bool,
     /// set each frame by the app: the present versions (what to keep up to date)
     pub runtimes: Vec<PathBuf>,
 }
@@ -80,6 +82,7 @@ impl Aot {
             auto_checking: false,
             auto_result: Arc::new(Mutex::new(None)),
             auto_paused: false,
+            auto_off: false,
             runtimes: Vec::new(),
         };
         if a.runtime_root.is_some() {
@@ -137,13 +140,20 @@ impl Aot {
     pub fn want_auto(&mut self, after: Duration) {
         // X86SIM_NO_AUTO_AOT=1: no pre-translate pass on its own (a launcher started for screenshots or tests would
         // otherwise update a shared cache in the background, and get killed half-way when the test ends)
-        if std::env::var_os("X86SIM_NO_AUTO_AOT").is_some_and(|v| v == "1") {
+        if self.auto_off || std::env::var_os("X86SIM_NO_AUTO_AOT").is_some_and(|v| v == "1") {
             return;
         }
         self.auto_at = Some(Instant::now() + after);
     }
 
     fn auto_tick(&mut self) {
+        if self.auto_off {
+            // a check already under way is dropped too: its result would start a run
+            self.auto_queue.clear();
+            *self.auto_result.lock().unwrap() = None;
+            self.auto_checking = false;
+            return;
+        }
         if self.auto_paused || self.building() {
             return;
         }
@@ -635,6 +645,8 @@ impl App {
                     (Some(s), _) if s.total == 0 => ("Nothing to translate yet", pal().ink_3, "Start a device first".to_string()),
                     (Some(s), _) if s.image_current && need == 0 => ("Ready", pal().good, format!("{} parts", s.total)),
                     (Some(s), _) if need == 0 => ("Almost ready", pal().warn, "Needs Finish".to_string()),
+                    (Some(s), _) if self.aot.auto_off && s.image_present => ("Out of date", pal().warn, format!("{need} of {} parts to redo", s.total)),
+                    (Some(s), _) if self.aot.auto_off => ("Not translated", pal().ink_3, format!("{} parts to translate", s.total)),
                     (Some(s), _) if self.aot.auto_paused && s.image_present => ("Paused", pal().warn, format!("{need} of {} parts to redo", s.total)),
                     (Some(s), _) if self.aot.auto_paused => ("Paused", pal().ink_3, format!("{} parts to translate", s.total)),
                     (Some(s), _) if s.image_present => ("Update queued", pal().ink_3, format!("{need} of {} parts to redo", s.total)),
@@ -661,7 +673,13 @@ impl App {
                         self.aot.refresh();
                     }
                     if building {
-                        let tip = if self.aot.external_run().is_some() { "Stop the run started outside this window" } else { "Automatic runs pause until the next launch" };
+                        let tip = if self.aot.external_run().is_some() {
+                            "Stop the run started outside this window"
+                        } else if self.aot.auto_off {
+                            "Stop this run"
+                        } else {
+                            "Automatic runs pause until the next launch"
+                        };
                         if ui.add(Btn::secondary("Cancel").icon(icon::X).key("c")).on_hover_text(tip).clicked() {
                             self.aot.cancel();
                         }
@@ -817,6 +835,17 @@ impl App {
             form_row(ui, "Speed", "CPU cores", false, |ui| {
                 ui.label(sub(format!("{} cores", self.aot.cores)));
                 ui.add_enabled(!building, egui::Slider::new(&mut self.aot.cores, 1..=self.aot.max_cores).show_value(false));
+            });
+            form_row(ui, "Automatic", "Update on its own after a device stops and every 30 min", false, |ui| {
+                let mut on = self.hub.aot_auto;
+                if toggle(ui, &mut on).on_hover_text("Off: only when you press Start or Update").changed() {
+                    self.hub.aot_auto = on;
+                    self.aot.auto_off = !on;
+                    let _ = host::save_hub(&self.hub);
+                    if on {
+                        self.aot.want_auto(Duration::from_secs(5));
+                    }
+                }
             });
             form_row(ui, "Skip turned-off features", "", true, |ui| {
                 let mut f = self.aot.cfg.follow_features;
