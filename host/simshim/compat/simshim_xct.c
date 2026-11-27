@@ -148,6 +148,70 @@ static void xct_added(const struct mach_header* mh, intptr_t slide)
 	}
 }
 
+// x86Sim (issue #54): XCTest's button presses on an iPhone Duo. testmanagerd presses a button on the main display
+// (XCUIDevice press(.home), and the home press that backgrounds the UI test runner before the first test) from Recap's
+// touch screen digitizer sender (+[XCTouchGesturePerformer _buttonSenderForDisplayId:]), which carries the main
+// display's UUID. SpringBoard routes buttons to itself by sender: with two or more always-connected displays (the
+// Duo's cover and inner screens) its "SB-Default" rule takes only senders with no display (-[SBHIDEventDispatchController
+// init]: nullDisplay alone, elsewhere builtinDisplay + nullDisplay), so backboardd found no destination ("destinations
+// for Keyboard event: ()"), the press was lost and UI tests never started ("Failed to background test runner"). There,
+// the press goes from Recap's phone button sender instead: the built-in buttons service, which has no display, as the
+// device's own buttons (simhid's buttons service) do. Other devices keep Apple's choice. X86SIM_XCTEST_BUTTON_SENDER=0: off.
+static IMP tm_btn_orig;
+static int tm_multi = -1;   // the device has two or more always-connected displays (FBSDisplayMonitor, as SpringBoard)
+
+static int tm_multi_display(void)
+{
+	if (tm_multi >= 0)
+		return tm_multi;
+	int n = 0;
+	Class mc = objc_getClass("FBSDisplayMonitor");
+	id m = mc ? ((id (*)(id, SEL)) objc_msgSend)(((id (*)(Class, SEL)) objc_msgSend)(mc, sel_registerName("alloc")), sel_registerName("init")) : nil;
+	if (m) {
+		id ids = ((id (*)(id, SEL)) objc_msgSend)(m, sel_registerName("alwaysConnectedIdentities"));
+		n = ids ? (int) ((unsigned long (*)(id, SEL)) objc_msgSend)(ids, sel_registerName("count")) : 0;
+		((void (*)(id, SEL)) objc_msgSend)(m, sel_registerName("invalidate"));
+		((void (*)(id, SEL)) objc_msgSend)(m, sel_registerName("release"));
+	}
+	tm_multi = n >= 2;
+	char b[120];
+	int k = snprintf(b, sizeof b, "simshim: %d always-connected displays: XCTest buttons from the %s sender\n", n,
+	                 tm_multi ? "phone button" : "default");
+	write(2, b, k);
+	return tm_multi;
+}
+
+static id tm_btn(id self, SEL sel, id display_id)
+{
+	id s = ((id (*)(id, SEL, id)) tm_btn_orig)(self, sel, display_id);
+	Class rc = objc_getClass("RCPEventSenderProperties");
+	if (!s || !rc || !tm_multi_display())
+		return s;
+	id touch = ((id (*)(Class, SEL)) objc_msgSend)(rc, sel_registerName("touchScreenDigitizerSender"));
+	if (!touch || !((bool (*)(id, SEL, id)) objc_msgSend)(s, sel_registerName("isEqual:"), touch))
+		return s;   // a button on another display: Apple's keyboard sender for that display
+	id pb = ((id (*)(Class, SEL)) objc_msgSend)(rc, sel_registerName("phoneButtonSender"));
+	return pb ? pb : s;
+}
+
+static void tm_added(const struct mach_header* mh, intptr_t slide)
+{
+	if (tm_btn_orig)
+		return;
+	Class c = objc_getClass("XCTouchGesturePerformer");
+	Method m = c ? class_getClassMethod(c, sel_registerName("_buttonSenderForDisplayId:")) : NULL;
+	if (m)
+		tm_btn_orig = method_setImplementation(m, (IMP) tm_btn);
+}
+
+__attribute__((constructor)) static void tm_init(void)
+{
+	const char* e = getenv("X86SIM_XCTEST_BUTTON_SENDER");
+	if (strcmp(getprogname(), "testmanagerd") || (e && *e == '0'))
+		return;
+	_dyld_register_func_for_add_image(tm_added);
+}
+
 __attribute__((constructor)) static void xct_init(void)
 {
 	const char* d = getenv("X86SIM_XCTEST_ATTACHMENTS");
