@@ -668,9 +668,24 @@ class Runner:
             f.write(data)
         return dv(p)
 
-    def wait(self, parser, outf, timeout, alive, raw):
+    def press_home(self):
+        """A home press through the phone's simhid, as `x86sim press home`."""
+        import socket
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(os.path.join(self.data, "simhid.sock"))
+            s.sendall(b"button home down\n")
+            time.sleep(0.1)
+            s.sendall(b"button home up\n")
+
+    def wait(self, parser, outf, timeout, alive, raw, ui=False):
         """Follow the test process's output file until XCTest's top suite ended and the process is gone, the process
-        ended, or the time is up. Returns 'done', 'exited' or 'timeout'."""
+        ended, or the time is up. Returns 'done', 'exited' or 'timeout'.
+        Issue #54: a UI test runner sends itself to the background before the first test (XCTest gives up after 30 s,
+        "Failed to background test runner"). On an iPhone Duo (24B91016s) it never got there, while a home press did
+        background it and the run went on. ui: if no suite started BG_NUDGE s after the runner's "Interface
+        orientation changed" line, the home press is made here, once."""
+        BG_NUDGE = 10.0
+        oriented_at, nudged = None, False
         pos, buf = 0, b""
         end = time.monotonic() + timeout
         last_alive, gone_since, done_at = 0.0, None, None
@@ -689,12 +704,22 @@ class Runner:
                 *lines, buf = buf.split(b"\n")
                 for l in lines:
                     s = l.decode(errors="replace").rstrip("\r")
+                    if ui and oriented_at is None and "Interface orientation changed" in s:
+                        oriented_at = time.monotonic()
                     own = parser.line(s)
                     if not quiet and (verbose or own):
                         print(s, flush=True)
                 if parser.done and done_at is None:
                     done_at = time.monotonic()
             now = time.monotonic()
+            if ui and oriented_at and not nudged and not parser.tests and now - oriented_at > BG_NUDGE:
+                nudged = True
+                try:
+                    self.press_home()
+                    print("x86sim test: the UI test runner did not go to the background in %.0f s: pressed home (#54)"
+                          % BG_NUDGE, file=sys.stderr, flush=True)
+                except OSError as e:
+                    print("x86sim test: could not press home for the runner (%s)" % e, file=sys.stderr)
             if now - last_alive > 2:
                 last_alive = now
                 if not alive():
@@ -782,7 +807,7 @@ class Runner:
                 alive = lambda: self.simctl.pidof(bid) is not None   # noqa: E731
                 time.sleep(1)
             with open(log, "wb") as raw:
-                how = self.wait(parser, outf, self.a["timeout"], alive, raw)
+                how = self.wait(parser, outf, self.a["timeout"], alive, raw, ui=kind == "ui")
             if how == "timeout":
                 parser.finish("timed out after %d s" % self.a["timeout"])
             elif how == "exited":
