@@ -329,6 +329,24 @@ MIN="com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.appl
 # shazamd (iOS, watchOS, visionOS; on demand, sdkcov P11): ShazamKit's library service (com.apple.shazamd). Without it
 # SHLibrary.default.addItems failed at once (com.apple.ShazamKit.ShazamLibrary 301), where Apple's 27.2 simulators
 # never answer it for a simctl-installed app.
+# merchantd (iOS, on demand, sdkcov P27): ProximityReader's daemon (com.apple.merchantd.*: Tap to Pay, store and
+# forward, mobile documents). Without it PaymentCardReader.fetchPaymentCardReaderStore() threw StoreError 0 and
+# prepareStoreAndForward() serviceConnectionError, where Apple's 27.2 simulator answers StoreError 1 and notAllowed
+# (no Tap to Pay entitlement) (P27_Data.swift func:ProximityReader.p27-requests-reader-answers).
+# itunescloudd (iOS, visionOS, on demand, sdkcov P27): MusicKit's cloud library / token service. Without it
+# MusicDeveloperTokenProvider answered MusicTokenRequestError.unknown and a library add never answered, where Apple's 27.2
+# simulator answers .developerTokenRequestFailed and MPErrorDomain 2 (P27_Services.swift func:MusicKit.p27-requests).
+# sensorkitd (iOS, on demand, sdkcov P27): SensorKit's reader/writer service. Without it SRSensorReader.fetchDevices failed
+# NSCocoaErrorDomain 4099, where Apple answers SRErrorDomain 1 (no authorization) (func:SensorKit.p27-sensors-readers).
+# biomed (iOS and visionOS, on demand, sdkcov P28): Biome's daemon, also CascadeSets' com.apple.cascade.SetChangeRelayService. Without it
+# AppIntents' RelevantEntities.updateEntities failed com.apple.CascadeSets.Set 3, where Apple's 27.2 simulator takes them
+# (P28_Intents.swift func:AppIntents.p28-shortcuts-schemas). Mach services only (no RunAtLoad / KeepAlive, pressured exit);
+# idle it costs ~100 MB RSS (44 MB anonymous) and no CPU.
+# webbookmarksd (iOS, on demand, sdkcov P27; on visionOS since r24, below): SafariServices asks it for a Safari
+# extension's state. Without it SFSafariExtensionManager.stateOfExtension(withIdentifier:) never answered, where Apple's
+# 27.2 simulator answers SFErrorDomain 1 (no such extension) (P27_Services.swift
+# func:SafariServices.p27-blockers-extensions-config). Its notifyd launch events start it once SpringBoard is up
+# (Apple's simulator runs it too); idle ~90 MB RSS (11 MB anonymous), no CPU, pressured exit.
 UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd com.apple.SpringBoard com.apple.sleepd com.apple.TextInput.kbd com.apple.FileCoordination
 	com.apple.usernotificationsd com.apple.InputUI com.apple.assistantd com.apple.assetsd com.apple.geod com.apple.navd com.apple.Maps.mapssyncd
 	com.apple.campo com.apple.FileProvider com.apple.DesktopServicesHelper com.apple.revisiond com.apple.PosterBoard com.apple.financed
@@ -347,7 +365,8 @@ UI="com.apple.installcoordinationd com.apple.mobiletimerd com.apple.backboardd c
 	com.apple.homed
 	com.apple.linkd com.apple.mediaanalysisd com.apple.mediaanalysisd.service com.apple.translationd
 	com.apple.telephonyutilities.callservicesd com.apple.UsageTrackingAgent com.apple.ScreenTimeAgent com.apple.dmd
-	com.apple.videosubscriptionsd com.apple.managedappdistributiond com.apple.shazamd com.apple.backgroundassets.user"
+	com.apple.videosubscriptionsd com.apple.managedappdistributiond com.apple.shazamd com.apple.backgroundassets.user
+	com.apple.merchantd com.apple.itunescloudd com.apple.sensorkitd com.apple.biomed com.apple.WebBookmarks.webbookmarksd"
 UI_SLIM="com.apple.backboardd com.apple.SpringBoard com.apple.TextInput.kbd com.apple.FileCoordination com.apple.InputUI
 	com.apple.assistantd com.apple.sleepd"
 FULLUI="com.apple.chronod"
@@ -478,6 +497,8 @@ WATCH_UI_SLIM="com.apple.backboardd com.apple.Carousel com.apple.TextInput.kbd c
 # (func:SafariServices.reading-list-add-xros; Apple's visionOS simulator runs the daemon).
 # medialibraryd (on demand, as on iOS above): without it an app's MPMediaQuery opened the never-created music library
 # database and died (ML3DatabaseException "no such table: _MLDatabaseProperties"; func:MediaPlayer.library-authorized-queries).
+# biomed (on demand, as on iOS above): without it RelevantEntities.updateEntities failed com.apple.CascadeSets.Set 3 here
+# too, where Apple's visionOS simulator takes them (idle ~115 MB RSS, 44 MB anonymous, no CPU).
 # RAM 14: togetherd (visionOS only, on demand, as in Apple's simulator): SharePlay's daemon. Without it callservicesd's
 # CopresenceUtilities XPCSession to com.apple.togetherd was cancelled at once and re-activated, forever: ~100% CPU and
 # ~300 MB of file pages (a busy process never gets the idle file trim) on an idle Vision Pro. (FaceTimeSupportService,
@@ -498,7 +519,7 @@ XR_UI="com.apple.togetherd com.apple.installcoordinationd com.apple.backboardd c
 	com.apple.gamed com.apple.gamesaved
 	com.apple.linkd com.apple.mediaanalysisd com.apple.mediaanalysisd.service com.apple.siriactionsd
 	com.apple.managedassetsd com.apple.eligibilityd com.apple.telephonyutilities.callservicesd com.apple.videosubscriptionsd com.apple.shazamd
-	com.apple.WebBookmarks.webbookmarksd com.apple.medialibraryd com.apple.backgroundassets.user"
+	com.apple.WebBookmarks.webbookmarksd com.apple.medialibraryd com.apple.backgroundassets.user com.apple.itunescloudd com.apple.biomed"
 XR_UI_SLIM="com.apple.backboardd com.apple.SurfBoard com.apple.vhmdd com.apple.wakeboardd com.apple.RealityEnvironment com.apple.TextInput.kbd
 	com.apple.FileCoordination"
 # No fpsim2host on tvOS / watchOS: their FileProvider has no FPSimulatorSupportInterface (no Files app), so it exited 1

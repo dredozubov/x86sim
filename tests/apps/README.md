@@ -60,6 +60,8 @@ everything the latest SDK (27.2) offers an app:
    Core ML compiling and running a model built in the app, Vision OCR, keychain, Core Data / SwiftData, TCP / UDP /
    HTTP on loopback, WKWebView running JavaScript, and so on.
 3. **Coverage**: `Documents/sdkcov-coverage.json` per framework (load result, functional checks), one summary line.
+   How much of each framework's public API (ObjC classes in its headers, top-level Swift types) the checks use:
+   `sdkcov/apisurf.py <platform> [N]` (name-level; COVERAGE-GAPS.md has the numbers).
 
 SKIP, never FAIL, for what Apple's own simulator does not support either: frameworks the runtime does not ship, Xcode's
 injected diagnostics libraries, and hardware the simulator lacks, reported as the framework itself reports it
