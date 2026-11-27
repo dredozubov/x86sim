@@ -93,6 +93,12 @@ fn holds_focus(e: &El, f: &Value) -> bool {
 
 /// Taps a target (ref, id:, text) and waits on frames until it has the focus. Answers the element and simax's
 /// `focus`. A web field: WebKit's content view is the first responder, the DOM's activeElement is the field.
+/// A field an engine reader in simax made (Unity's uGUI: key "unity:<instance id>"): its focus is the engine's, with
+/// no UIKit first responder; UIKit's and the web's fields keep the first-responder checks
+fn engine_field(e: &El) -> bool {
+    !e.web && e.key.as_deref().is_some_and(|k| k.starts_with("unity:"))
+}
+
 pub fn tap_focus(inst: &Instance, target: &str) -> Result<(El, Value)> {
     let e0 = field_el(inst, target)?;
     // already focused (a second `type` into the same field): no tap, which would move the caret
@@ -131,6 +137,12 @@ pub fn tap_focus(inst: &Instance, target: &str) -> Result<(El, Value)> {
         if n % 4 == 0 && !e.web {
             // it may have moved (a keyboard coming up scrolls a form)
             if let Some(x) = ax::snapshot(inst, SnapOpts::default()).ok().and_then(|s| s.get(&e.r).cloned()) {
+                // an engine's own field (Unity's uGUI InputField via simax's reader) says it is focused, with no
+                // UIKit first responder behind it: that is the focus there is
+                if x.focused && last.is_none() && engine_field(&x) {
+                    let f = serde_json::json!({"pid": x.pid, "kind": "engine", "oid": x.key.clone().unwrap_or_default(), "text_input": true, "label": x.label.clone()});
+                    return Ok((x, f));
+                }
                 e = x;
             }
         }
@@ -168,7 +180,17 @@ pub fn type_into(inst: &Instance, target: Option<&str>, text: &str, clear: bool,
         }
         None => match focus_any(inst) {
             Some(f) => (None, f),
-            None => bail!("cannot type: no focused text field (tap one first, or pass target)"),
+            None => {
+                // an engine's own field (Unity's uGUI InputField, read by simax's engine readers) is focused in the
+                // snapshot but is no UIKit first responder: type into it as the keyboard does, without the focus checks
+                let snap = ax::snapshot(inst, SnapOpts::default()).ok();
+                let Some(e) = snap.as_ref().and_then(|s| s.elements.iter().find(|e| e.focused && engine_field(e) && matches!(e.role.as_str(), "textfield" | "securefield" | "textview")).cloned()) else {
+                    bail!("cannot type: no focused text field (tap one first, or pass target)");
+                };
+                let mut o = ax::type_text(inst, text, clear, submit, keys, After::None)?;
+                o.did = format!("typed {} into @{} {} {}{}", if e.role == "securefield" { format!("{} characters", text.chars().count()) } else { ax::quote(text) }, e.r, e.role, e.label.as_deref().map(ax::quote).unwrap_or_default(), returns(&o.did));
+                return Ok(ax::outcome(inst, o.did, ax::last(inst), after));
+            }
         },
     };
     let pid = f["pid"].as_u64().unwrap_or(0) as u32;
@@ -280,7 +302,7 @@ pub fn field_el(inst: &Instance, target: &str) -> Result<El> {
     if !e.offscreen {
         return Ok(e);
     }
-    ax::scroll_into_view(inst, &e)?;
+    ax::bring_into_view(inst, &e)?;
     let now = ax::snapshot(inst, SnapOpts::default())?;
     now.get(&e.r).cloned().or_else(|| find_field(&now, target).ok()).ok_or_else(|| anyhow::anyhow!("{target:?} scrolled into view, then not found"))
 }
@@ -441,7 +463,7 @@ fn point_of(inst: &Instance, target: &str) -> Result<((f64, f64), ax::Space, Str
     }
     let (mut e, mut snap) = ax::resolve(inst, target)?;
     if e.offscreen {
-        ax::scroll_into_view(inst, &e)?;
+        ax::bring_into_view(inst, &e)?;
         snap = ax::snapshot(inst, SnapOpts::default())?;
         e = snap.get(&e.r).cloned().ok_or_else(|| anyhow::anyhow!("{target:?} scrolled into view, then not found"))?;
     }
@@ -829,7 +851,7 @@ pub fn expect(inst: &Instance, target: &str, x: &Expect, timeout: Duration) -> R
             if left.is_zero() {
                 bail!("FAIL {}{}: {what}", x.describe(target), if timeout.is_zero() { String::new() } else { format!(" (waited {:.1} s)", timeout.as_secs_f64()) });
             }
-        } else if timeout.saturating_sub(t0.elapsed()).is_zero() {
+        } else if timeout.saturating_sub(t0.elapsed()).is_zero() || snap.as_ref().err().is_some_and(ax::is_off_error) {
             bail!("FAIL {}: no snapshot: {:#}", x.describe(target), snap.err().map(|e| e.to_string()).unwrap_or_default());
         }
         let left = timeout.saturating_sub(t0.elapsed());

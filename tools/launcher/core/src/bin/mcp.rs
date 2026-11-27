@@ -115,8 +115,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"phone": phone, "button": {"type": "string"}, "ms": {"type": "integer"}, "after": after}, "required": ["button"]}},
         {"name": "sim_keyboard", "description": "Apple Simulator's I/O > Keyboard. software: on / off / toggle the on-screen keyboard while a hardware keyboard is connected (Toggle Software Keyboard, Cmd-K; it shows while a text field is focused). hardware: connect / disconnect / toggle the simulated hardware keyboard (Connect Hardware Keyboard, Shift-Cmd-K; disconnected, the software keyboard shows on every focus as on a device; kept across boots, also for a device that is off). status: both states. Typing (type, key) works either way; snapshot lists the keyboard's keys (role key) while it is up. Answers with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "keyboard": {"type": "string", "enum": ["software", "hardware", "status"]}, "action": {"type": "string", "enum": ["on", "off", "toggle", "connect", "disconnect"]}, "after": after}, "required": ["keyboard"]}},
-        {"name": "screenshot", "description": "The screen as an image (PNG), upright. Default scale: one pixel per point, so positions match the snapshot's coordinates; scale=1 for full device pixels, 2 for half, etc. (a divisor). marks=true: every element of a fresh snapshot outlined with its @ref beside it (marks=actionable: only controls, links, fields, icons and [ocr] text), the snapshot's text alongside, for working from the image; ocr=true marks the whole screen's text read from pixels too. target=@e3 (or id:..., or text): only that element, cropped with a margin.",
-         "inputSchema": {"type": "object", "properties": {"phone": phone, "scale": {"type": "integer"}, "marks": {"type": ["boolean", "string"], "description": "true | actionable"}, "target": {"type": "string"}, "ocr": {"type": "boolean"}}}},
+        {"name": "screenshot", "description": "The screen as an image (PNG), upright. Default scale: one pixel per point, so positions match the snapshot's coordinates; scale=1 for full device pixels, 2 for half, etc. (a divisor). marks=true: every element of a fresh snapshot outlined with its @ref beside it (marks=actionable: only controls, links, fields, icons and [ocr] text), the snapshot's text alongside, for working from the image; ocr=true marks the whole screen's text read from pixels too. target=@e3 (or id:..., or text): only that element, cropped with a margin. path: also write the PNG to a file.",
+         "inputSchema": {"type": "object", "properties": {"phone": phone, "scale": {"type": "integer"}, "marks": {"type": ["boolean", "string"], "description": "true | actionable"}, "target": {"type": "string"}, "ocr": {"type": "boolean"}, "path": {"type": "string", "description": "also save the PNG to this file on this machine (the answer names it)"}}}},
         {"name": "open_url", "description": "Open a URL (web page in Safari, deep link, prefs:/settings link) as simctl openurl, and answer with the screen.",
          "inputSchema": {"type": "object", "properties": {"phone": phone, "url": {"type": "string"}, "after": after}, "required": ["url"]}},
         {"name": "app_terminate", "description": "Stop a running app by bundle id (simctl terminate) and answer with the screen.",
@@ -175,12 +175,58 @@ fn tools() -> Value {
     t
 }
 
+/// Every tool as tools/list gives it
+fn all_tools() -> Value {
+    let mut t = tools().as_array().cloned().unwrap_or_default();
+    t.extend(x86sim_core::dev::mcp_tools());
+    pool_mcp::extend(Value::Array(t))
+}
+
+/// An argument the tool does not have is an error naming the ones it has: ignored, a misspelt or guessed argument
+/// ("path" on screenshot, "timeout_s" on wait_for) made a call that looked done but did something else. `phone` and
+/// its alias `device` are taken by every tool (a client may send them to all). A batch's steps are checked too.
+fn unknown_args(name: &str, args: &Value) -> Option<String> {
+    let tools = all_tools();
+    let check = |name: &str, args: &Value, at: &str| -> Option<String> {
+        let t = tools.as_array()?.iter().find(|t| t["name"] == name)?;
+        let props = t["inputSchema"]["properties"].as_object()?;
+        let bad: Vec<&String> = args.as_object()?.keys().filter(|k| !props.contains_key(*k) && !matches!(k.as_str(), "phone" | "device") && !(at != "" && k.as_str() == "tool")).collect();
+        if bad.is_empty() {
+            // a required argument left out (or null) is an error before the tool runs: without it the tool would act
+            // on an empty default. An empty string is a value ("type text='' submit=true" presses Return only).
+            let missing: Vec<&str> = t["inputSchema"]["required"].as_array().into_iter().flatten().filter_map(|r| r.as_str())
+                .filter(|r| args[*r].is_null() && !(*r == "phone" && !args["device"].is_null())).collect();
+            return (!missing.is_empty()).then(|| format!("{name}{at}: {} required", missing.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>().join(", ")));
+        }
+        let mut have: Vec<&String> = props.keys().collect();
+        have.sort();
+        Some(format!("{name}{at}: no argument {} ({name} takes: {})", bad.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>().join(", "), have.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")))
+    };
+    if let Some(e) = check(name, args, "") {
+        return Some(e);
+    }
+    if name == "batch" {
+        for (i, st) in args["steps"].as_array().into_iter().flatten().enumerate() {
+            if let Some(e) = st["tool"].as_str().and_then(|tn| check(tn, st, &format!(" (batch step {})", i + 1))) {
+                return Some(e);
+            }
+        }
+    }
+    None
+}
+
 /// The phone a call is about: phone / device argument, else the only running phone, else the configured one.
 fn phone_of(a: &Value, cfg: &aot::Config) -> anyhow::Result<instance::Instance> {
     let key = a["phone"].as_str().or(a["device"].as_str());
     if let Some(k) = key {
         return instance::find(k).ok_or_else(|| {
-            anyhow::anyhow!("no device {k:?} (devices: {})", instance::list().iter().map(|i| i.name.clone()).collect::<Vec<_>>().join(", "))
+            let names = instance::list().iter().map(|i| i.name.clone()).collect::<Vec<_>>().join(", ");
+            if names.is_empty() {
+                // a copy of x86sim-mcp outside the checkout (a worktree's build) finds no var/ of devices
+                anyhow::anyhow!("no device {k:?}: no devices at all under {} (set X86SIM_ROOT to the x86Sim checkout)", aot::repo_root().join("var").display())
+            } else {
+                anyhow::anyhow!("no device {k:?} (devices: {names})")
+            }
         });
     }
     let running: Vec<_> = instance::summaries_unprobed(0).into_iter().filter(|s| s.state != "off").collect();
@@ -239,6 +285,14 @@ fn call(name: &str, a: &Value) -> anyhow::Result<Answer> {
     if name == "__test_panic" && std::env::var_os("X86SIM_MCP_TEST_PANIC").is_some() {
         panic!("test panic");
     }
+    // tools that need the device running: on one that is off they waited for simctl / launchd answers (app_launch
+    // 2 min, app_list and app_state 70 s each) before failing; say it is off at once instead
+    if NEEDS_RUNNING.contains(&name) {
+        let cfg = aot::Paths::new(&aot::Paths::default_jc()).load_config();
+        if let Some(off) = phone_of(a, &cfg).ok().and_then(|i| ax::device_off(&i)) {
+            anyhow::bail!("{name}: {off}");
+        }
+    }
     let r = call_json(name, a);
     note_use(name, a);
     r
@@ -259,6 +313,8 @@ fn note_use(name: &str, a: &Value) {
         }
     }
 }
+
+const NEEDS_RUNNING: &[&str] = &["app_launch", "app_list", "app_state", "app_terminate", "app_install", "app_uninstall", "open_url"];
 
 fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
     // ---- Develop (omarchy-apple-dev): dev_* tools, x86sim_core::dev ----
@@ -564,16 +620,26 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
                 Value::String(s) => x86sim_core::marks::Marks::parse(s),
                 _ => None,
             };
+            // path: the PNG also goes to a file (a test driver keeps it without decoding the answer)
+            let save = |png: &[u8], caption: String| -> anyhow::Result<Answer> {
+                let Some(p) = a["path"].as_str().filter(|p| !p.is_empty()) else { return Ok(Answer::Image(ax::base64(png), caption)) };
+                let p = std::path::absolute(p)?;
+                if let Some(d) = p.parent() {
+                    std::fs::create_dir_all(d)?;
+                }
+                std::fs::write(&p, png).map_err(|e| anyhow::anyhow!("screenshot: writing {}: {e}", p.display()))?;
+                Ok(Answer::Image(ax::base64(png), format!("{caption}\nsaved to {}", p.display())))
+            };
             if let Some(t) = a["target"].as_str().filter(|t| !t.is_empty()) {
                 let (png, w, h, e) = x86sim_core::marks::element_shot(&inst, t, div)?;
-                return Ok(Answer::Image(ax::base64(&png), format!("{} @{} {} {}, {w}x{h} px", inst.name, e.r, e.role, e.label.as_deref().unwrap_or(""))));
+                return save(&png, format!("{} @{} {} {}, {w}x{h} px", inst.name, e.r, e.role, e.label.as_deref().unwrap_or("")));
             }
             if let Some(m) = marks {
                 let (png, w, h, n, snap) = x86sim_core::marks::marked(&inst, m, div, a["ocr"].as_bool().unwrap_or(false))?;
-                return Ok(Answer::Image(ax::base64(&png), format!("{} screen, {w}x{h} px, {n} marks\n{}", inst.name, snap.text())));
+                return save(&png, format!("{} screen, {w}x{h} px, {n} marks\n{}", inst.name, snap.text()));
             }
             let (png, w, h) = ax::screenshot(&inst, div)?;
-            return Ok(Answer::Image(ax::base64(&png), format!("{} screen, {w}x{h} px", inst.name)));
+            return save(&png, format!("{} screen, {w}x{h} px", inst.name));
         }
         "aot_status" => {
             // the phone's iOS version decides the image and its cache dir
@@ -603,19 +669,21 @@ fn main() {
             "initialize" => Ok(json!({
                 "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "x86sim", "version": env!("CARGO_PKG_VERSION")}
+                "serverInfo": {"name": "x86sim", "version": x86sim_core::setup::version()}
             })),
             "ping" => Ok(json!({})),
             "tools/list" => {
                 // ---- Develop (omarchy-apple-dev): dev_* tools, x86sim_core::dev ----
-                let mut t = tools().as_array().cloned().unwrap_or_default();
-                t.extend(x86sim_core::dev::mcp_tools());
-                // ---- end Develop ----
-                Ok(json!({"tools": pool_mcp::extend(Value::Array(t))}))
+                Ok(json!({"tools": all_tools()}))
             }
             "tools/call" => {
                 let name = req["params"]["name"].as_str().unwrap_or("");
                 let args = req["params"].get("arguments").cloned().unwrap_or(json!({}));
+                if let Some(e) = unknown_args(name, &args) {
+                    let _ = writeln!(out, "{}", json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": e}], "isError": true}}));
+                    let _ = out.flush();
+                    continue;
+                }
                 // a panic in a tool (a bug, a malformed input that slipped through) is that call's error: the server
                 // goes on, with the pool leases its process holds
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call(name, &args))).unwrap_or_else(|p| {
@@ -663,7 +731,7 @@ mod pool_mcp {
             let reset = json!({"type": "string", "enum": pool::RESETS, "description": "what happens when it is given back: none, apps (default: uninstall the apps installed during the lease, with their data, then Home), restart (fresh boot), erase (re-cloned from the pool's template, then booted)"});
             arr.push(json!({"name": "pool_status", "description": "The device pool (devices kept booted for agents; made with `x86sim pool up N`): each device's state (free / leased / resetting), whether it is at its home screen, who holds it and for how long, memory per device, how many more fit in memory, KSM sharing and reflink cloning.",
                 "inputSchema": {"type": "object", "properties": {"pool": pool}}}));
-            arr.push(json!({"name": "phone_take", "description": "Take a booted device from the pool (atomic: no other caller gets it). Returns its name: pass it as `device` to the other tools. The lease ends when this MCP session ends (the server's process is the holder) or after ttl_s (default 1800; renew by taking again is not needed: call phone_take with renew=<device>); then the device is reset and free again. Give it back with phone_release.",
+            arr.push(json!({"name": "phone_take", "description": "Take a booted device from the pool (atomic: no other caller gets it). Returns its name: pass it as `phone` to the other tools. The lease ends when this MCP session ends (the server's process is the holder) or after ttl_s (default 1800; renew by taking again is not needed: call phone_take with renew=<device>); then the device is reset and free again. Give it back with phone_release.",
                 "inputSchema": {"type": "object", "properties": {"pool": pool, "ttl_s": {"type": "integer"}, "reset": reset, "wait_s": {"type": "integer", "description": "wait up to this long for a device to be free (default 0)"}, "renew": {"type": "string", "description": "extend the lease of this device you hold instead of taking another"}}}}));
             arr.push(json!({"name": "phone_release", "description": "Give a pool device back. It is reset in the background (reset, default: the mode given at phone_take) and free again when done.",
                 "inputSchema": {"type": "object", "properties": {"pool": pool, "phone": {"type": "string"}, "reset": reset}, "required": ["phone"]}}));

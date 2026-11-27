@@ -25,7 +25,8 @@ entitlement-gated services) is not counted as an x86Sim gap.
   push, context menus, pickers, widgets, Control Center and others driven on both sides.
 - **The regression apps** in `tests/apps` (UIKit, SwiftUI, networking, Core Data, Metal, SpriteKit, audio).
 - **End-to-end scripts** that drive `x86sim-mcp` on a phone as an agent does: `tests/ax` (snapshots, actions, OCR and
-  marks, permission prompts, games, network capture and mocks), `tests/dev` (every app toolchain of
+  marks, permission prompts, games, network capture and mocks; `tools_e2e.py`: what every tool shares — schemas,
+  unknown and missing arguments, devices that are off, a sweep of every tool), `tests/dev` (every app toolchain of
   [BUILDING-APPS.md](BUILDING-APPS.md), built on Linux and run), `tests/share` (the browser view), `tests/account`,
   `tests/devapp`, `tests/mcp`, `tests/lldb`, `tests/profile`. They need a booted phone and are run by hand, not by CI
   (CI builds the AppImage).

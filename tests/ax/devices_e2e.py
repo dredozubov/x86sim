@@ -120,6 +120,10 @@ class Run:
         a, text = self.app_info()
         e = a.get("last_exit") or {}
         self.check("state: terminated: not running, last exit recorded", not a.get("running") and "SIGKILL" in e.get("how", ""), text[:300])
+        # launchd's own accounting: how long the run took (it ran ~10 s here; proc_pid_rusage's start / exit times in
+        # the guest's timebase, not "ran for 12293544232889ms")
+        ran = re.search(r"ran for (\d+)ms", e.get("line", ""))
+        self.check("state: launchd's 'ran for' is the run's length", ran and 1000 <= int(ran.group(1)) <= 600000, e.get("line", "")[-60:])
 
     # -- launch: an app that dies at once
     def launch(self):
@@ -141,14 +145,14 @@ class Run:
         self.check("abort: x86dyldfail installed", not err, text[:120])
         text, _, err, dt = self.m.call("app_launch", bundle_id="com.x86sim.test.x86dyldfail", after="none")
         self.check("abort: a launch dyld refuses is an error", err and "died" in text, "%.1f s: %s" % (dt, text[:400]))
-        if "Symbol not found" not in text and "reason" not in text:
+        if "symbol not found" not in text.lower() and "reason" not in text:
             # dyld's reason comes from the translator's log (linux/arm64jit host.cpp h_helper_abort): an installed
             # libarm64jit from before it logs none
             print("SKIP abort: dyld's reason (the installed translator does not log dyld_sim's abort reason yet)", flush=True)
         else:
-            self.check("abort: the error has dyld's reason", "Symbol not found" in text and "x86sim_no_such_symbol" in text, text[:400])
+            self.check("abort: the error has dyld's reason", "symbol not found" in text.lower() and "x86sim_no_such_symbol" in text, text[:400])
             text, st, err, _ = self.m.call("app_state", bundle_id="com.x86sim.test.x86dyldfail")
-            self.check("abort: app_state's last exit has the reason", "Symbol not found" in text, text[:400])
+            self.check("abort: app_state's last exit has the reason", "symbol not found" in text.lower(), text[:400])
         self.m.call("app_terminate", bundle_id=APP, after="none")
         text, _, err, dt = self.m.call("app_launch", bundle_id=APP, args=["--abort-reason"], after="none")
         self.check("abort: abort_with_reason's reason (libsimshim) in the launch error", err and "the reason agents should see" in text, "%.1f s: %s" % (dt, text[:400]))

@@ -906,6 +906,44 @@ void tb_convert_qos_changes(void *list, int n) {
         if (ff & kLeeway) { u64 l; memcpy(&l, e + 48, 8); l = tb_ticks_to_ns(l); memcpy(e + 48, &l, 8); }
     }
 }
+// proc_pid_rusage(pid, flavor, buffer): rusage_info's times are mach time (XNU: ri_user_time, ri_system_time,
+// ri_proc_start_abstime, ri_proc_exit_abstime; from v1 the children's user / system / elapsed times). launchd_sim
+// asks for an exited job's (a zombie, before wait4) and logs "ran for <exit - start>": Darling gave the start in ns
+// since boot and no exit time, so 0 - start wrapped and every app "ran for 12293544232889ms" (app_state's last exit).
+// A zombie's exit time is now, on the clock the start counts on (/proc's start time: CLOCK_BOOTTIME), as XNU records
+// it at exit; then the times go to the guest's 24 MHz ticks.
+static bool is_zombie(long pid) {
+    // through Darling's open: guest pids are the container's (its /proc), not the host's
+    static auto *dopen = (int (*)(const char *, int, ...))dsym("open");
+    static auto *dread = (long (*)(int, void *, size_t))dsym("read");
+    static auto *dclose = (int (*)(int))dsym("close");
+    if (!dopen || !dread || !dclose) return false;
+    char path[64], buf[512];
+    snprintf(path, sizeof path, "/proc/%ld/stat", pid);
+    int fd = dopen(path, 0 /* O_RDONLY */);
+    if (fd < 0) return false;
+    long n = dread(fd, buf, sizeof buf - 1);
+    dclose(fd);
+    if (n <= 0) return false;
+    buf[n] = 0;
+    const char *p = strrchr(buf, ')');  // the state follows the command name, which may hold spaces or ')'
+    return p && p[1] == ' ' && p[2] == 'Z';
+}
+static void h_tb_rusage(GuestThread &t, u32 i) {
+    const long pid = (long)(int32_t)t.x(0);
+    const u64 flavor = t.x(1);
+    u64 *ri = (u64 *)t.x(2);
+    h_generic(t, i);
+    if (!ri || t.x(0) != 0) return;
+    if (ri[11] == 0 && ri[10] != 0 && pid > 0 && is_zombie(pid)) {
+        struct timespec ts;
+        clock_gettime(CLOCK_BOOTTIME, &ts);
+        ri[11] = (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
+    }
+    for (int k : {2, 3, 10, 11}) ri[k] = tb_ns_to_ticks(ri[k]);
+    if (flavor >= 1)
+        for (int k : {12, 13, 17}) ri[k] = tb_ns_to_ticks(ri[k]);
+}
 static Handler timebase_handler(const std::string &n) {
     if (!timebase_apple()) return nullptr;
     // struct kevent (32 B): fflags +12, data +16. kevent64_s (48 B): fflags +12, data +16, ext[1] +40.
@@ -924,6 +962,7 @@ static Handler timebase_handler(const std::string &n) {
         // 24 MHz guest deadline was already past in Darling's ns clock and every render wait timed out at once
         {"_mach_eventlink_wait_until", h_tb_in<4>}, {"_mach_eventlink_signal_wait_until", h_tb_in<5>},
         {"___mach_eventlink_wait_until", h_tb_in<2>}, {"___mach_eventlink_signal_wait_until", h_tb_in<3>},
+        {"_proc_pid_rusage", h_tb_rusage},
         {"_kevent", h_tb_kevent<32, 12, 16, -1>}, {"_kevent64", h_tb_kevent<48, 12, 16, 40>},
         {"_kevent_qos", h_tb_kevent<72, 24, 32, 48>}, {"_kevent_id", h_tb_kevent<72, 24, 32, 48>},
     };

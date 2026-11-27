@@ -541,11 +541,13 @@ static NSString* kRedirect = @"redirect";
 
 - (void)innerComplete:(NSError*)e {
 	if (self.redirectTo) return;
+	// the record first: told it finished, the client may call stopLoading at once, which would record a load that
+	// completed (200, its body) as cancelled (-999)
+	[self finishWithError:e];
 	[self onClient:^{
 		if (e) [self.client URLProtocol:self didFailWithError:e];
 		else [self.client URLProtocolDidFinishLoading:self];
 	}];
-	[self finishWithError:e];
 }
 
 // ---- NSURLAuthenticationChallengeSender: the app's answer goes to the inner task

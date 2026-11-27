@@ -146,6 +146,13 @@ class Games(Run):
         s, _ = self.m.snap()
         f = [e for e in s["elements"] if e.get("app") == UNITY and e.get("role") == "textfield"]
         self.check("%s: the field's value" % tag, bool(f) and f[0].get("value") == "Ada", f and str(f[0]))
+        # with a target: the tap's focus is the engine's (no UIKit first responder behind it)
+        text, _, err, dt = self.m.call("type", target="Your name", text="Bo", clear=True, after="none")
+        ok = not err and not self.m.call("wait_for", target="Name: Bo", timeout=10)[2]
+        self.check("%s: type target= into the input field" % tag, ok and dt < 5, "%.1f s: %s" % (dt, text[:200]))
+        text, _, err, _ = self.m.call("fill", fields=[{"target": "Your name", "text": "Cy"}], after="none")
+        ok = not err and not self.m.call("wait_for", target="Name: Cy", timeout=10)[2]
+        self.check("%s: fill the input field" % tag, ok, text[:200])
 
     def engine_app(self, name, app, bundle, tap, field, wait=None, tapped=None, typed=None, submit=False):
         if not self.launch(app, bundle, None):

@@ -497,7 +497,14 @@ struct RefState {
     /// the text elements the last whole-screen OCR read (snapshot ocr=true): a later one gives them their refs again
     #[serde(default)]
     ocr_prev: Vec<El>,
+    /// elements of earlier snapshots the last one did not list (newest first, at most GONE_KEEP): an element seen in
+    /// a snapshot all=true far out of view, then scrolled in, keeps that ref (the default snapshots in between leave
+    /// such elements out); a row that scrolled away and back too
+    #[serde(default)]
+    gone: Vec<El>,
 }
+
+const GONE_KEEP: usize = 400;
 
 fn refs_path(inst: &Instance) -> PathBuf {
     inst.state_dir.join("ax-refs.json")
@@ -1002,6 +1009,9 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
         }
     }
     if n_answers == 0 {
+        if let Some(off) = device_off(inst) {
+            bail!("{off}");
+        }
         bail!("{}: no app answers (is the device running and booted to the home screen? its reader is host/simax)", inst.name);
     }
     if snap.elements.is_empty() && !silent.is_empty() && spaces.is_empty() {
@@ -1059,9 +1069,21 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     // text in pixels (views with no elements, the whole screen with ocr)
     crate::ocr::augment(inst, &mut snap, pixels, opt.ocr);
     let mut next = st.next.max(1);
-    let mut prev = std::mem::take(&mut st.last.elements);
+    let last_els = std::mem::take(&mut st.last.elements);
+    let mut prev = last_els.clone();
     prev.extend(st.ocr_prev.iter().filter(|o| !prev.iter().any(|p| p.r == o.r)).cloned().collect::<Vec<_>>());
-    assign_refs(&mut snap.elements, &prev, &mut next);
+    // the recently gone ones first: assign_refs's maps keep the later entry, so the last snapshot's own win a key
+    let mut pool: Vec<El> = st.gone.iter().filter(|g| !prev.iter().any(|p| p.r == g.r)).cloned().collect();
+    pool.extend(prev);
+    assign_refs(&mut snap.elements, &pool, &mut next);
+    {
+        let now: HashSet<&str> = snap.elements.iter().map(|e| e.r.as_str()).collect();
+        let mut gone: Vec<El> = last_els.into_iter().filter(|e| !now.contains(e.r.as_str()) && !e.ocr).collect();
+        let have: HashSet<String> = gone.iter().map(|g| g.r.clone()).collect();
+        gone.extend(std::mem::take(&mut st.gone).into_iter().filter(|e| !now.contains(e.r.as_str()) && !have.contains(&e.r)));
+        gone.truncate(GONE_KEEP);
+        st.gone = gone;
+    }
     if opt.ocr {
         st.ocr_prev = snap.elements.iter().filter(|e| e.ocr).cloned().collect();
     }
@@ -1136,7 +1158,14 @@ pub fn find_all<'a>(snap: &'a Snapshot, target: &Target) -> Vec<&'a El> {
 
 /// find_all, text matches no worse than `worst` (0 exact label, 1 exact id / value, 2 label prefix, 3 substring)
 pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a El> {
-    let mut v: Vec<(u8, &El)> = Vec::new();
+    let mut v: Vec<(u8, bool, &El)> = Vec::new();
+    // the label exactly as written, case and all: "Sign Up" is the button scrolled out of view, not the title "Sign
+    // up" on screen (case-blind, both were exact matches and the one on screen won)
+    let ws = |s: &str| s.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect::<String>();
+    let as_written = match target {
+        Target::Text(t) => Some(ws(t)),
+        _ => None,
+    };
     for e in &snap.elements {
         let q = match target {
             Target::Ref(r) => (e.r == *r).then_some(0),
@@ -1168,13 +1197,14 @@ pub fn find_all_q<'a>(snap: &'a Snapshot, target: &Target, worst: u8) -> Vec<&'a
             }
         };
         if let Some(q) = q.filter(|q| *q <= worst) {
-            v.push((q, e));
+            let exact_case = q == 0 && as_written.as_deref().is_some_and(|w| e.label.as_deref().map(ws).as_deref() == Some(w));
+            v.push((q, exact_case, e));
         }
     }
     // the front-most app's element wins a tie (iPadOS: two windows with a Back button each)
     let front_rank = |app: &str| snap.front.iter().position(|f| f == app).unwrap_or(usize::MAX);
-    v.sort_by_key(|(q, e)| (e.offscreen || e.covered, layer_rank(&e.layer), *q, front_rank(&e.app), !actionable(&e.role), e.role == "webview"));
-    v.into_iter().map(|x| x.1).collect()
+    v.sort_by_key(|(q, exact_case, e)| (!*exact_case, e.offscreen || e.covered, layer_rank(&e.layer), *q, front_rank(&e.app), !actionable(&e.role), e.role == "webview"));
+    v.into_iter().map(|x| x.2).collect()
 }
 
 /// `hay` holds `needle` (at its start with `prefix`), and not as a part of a longer number: "Score: 1" is not in
@@ -1205,7 +1235,15 @@ pub fn find<'a>(snap: &'a Snapshot, target: &str) -> Result<&'a El> {
         if matches!(t, Target::Ref(_)) {
             anyhow!("no element {target} on screen now (refs come from the last snapshot; take a new one)")
         } else {
-            anyhow!("nothing on screen matches {target:?}")
+            // the home screen shows one page of icons: the app may be on another
+            let page = snap.elements.iter().find(|e| e.id.as_deref() == Some("spotlight-pill")).and_then(|e| e.value.clone()).filter(|v| v.starts_with("Page ") && !v.starts_with("Page 1 of 1"));
+            match page {
+                Some(p) => anyhow!(
+                    "nothing on screen matches {target:?} (the home screen shows {p}: icons on other pages are not listed; {})",
+                    if p.starts_with("Page 1 ") { "swipe left for the next page" } else { "press home for page 1, or swipe" }
+                ),
+                None => anyhow!("nothing on screen matches {target:?}"),
+            }
         }
     })
 }
@@ -1399,9 +1437,32 @@ pub fn drag(inst: &Instance, sp: Space, from: (f64, f64), to: (f64, f64), ms: u6
 pub fn resolve(inst: &Instance, target: &str) -> Result<(El, Snapshot)> {
     let snap = snapshot(inst, SnapOpts::default())?;
     let err = match find(&snap, target) {
-        Ok(e) => return Ok((e.clone(), snap)),
+        Ok(e) => {
+            // text that matched only case-blind ("Sign up" for "Sign Up"): an element out of view with the label as
+            // written is what was meant (the default snapshot leaves far ones out)
+            let ws = |s: &str| s.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect::<String>();
+            if let Target::Text(t) = parse_target(target) {
+                if e.label.as_deref().map(ws) != Some(ws(&t)) && e.label.as_deref().is_some_and(|l| l.to_lowercase() == t.to_lowercase()) {
+                    if let Ok(s2) = snapshot(inst, SnapOpts { all: true, ..Default::default() }) {
+                        if let Some(x) = find_all(&s2, &parse_target(target)).into_iter().next().filter(|x| x.label.as_deref().map(ws) == Some(ws(&t))) {
+                            return Ok((x.clone(), s2));
+                        }
+                    }
+                }
+            }
+            return Ok((e.clone(), snap));
+        }
         Err(e) => e,
     };
+    // a ref from snapshot all=true: an element scrolled far out of view, which the default snapshot leaves out (the
+    // action scrolls it in, as for one just out of view)
+    if matches!(parse_target(target), Target::Ref(_)) {
+        if let Ok(s2) = snapshot(inst, SnapOpts { all: true, ..Default::default() }) {
+            if let Ok(e) = find(&s2, target) {
+                return Ok((e.clone(), s2));
+            }
+        }
+    }
     // text no element says, or a ref a whole-screen OCR gave: read the screen's pixels too
     if crate::ocr::worth_a_look(inst, &parse_target(target)) {
         let s2 = snapshot(inst, SnapOpts { ocr: true, ..Default::default() })?;
@@ -1489,7 +1550,7 @@ pub fn tap(inst: &Instance, target: &str, hold_ms: u64, after: After) -> Result<
         _ => {
             let (mut e, mut snap) = resolve(inst, target)?;
             if e.offscreen {
-                scroll_into_view(inst, &e)?;
+                bring_into_view(inst, &e)?;
                 let s2 = snapshot(inst, SnapOpts::default())?;
                 e = find(&s2, &format!("@{}", e.r)).cloned().or_else(|_| find(&s2, target).cloned())?;
                 snap = s2;
@@ -1708,6 +1769,23 @@ fn wait_front_change(inst: &Instance, front: Vec<String>, timeout: Duration) -> 
     false
 }
 
+/// `scroll_into_view`, and when the element is still out of view after it (simax's scroll did not move a SwiftUI
+/// Form: a button far down stayed at y 1098 and tap said its ref was gone), swipes toward it as scroll_to does
+pub(crate) fn bring_into_view(inst: &Instance, e: &El) -> Result<()> {
+    let first = scroll_into_view(inst, e);
+    let target = format!("@{}", e.r);
+    let shown = |s: &Snapshot| find_all_q(s, &parse_target(&target), 0).into_iter().any(|x| !x.offscreen);
+    if snapshot(inst, SnapOpts::default()).is_ok_and(|s| shown(&s)) {
+        return Ok(());
+    }
+    let screen_h = last(inst).map(|s| s.screen.1).unwrap_or(0.0);
+    let dir = if e.frame[1] < 0.0 { "up" } else if e.frame[0] < 0.0 { "left" } else if screen_h > 0.0 && e.frame[1] >= screen_h { "down" } else if e.frame[0] > 0.0 && e.frame[1] < screen_h { "right" } else { "down" };
+    match scroll_to(inst, &target, dir, 10, After::None) {
+        Ok(_) => Ok(()),
+        Err(e2) => first.and(Err(e2)),
+    }
+}
+
 pub(crate) fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
     let sock = sock_of_pid(inst, e.pid).ok_or_else(|| anyhow!("{} is gone", e.app))?;
     let r = ask(&sock, &json!({"op": "scroll", "oid": e.oid}), Duration::from_secs(3))?.ok_or_else(|| anyhow!("{} is gone", e.app))?;
@@ -1759,10 +1837,19 @@ pub fn type_text(inst: &Instance, text: &str, clear: bool, submit: bool, keys: b
                 v = type_in_app(inst, &json!({"op": "type", "text": text, "clear": clear, "submit": false}))?;
             }
             TypeStep::Return => {
+                returns += 1;
+                // the software keyboard's own return key when it is up, as a person presses it: a hardware Return key
+                // press makes UIKit take a hardware keyboard as in use, and the software keyboard then never showed
+                // again on this device (not even after a relaunch), so every later form laid out without it
+                if let Some(k) = snapshot(inst, SnapOpts::default()).ok().and_then(|s| software_return_key(&s).cloned()) {
+                    if tap(inst, &format!("@{}", k.r), 60, After::None).is_ok() {
+                        std::thread::sleep(Duration::from_millis(if i + 1 < steps.len() { 600 } else { 400 }));
+                        continue;
+                    }
+                }
                 let h = h.get_or_insert_with(|| Hid::new(&inst.sock));
                 h.key(true, 0x28);
                 h.key(false, 0x28);
-                returns += 1;
                 // simhid can hold a key for up to ~1 s (the keyboard's attach settle, its guard after a touch's lift)
                 // and says nothing when it went out: text after it, or the screen after, waits for it
                 std::thread::sleep(Duration::from_millis(if i + 1 < steps.len() { 1200 } else { 1000 }));
@@ -2104,6 +2191,43 @@ pub fn scroll_to(inst: &Instance, target: &str, direction: &str, max_steps: u32,
     bail!("{target:?} not found after {max_steps} scrolls {direction}")
 }
 
+/// Some(why) when the device is not running at all (no launchd_sim, no boot script): with the end of its boot
+/// output when a boot was tried, so a boot that died is told at once instead of as "no app answers" after a timeout
+pub fn device_off(inst: &Instance) -> Option<String> {
+    device_off_impl(inst)
+}
+
+/// What `device_off`'s answer says: an error from a snapshot that holds it is final (the device will not answer)
+pub const OFF_MARK: &str = " is off (start it: sim_start)";
+
+/// An error from a snapshot / action that says the device is off: waiting on it is pointless
+pub fn is_off_error(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains(OFF_MARK)
+}
+
+fn device_off_impl(inst: &Instance) -> Option<String> {
+    let st = crate::instance::Monitor::default().poll(std::slice::from_ref(inst)).into_iter().next()?;
+    if st.phase != crate::instance::Phase::Off {
+        return None;
+    }
+    let tail = |p: &std::path::Path| -> Vec<String> {
+        std::fs::read_to_string(p).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("==")).map(String::from).collect()
+    };
+    // only what reads as a failure: a device that was stopped ends its output with ordinary boot lines
+    let bad = |l: &String| {
+        let l = l.to_ascii_lowercase();
+        ["error", "timed out", "failed", "abort", "fatal", "no such file", "not found"].iter().any(|w| l.contains(w))
+    };
+    let mut lines: Vec<String> = tail(&st.state_dir.join("lsim.out")).into_iter().chain(tail(&crate::instance::boot_log(inst))).filter(bad).collect();
+    let n = lines.len();
+    let last = lines.split_off(n.saturating_sub(3)).join(" | ");
+    Some(if last.is_empty() {
+        format!("{}{OFF_MARK}", inst.name)
+    } else {
+        format!("{}{OFF_MARK}; its last boot said: {last} (boot log {})", inst.name, crate::instance::boot_log(inst).display())
+    })
+}
+
 /// Waits until a target is on screen (or, `gone`, no longer is), matched as tap matches it (exact, prefix, substring).
 /// Wakes on new frames, not on a timer.
 pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) -> Result<Outcome> {
@@ -2134,6 +2258,12 @@ pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) ->
                     None => format!("{target:?} gone after {ms} ms"),
                 };
                 return Ok(Outcome { did, screen: Some(snap.clone()), diff: None });
+            }
+        }
+        // a device that is off (never booted, or its boot died) answers nothing for the whole timeout: say so now
+        if let Err(e) = &snap {
+            if is_off_error(e) {
+                bail!("waiting for {target:?}: {e:#}");
             }
         }
         let left = timeout.saturating_sub(t0.elapsed());
@@ -2571,6 +2701,16 @@ pub fn hw_keyboard_connected(inst: &Instance) -> bool {
 fn simhid_up(inst: &Instance) -> bool {
     let p = std::fs::canonicalize(&inst.sock).unwrap_or_else(|_| inst.sock.clone());
     std::os::unix::net::UnixStream::connect(p).is_ok()
+}
+
+/// The software keyboard's return key, when the keyboard is up: its label is the field's return key type (return,
+/// Go, Search, Send, Done, Next, Join, ...), and it is the right-most key of the bottom row
+pub fn software_return_key(s: &Snapshot) -> Option<&El> {
+    if !software_keyboard_up(s) {
+        return None;
+    }
+    const NAMES: &[&str] = &["return", "go", "search", "send", "done", "next", "join", "route", "continue", "emergency call", "enter"];
+    s.elements.iter().filter(|e| e.role == "key" && !e.offscreen).find(|e| e.label.as_deref().is_some_and(|l| NAMES.contains(&l.to_lowercase().as_str())))
 }
 
 /// The software keyboard is on screen: its keys are in the snapshot (role "key", UIKit's keyboard-key trait)
