@@ -892,6 +892,18 @@ static void on_abrt(int sig, siginfo_t *si, void *uc) {
     // while translating) otherwise loses exactly the code the image lacks. Not in normal use: the save takes the
     // shared code lock, which the aborting thread may hold.
     if (const char *a = getenv("X86SIM_A64_AOT_AUTOSAVE"); a && atoi(a) == 1) jitcache_save_on_exit();
+    // The guest's own abort (abort(), abort_with_reason, a Swift fatalError: rip in Darling's Mach-O libsystem, not in
+    // our ELF code) ends the app as on iOS, with its reason and guest backtrace logged above: no core of the whole
+    // translated process. systemd-coredump wrote ~700 MB per app crash and took ~7 s, so the app outlived
+    // app_launch's 3 s watch and its crash read as a good launch. X86SIM_A64_GUEST_CORE=1 keeps such cores; our own
+    // aborts (libarm64jit, dynarmic: ELF code) always dump.
+    if (GuestThread::current() && !in_elf_code(rip)) {
+        const char *gc = getenv("X86SIM_A64_GUEST_CORE");
+        if (!gc || atoi(gc) != 1) {
+            struct rlimit nocore = {0, 0};
+            setrlimit(RLIMIT_CORE, &nocore);
+        }
+    }
     signal(SIGABRT, SIG_DFL);
     raise(SIGABRT);
 }
