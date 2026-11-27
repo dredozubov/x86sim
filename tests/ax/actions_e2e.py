@@ -10,6 +10,8 @@ test app tests/apps/x86forms (tests/apps/build.sh x86forms):
            time pickers: the app's bindings see each value; a value a control does not take is an error naming them
   drag     a list row dragged by its reorder handle to another place; an item dragged (held to lift) onto a drop box
   match    wait_for and expect find text as tap does: exact, then prefix, then a part of the label
+  far      a ref from snapshot all=true of a button far out of view keeps its ref once scrolled in: tap by that ref
+           scrolls it in and presses it (a SwiftUI Form that simax's scroll does not move)
   batch    a log-in-like flow in one call (relaunch, wait, type, expect, screenshot): one line per step, the image,
            the screen once at the end; stop_on_error stops at a failing expect, and false runs on
   expect   pass / fail on label, value (a field found by the label beside it), contains, enabled, focused, count,
@@ -56,7 +58,7 @@ class Run:
         return not self.m.call("wait_for", target=wait, timeout=60)[2]
 
     def state(self, ident):
-        s, _ = self.m.snap()
+        s, _ = self.m.snap(all=True)
         e = els(s, id="^%s$" % re.escape(ident))
         return (e[0].get("label") or e[0].get("value") or "") if e else ""
 
@@ -190,6 +192,24 @@ class Run:
         self.check("wait_for: a condition that never holds times out as an error", err and "FAIL" in text, text.split("\n")[0])
 
     # -- match: wait_for / expect by a part of a label
+    # -- far: refs of elements far out of view
+    def far(self):
+        if not self.launch():
+            return
+        s, _ = self.m.snap(all=True)
+        b = [e for e in s["elements"] if e.get("role") == "button" and e.get("label") == "Sign Up"]
+        self.check("far: snapshot all=true lists the button far down", bool(b) and b[0].get("offscreen"), b and b[0].get("frame"))
+        if not b:
+            return
+        ref = b[0]["ref"]
+        self.m.snap()  # a default snapshot in between leaves it out
+        text, _, err, dt = self.m.call("tap", target="@" + ref, after="none")
+        self.check("far: tap by that ref scrolls it in and taps it", not err and ("@" + ref) in text, "%.1f s: %s" % (dt, text[:200]))
+        self.check("far: the app got the press", self.state("submitted").startswith("submitted: name="), self.state("submitted"))
+        s, _ = self.m.snap()
+        now = [e for e in s["elements"] if e.get("role") == "button" and e.get("label") == "Sign Up"]
+        self.check("far: on screen it still has that ref", bool(now) and now[0]["ref"] == ref, now and now[0]["ref"])
+
     def match(self):
         if not self.launch():
             return
@@ -239,7 +259,7 @@ def main():
     only = set(filter(None, a.only.split(",")))
     want = lambda n: (not only or n in only)
     try:
-        for name in ["focus", "fill", "controls", "drag", "expect", "match", "batch"]:
+        for name in ["focus", "fill", "controls", "drag", "expect", "match", "far", "batch"]:
             if want(name):
                 getattr(r, name)()
     finally:
