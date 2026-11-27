@@ -15,6 +15,11 @@
 # fileproviderd vnode: libSystem.B too: Darling links a copy of libkqueue into it (kevent() of Darling's own x86_64
 # programs; the simulator's arm64 processes use libkqueue_sim).
 # RAM 2: libsystem_kernel records jetsam state (process/memorystatus.c) for cli/libexec/jetsam.py.
+# darlingserver too (field "host": a Linux binary beside the install root, never in a prefix): libsystem_kernel and
+# darlingserver share one RPC call table (darlingserver's generate-rpc-wrappers.py), so a libsystem_kernel built
+# after a darlingserver change and installed without it makes every container's darlingserver abort in its first
+# calls (2026-11-27: upstream's mach_sq calls shifted the numbers; InterruptExit::processCall abort, "Timed out
+# waiting for shellspawn in container" on every boot).
 # Usage: prefix-heal.sh <prefix dir>        (A64_PREFIX_HEAL=0 in boot-a64.sh: skip)
 X=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
 P=$1
@@ -25,10 +30,17 @@ src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib usr/lib/sys
 src/external/libc/libsystem_c.dylib usr/lib/system/libsystem_c.dylib
 src/external/libsystem/libSystem.B.dylib usr/lib/libSystem.B.dylib
 src/external/libkqueue/libkqueue_sim.dylib usr/lib/darling/libkqueue_sim.dylib platform
+src/external/darlingserver/darlingserver ../../bin/darlingserver host
 "
 install1() {  # <src> <dst>
 	mkdir -p "$(dirname "$2")" && cp "$1" "$2.heal.$$" && mv -f "$2.heal.$$" "$2" && echo "  prefix-heal: installed $2"
 }
+RPC=$X/external/darling/src/external/darlingserver/scripts/generate-rpc-wrappers.py
+DS=$B/src/external/darlingserver/darlingserver
+if [ -f "$RPC" ] && [ -f "$DS" ] && [ "$RPC" -nt "$DS" ]; then
+	echo "  prefix-heal: WARNING: $DS is older than its RPC table ($RPC): rebuild it (ninja -C $B darlingserver)," \
+		"or the libsystem_kernel built since will not talk to it"
+fi
 TMPD=$(mktemp -d /tmp/x86sim-heal.XXXXXX) || exit 0
 echo "$MANIFEST" | while read -r src dst opt; do
 	[ -n "$src" ] || continue
@@ -38,6 +50,7 @@ echo "$MANIFEST" | while read -r src dst opt; do
 		f=$TMPD/$(basename "$src"); cp "$B/$src" "$f" && python3 -I "$X/tools/debug/set_macho_platform.py" "$f" >/dev/null || continue
 	fi
 	cmp -s "$f" "$I/$dst" || install1 "$f" "$I/$dst"
+	[ "$opt" = host ] && continue
 	if [ -n "$P" ] && [ -f "$P/$dst" ] && ! cmp -s "$f" "$P/$dst"; then install1 "$f" "$P/$dst"; fi
 done
 rm -rf "$TMPD"
