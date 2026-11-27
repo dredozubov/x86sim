@@ -15,16 +15,18 @@ X=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=${OUT:-$X/build/release/out}
 L=$OUT/destdir/opt/x86sim/darling/libexec/darling/usr/libexec/darling
 KV=1
+# collect / stage below decide what a cached component holds: this script is an input of every component
+SELF=build/release/ci.sh
 COMPONENTS="darling arm64jit mtlvk launcher lavapipe"
 
 inputs() { case $1 in
 	darling) echo external/darling host/arm64host tools/debug/set_macho_platform.py build/release/build.sh build/release/deps-ubuntu.sh ;;
-	arm64jit) echo external/dynarmic linux/arm64jit build/release/build.sh build/release/deps-ubuntu.sh ;;
-	mtlvk) echo external/metal2vulkan linux/mtlvk build/release/build.sh ;;
+	arm64jit) echo $SELF external/dynarmic linux/arm64jit build/release/build.sh build/release/deps-ubuntu.sh ;;
+	mtlvk) echo $SELF external/metal2vulkan linux/mtlvk build/release/build.sh ;;
 	# include_str!/include_bytes! of files outside the crate: features.rs, desktop.rs
-	launcher) echo tools/launcher cli/libexec/arm64/features-def.json build/release/x86sim.desktop build/release/x86sim.png \
+	launcher) echo $SELF tools/launcher cli/libexec/arm64/features-def.json build/release/x86sim.desktop build/release/x86sim.png \
 		build/release/build.sh ;;
-	lavapipe) echo build/lavapipe.sh build/release/build.sh build/release/deps-ubuntu.sh ;;
+	lavapipe) echo $SELF build/lavapipe.sh build/release/build.sh build/release/deps-ubuntu.sh ;;
 	*) echo "ci: unknown component $1" >&2; exit 1 ;;
 esac; }
 
@@ -59,8 +61,9 @@ collect)
 	launcher) find "$OUT/cargo-launcher/release" -maxdepth 1 -type f -name 'x86sim-*' -perm -u+x -exec cp -p -t "$P/" {} + ;;
 	lavapipe) cp -a "$OUT/lavapipe" "$P/lavapipe" ;;  # its LICENSE is inside
 	esac
-	# appimage.sh strips debug info anyway (keeping .symtab: the launcher reads libarm64jit.so's g_build): a smaller cache
-	find "$P" -maxdepth 1 -type f \( -name '*.so' -o -perm -u+x \) -exec strip --strip-debug {} + 2>/dev/null || true
+	# mtlvk's and the launcher's debug info (appimage.sh strips it too): a smaller cache. Nothing in destdir: appimage.sh
+	# strips only some of it, and DARLING_ID hashes the rest as built
+	case $2 in mtlvk|launcher) find "$P" -maxdepth 1 -type f -perm -u+x -exec strip --strip-debug {} + ;; esac
 	echo "ci: $2: $(du -sh "$P" | cut -f1) collected"
 	;;
 stage)
