@@ -240,4 +240,5 @@ usbmuxd is only for a physical iPhone. If the Swift toolchain reports a missing 
 **Containers (podman, docker).** Inside a container, Darling runs in nonroot mode: no namespaces, and each device's
 prefix is a copy of the system image. This also applies where the container allows user namespaces but masks parts of
 `/proc`, which a new process namespace then cannot mount. The overlay in the prefix falls back to fuse-overlayfs or to
-a copy by itself.
+a copy by itself. Run x86Sim there as an ordinary user, as toolbox and distrobox do: as the container's root, Darling
+takes its root mode instead, which needs the namespaces the container does not give.

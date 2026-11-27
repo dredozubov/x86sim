@@ -79,6 +79,10 @@ if [ "$mode" = userns ] || [ "$mode" = nonroot ]; then
 	if [ ! -f "$APP/darling/.x86sim-copied" ]; then
 		rm -rf "$APP/darling.tmp"
 		cp -a "$S/darling" "$APP/darling.tmp"
+		# bin/darling is setuid in the payload (for the system install); here it must not be: as root in a container
+		# whose AppImage was unpacked by another uid it ran as that uid, and Darling refused a launcher with privileges
+		# but not root ("started with privileges, but not as root", #13)
+		chmod -R u-s,g-s "$APP/darling.tmp"
 		touch "$APP/darling.tmp/.x86sim-copied"
 		mv "$APP/darling.tmp" "$APP/darling"
 	fi
