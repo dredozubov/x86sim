@@ -497,7 +497,14 @@ struct RefState {
     /// the text elements the last whole-screen OCR read (snapshot ocr=true): a later one gives them their refs again
     #[serde(default)]
     ocr_prev: Vec<El>,
+    /// elements of earlier snapshots the last one did not list (newest first, at most GONE_KEEP): an element seen in
+    /// a snapshot all=true far out of view, then scrolled in, keeps that ref (the default snapshots in between leave
+    /// such elements out); a row that scrolled away and back too
+    #[serde(default)]
+    gone: Vec<El>,
 }
+
+const GONE_KEEP: usize = 400;
 
 fn refs_path(inst: &Instance) -> PathBuf {
     inst.state_dir.join("ax-refs.json")
@@ -1062,9 +1069,21 @@ fn snapshot_once(inst: &Instance, opt: SnapOpts) -> Result<Snapshot> {
     // text in pixels (views with no elements, the whole screen with ocr)
     crate::ocr::augment(inst, &mut snap, pixels, opt.ocr);
     let mut next = st.next.max(1);
-    let mut prev = std::mem::take(&mut st.last.elements);
+    let last_els = std::mem::take(&mut st.last.elements);
+    let mut prev = last_els.clone();
     prev.extend(st.ocr_prev.iter().filter(|o| !prev.iter().any(|p| p.r == o.r)).cloned().collect::<Vec<_>>());
-    assign_refs(&mut snap.elements, &prev, &mut next);
+    // the recently gone ones first: assign_refs's maps keep the later entry, so the last snapshot's own win a key
+    let mut pool: Vec<El> = st.gone.iter().filter(|g| !prev.iter().any(|p| p.r == g.r)).cloned().collect();
+    pool.extend(prev);
+    assign_refs(&mut snap.elements, &pool, &mut next);
+    {
+        let now: HashSet<&str> = snap.elements.iter().map(|e| e.r.as_str()).collect();
+        let mut gone: Vec<El> = last_els.into_iter().filter(|e| !now.contains(e.r.as_str()) && !e.ocr).collect();
+        let have: HashSet<String> = gone.iter().map(|g| g.r.clone()).collect();
+        gone.extend(std::mem::take(&mut st.gone).into_iter().filter(|e| !now.contains(e.r.as_str()) && !have.contains(&e.r)));
+        gone.truncate(GONE_KEEP);
+        st.gone = gone;
+    }
     if opt.ocr {
         st.ocr_prev = snap.elements.iter().filter(|e| e.ocr).cloned().collect();
     }
@@ -1405,6 +1424,15 @@ pub fn resolve(inst: &Instance, target: &str) -> Result<(El, Snapshot)> {
         Ok(e) => return Ok((e.clone(), snap)),
         Err(e) => e,
     };
+    // a ref from snapshot all=true: an element scrolled far out of view, which the default snapshot leaves out (the
+    // action scrolls it in, as for one just out of view)
+    if matches!(parse_target(target), Target::Ref(_)) {
+        if let Ok(s2) = snapshot(inst, SnapOpts { all: true, ..Default::default() }) {
+            if let Ok(e) = find(&s2, target) {
+                return Ok((e.clone(), s2));
+            }
+        }
+    }
     // text no element says, or a ref a whole-screen OCR gave: read the screen's pixels too
     if crate::ocr::worth_a_look(inst, &parse_target(target)) {
         let s2 = snapshot(inst, SnapOpts { ocr: true, ..Default::default() })?;
@@ -1492,7 +1520,7 @@ pub fn tap(inst: &Instance, target: &str, hold_ms: u64, after: After) -> Result<
         _ => {
             let (mut e, mut snap) = resolve(inst, target)?;
             if e.offscreen {
-                scroll_into_view(inst, &e)?;
+                bring_into_view(inst, &e)?;
                 let s2 = snapshot(inst, SnapOpts::default())?;
                 e = find(&s2, &format!("@{}", e.r)).cloned().or_else(|_| find(&s2, target).cloned())?;
                 snap = s2;
@@ -1709,6 +1737,23 @@ fn wait_front_change(inst: &Instance, front: Vec<String>, timeout: Duration) -> 
         ring.wait(seq, Duration::from_millis(500));
     }
     false
+}
+
+/// `scroll_into_view`, and when the element is still out of view after it (simax's scroll did not move a SwiftUI
+/// Form: a button far down stayed at y 1098 and tap said its ref was gone), swipes toward it as scroll_to does
+pub(crate) fn bring_into_view(inst: &Instance, e: &El) -> Result<()> {
+    let first = scroll_into_view(inst, e);
+    let target = format!("@{}", e.r);
+    let shown = |s: &Snapshot| find_all_q(s, &parse_target(&target), 0).into_iter().any(|x| !x.offscreen);
+    if snapshot(inst, SnapOpts::default()).is_ok_and(|s| shown(&s)) {
+        return Ok(());
+    }
+    let screen_h = last(inst).map(|s| s.screen.1).unwrap_or(0.0);
+    let dir = if e.frame[1] < 0.0 { "up" } else if e.frame[0] < 0.0 { "left" } else if screen_h > 0.0 && e.frame[1] >= screen_h { "down" } else if e.frame[0] > 0.0 && e.frame[1] < screen_h { "right" } else { "down" };
+    match scroll_to(inst, &target, dir, 10, After::None) {
+        Ok(_) => Ok(()),
+        Err(e2) => first.and(Err(e2)),
+    }
 }
 
 pub(crate) fn scroll_into_view(inst: &Instance, e: &El) -> Result<()> {
@@ -2107,8 +2152,6 @@ pub fn scroll_to(inst: &Instance, target: &str, direction: &str, max_steps: u32,
     bail!("{target:?} not found after {max_steps} scrolls {direction}")
 }
 
-/// Waits until a target is on screen (or, `gone`, no longer is), matched as tap matches it (exact, prefix, substring).
-/// Wakes on new frames, not on a timer.
 /// Some(why) when the device is not running at all (no launchd_sim, no boot script): with the end of its boot
 /// output when a boot was tried, so a boot that died is told at once instead of as "no app answers" after a timeout
 pub fn device_off(inst: &Instance) -> Option<String> {
@@ -2146,6 +2189,8 @@ fn device_off_impl(inst: &Instance) -> Option<String> {
     })
 }
 
+/// Waits until a target is on screen (or, `gone`, no longer is), matched as tap matches it (exact, prefix, substring).
+/// Wakes on new frames, not on a timer.
 pub fn wait_for(inst: &Instance, target: &str, gone: bool, timeout: Duration) -> Result<Outcome> {
     let t0 = Instant::now();
     let t = parse_target(target);
