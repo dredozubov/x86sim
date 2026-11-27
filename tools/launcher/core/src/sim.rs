@@ -60,24 +60,63 @@ fn profile_models(runtime_root: &Path, key: &[u8]) -> Vec<String> {
     if !b.windows(key.len()).any(|w| w == key) {
         return vec![];
     }
-    let mut out = vec![];
-    for pre in [&b"iPhone"[..], &b"iPad"[..]] {
-        let mut i = 0;
-        while let Some(p) = b[i..].windows(pre.len()).position(|w| w == pre) {
-            let s = i + p;
-            let mut e = s + pre.len();
-            while e < b.len() && (b[e].is_ascii_digit() || b[e] == b',') {
-                e += 1;
-            }
-            if e > s + pre.len() + 2 && b[s + pre.len()..e].contains(&b',') {
-                out.push(String::from_utf8_lossy(&b[s..e]).into_owned());
-            }
-            i = e;
-        }
-    }
+    let mut out = plist_model_ids(&b);
     out.sort();
     out.dedup();
     out
+}
+
+/// Every model id ("iPhone19,4", "Watch8,4", "AppleTV18,1", "RealityDevice14,1") stored as a string in a binary plist:
+/// its ASCII string objects (marker 0x5N, N = length; 0x5F then an int 0x10 LEN for 15 and up). Read as objects, not
+/// by name prefix: a scan for "iPhone"/"iPad" missed the other platforms' ids, so a tvOS / watchOS / visionOS build
+/// limited to some devices looked like one that takes them all.
+fn plist_model_ids(b: &[u8]) -> Vec<String> {
+    let is_id = |t: &[u8]| {
+        let l = t.iter().take_while(|c| c.is_ascii_alphabetic()).count();
+        let rest = &t[l..];
+        let Some(k) = rest.iter().position(|&c| c == b',') else { return false };
+        l > 0 && k > 0 && rest[..k].iter().all(u8::is_ascii_digit) && rest.len() > k + 1 && rest[k + 1..].iter().all(u8::is_ascii_digit)
+    };
+    let mut out = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        let (n, s) = match b[i] & 0x0f {
+            _ if b[i] & 0xf0 != 0x50 => (usize::MAX, 0),
+            0x0f if b.get(i + 1) == Some(&0x10) => (b.get(i + 2).copied().unwrap_or(0) as usize, i + 3),
+            0x0f => (usize::MAX, 0),
+            n => (n as usize, i + 1),
+        };
+        // past a string read: its own bytes can look like markers ("W" is 0x57: "atch8,4" inside "Watch8,4")
+        match b.get(s..s.saturating_add(n)).filter(|t| is_id(t)) {
+            Some(t) => {
+                out.push(String::from_utf8_lossy(t).into_owned());
+                i = s + n;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod profile_tests {
+    // bplist ASCII strings: 0x5N + N bytes, or 0x5F 0x10 LEN for 15 and up
+    fn s(t: &str) -> Vec<u8> {
+        let mut v = if t.len() < 15 { vec![0x50 | t.len() as u8] } else { vec![0x5f, 0x10, t.len() as u8] };
+        v.extend_from_slice(t.as_bytes());
+        v
+    }
+
+    #[test]
+    fn every_platforms_model_ids() {
+        let mut b = b"bplist00".to_vec();
+        for t in ["restrictedToDeviceTypes", "iPhone19,4", "Watch8,4", "AppleTV18,1", "RealityDevice14,1", "iPad17,4", "com.apple.carplay"] {
+            b.extend(s(t));
+        }
+        let mut got = super::plist_model_ids(&b);
+        got.sort();
+        assert_eq!(got, ["AppleTV18,1", "RealityDevice14,1", "Watch8,4", "iPad17,4", "iPhone19,4"]);
+    }
 }
 
 /// A model id's name ("iPhone19,4" -> "iPhone Duo"), else the id itself

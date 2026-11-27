@@ -342,9 +342,16 @@ fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
             .find(|r| !sim::runtime_restricted_to(&r.1).is_empty())
             .or(cands.first())
             .map(|r| r.1.clone())
-            .ok_or_else(|| match sim::runtimes().into_iter().find(|r| r.0.contains(want) && sim::runtime_unsupported(&r.1).contains(&model_id)) {
-                Some(r) => anyhow::anyhow!("{} does not support {model} (Apple's simulator refuses it too); leave out ios for the build that does", r.0),
-                None => anyhow::anyhow!("no {pname} {want} installed for {model} (see sim_devices runtimes)"),
+            .ok_or_else(|| {
+                // the build that takes it (issue #64: the iPhone Duo's own, beside 24B8117), from Apple's cached list
+                let fetch = x86sim_core::host::build_for_model(sim::model_platform(&model_id), &model_id, &x86sim_core::host::runtimes(), &x86sim_core::host::catalogue(false))
+                    .map(|(v, b)| format!("; download {pname} {v} ({b}) for it: x86sim runtime fetch {b}"))
+                    .unwrap_or_default();
+                match sim::runtimes().into_iter().find(|r| r.0.contains(want) && sim::runtime_unsupported(&r.1).contains(&model_id)) {
+                    Some(r) if fetch.is_empty() => anyhow::anyhow!("{} does not support {model} (Apple's simulator refuses it too); leave out ios for the build that does", r.0),
+                    Some(r) => anyhow::anyhow!("{} does not support {model} (Apple's simulator refuses it too){fetch}", r.0),
+                    None => anyhow::anyhow!("no {pname} {want} installed for {model} (see sim_devices runtimes){fetch}"),
+                }
             })?;
         return Ok(Answer::Json(json!({"device": sim::create_device(a["model"].as_str().unwrap_or(""), a["name"].as_str().unwrap_or(""), &rt)?})));
     }

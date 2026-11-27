@@ -70,7 +70,25 @@ def profile_models(rt, key):
         return []
     if key not in b:
         return []
-    return sorted({m.decode() for m in re.findall(rb"(?:iPhone|iPad)[0-9]+,[0-9]+", b)})
+    # its ASCII string objects (marker 0x5N, N = length; 0x5F 0x10 LEN for 15 and up) that are model ids, of every
+    # platform ("Watch8,4", "AppleTV18,1", "RealityDevice14,1"): a scan for "iPhone"/"iPad" alone made a tvOS / watchOS /
+    # visionOS build limited to some devices look like one that takes them all
+    out, i = set(), 0
+    while i < len(b):
+        c, i0 = b[i], i
+        i += 1
+        if c & 0xF0 != 0x50:
+            continue
+        n, s = c & 0x0F, i0 + 1
+        if n == 0x0F:
+            if b[i0 + 1:i0 + 2] != b"\x10" or i0 + 2 >= len(b):
+                continue
+            n, s = b[i0 + 2], i0 + 3
+        t = b[s:s + n]
+        if len(t) == n and re.fullmatch(rb"[A-Za-z]+[0-9]+,[0-9]+", t):
+            out.add(t.decode())
+            i = s + n  # past it: its own bytes can look like markers ("W" is 0x57: "atch8,4" inside "Watch8,4")
+    return sorted(out)
 
 
 def restricted_to(rt):
