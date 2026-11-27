@@ -5,12 +5,12 @@
 #   execs $PREFIX/bin/darlingserver, darlingserver overlays $PREFIX/libexec/darling) and installed with DESTDIR into
 #   $OUT/destdir. The setup wizard's privileged step copies it to /opt/x86sim/darling-<version> (root-owned, bin/darling
 #   setuid) and points the /opt/x86sim/darling symlink at it.
-#   JOBS (default nproc), STEPS (default "darling arm64jit arm64host mtlvk launcher")
+#   JOBS (default nproc), STEPS (default "darling arm64jit arm64host mtlvk launcher lavapipe")
 set -e
 X=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=$(mkdir -p "${OUT:-$X/build/release/out}" && cd "${OUT:-$X/build/release/out}" && pwd)
 JOBS=${JOBS:-$(nproc)}
-STEPS=${STEPS:-darling arm64jit arm64host mtlvk launcher}
+STEPS=${STEPS:-darling arm64jit arm64host mtlvk launcher lavapipe}
 PREFIX=/opt/x86sim/darling
 DB=$OUT/dbuild
 DEST=$OUT/destdir
@@ -65,6 +65,11 @@ mtlvk)
 launcher)
 	step "launcher"
 	(cd "$X/tools/launcher" && CARGO_TARGET_DIR=$OUT/cargo-launcher cargo build --release --locked -q)
+	;;
+lavapipe)
+	# Mesa's CPU Vulkan driver for the GPU setting "cpu" (build/lavapipe.sh; skipped when $OUT/lavapipe is this version)
+	step "lavapipe"
+	LAVAPIPE_DL=$OUT/lavapipe-build "$X/build/lavapipe.sh" "$OUT/lavapipe" > "$OUT/lavapipe.log" 2>&1 || { tail -30 "$OUT/lavapipe.log"; exit 1; }
 	;;
 *) echo "unknown step $s"; exit 1 ;;
 esac; done

@@ -178,8 +178,8 @@ it stays in the sidebar afterwards. The same steps from a terminal: `x86sim.AppI
 
 - `build/release/deps-ubuntu.sh`: packages on Ubuntu 24.04 + clang 23 from apt.llvm.org (+ `/usr/include/asm` link:
   Darling's fseventsd includes `<linux/types.h>` without Debian's multiarch dir).
-- `build/release/build.sh`: Darling (prefix `/opt/x86sim/darling`, `DESTDIR`), arm64jit, arm64host, mtlvk, launcher;
-  reads the checkout only, writes `build/release/out` (gitignored). `CCACHE=1` uses ccache (hits only when the checkout
+- `build/release/build.sh`: Darling (prefix `/opt/x86sim/darling`, `DESTDIR`), arm64jit, arm64host, mtlvk, launcher,
+  lavapipe; reads the checkout only, writes `build/release/out` (gitignored). `CCACHE=1` uses ccache (hits only when the checkout
   and OUT paths are the same as the cached build's: Darling's compile lines carry both). Reproducible Darling:
   `ZERO_AR_DATE=1` (ld64's N_OSO object timestamps) and `SOURCE_DATE_EPOCH` = Darling's commit time (`__DATE__`), so
   the same Darling source gives the same `DARLING_ID` and an update reinstalls Darling only when it changed.
@@ -189,8 +189,17 @@ it stays in the sidebar afterwards. The same steps from a terminal: `x86sim.AppI
   appimagetool (continuous; prints its hash) → `x86sim-<version>-x86_64.AppImage` + `.zsync` + `SHA256SUMS`.
 - `build/release/docker-build.sh`: the same in an `ubuntu:24.04` container with the checkout mounted read-only (local
   check of the CI build).
-- `.github/workflows/build.yml` (reusable): free disk, shallow recursive submodules with SSH URLs rewritten to HTTPS
-  (the forks are public), packages, ccache + cargo caches, build, AppImage, artifact. `ci.yml`: every push to main / PR.
+- `.github/workflows/build.yml` (reusable): builds only what changed. `build/release/ci.sh keys` gives each component
+  (Darling + arm64host, arm64jit, mtlvk, launcher, lavapipe) a cache key from the git objects of its inputs (its dirs, its
+  submodule's commit, the build scripts, files it compiles in); a component whose key is cached is restored
+  (`ci.sh stage`; Darling's setuid/sticky modes are reapplied, the cache's tar drops them), the others are built and
+  cached (`ci.sh collect`, which also keeps their submodules' licenses for appimage.sh). Free disk, the submodule
+  checkout (shallow, SSH URLs rewritten to HTTPS), the toolchain, ccache and cargo caches run only for what is built;
+  a run that only packs installs `deps-ubuntu.sh --pack`. A component that starts reading a new file outside its
+  inputs must be added in `ci.sh` (else a change there reuses a stale build); `KV` there drops every component cache.
+  The run summary lists built / cached. `ci.yml`: every push to main / PR, docs-only changes skipped; packs the
+  AppImage (zstd 9) on main and manual runs, on a PR only with the `appimage` label (adding it starts a run); a manual
+  run (`gh workflow run ci --ref <branch> [-f appimage=false] [-f fresh=true]`) can skip packing or rebuild everything.
   `release.yml`: tag `v<version>` → GitHub release (marked latest), `v<version>-pre<N>` → pre-release (or a manual
   run naming a tag); each with AppImage, zsync, SHA256SUMS.
 

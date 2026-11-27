@@ -1,5 +1,8 @@
 # x86Sim: build the AppImage (reusable; called by ci.yml and release.yml). Everything is built from source on the
 # runner; nothing from Apple is present or downloaded (the iOS runtime is fetched by each user's own setup wizard).
+# Each component (Darling + arm64host, arm64jit, mtlvk, launcher, lavapipe) is cached under a key of its own inputs
+# (build/release/ci.sh keys): a run builds only the components whose inputs changed, checks out only their submodules,
+# and frees disk / installs the toolchain only for what it builds. The run's summary lists what was built or cached.
 name: build
 on:
   workflow_call:
@@ -8,6 +11,18 @@ on:
         description: version string baked into the AppImage (default git describe)
         type: string
         default: ""
+      pack:
+        description: pack and upload the AppImage (false = build the components only)
+        type: boolean
+        default: true
+      zstd-level:
+        description: the AppImage's squashfs zstd level (releases 19; a lower one packs faster, a bigger file)
+        type: string
+        default: "19"
+      fresh:
+        description: rebuild every component (do not restore the component caches)
+        type: boolean
+        default: false
     outputs:
       name:
         description: the AppImage file name
@@ -26,41 +41,125 @@ jobs:
       CCACHE_MAXSIZE: 3G
       CCACHE_COMPRESS: "1"
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Component keys
+        id: keys
+        run: build/release/ci.sh keys | tee -a "$GITHUB_OUTPUT"
+
+      # exact keys only: a component is either this commit's inputs, built before, or rebuilt
+      - name: Cached Darling + arm64host
+        id: darling
+        if: ${{ !inputs.fresh }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/release/out/destdir
+            build/release/out/parts/darling
+          key: ${{ steps.keys.outputs.darling }}
+      - name: Cached arm64jit
+        id: arm64jit
+        if: ${{ !inputs.fresh }}
+        uses: actions/cache/restore@v4
+        with:
+          path: build/release/out/parts/arm64jit
+          key: ${{ steps.keys.outputs.arm64jit }}
+      - name: Cached mtlvk
+        id: mtlvk
+        if: ${{ !inputs.fresh }}
+        uses: actions/cache/restore@v4
+        with:
+          path: build/release/out/parts/mtlvk
+          key: ${{ steps.keys.outputs.mtlvk }}
+      - name: Cached launcher
+        id: launcher
+        if: ${{ !inputs.fresh }}
+        uses: actions/cache/restore@v4
+        with:
+          path: build/release/out/parts/launcher
+          key: ${{ steps.keys.outputs.launcher }}
+
+      - name: Cached lavapipe
+        id: lavapipe
+        if: ${{ !inputs.fresh }}
+        uses: actions/cache/restore@v4
+        with:
+          path: build/release/out/parts/lavapipe
+          key: ${{ steps.keys.outputs.lavapipe }}
+
+      - name: Plan
+        id: plan
+        env:
+          HIT_darling: ${{ steps.darling.outputs.cache-hit }}
+          HIT_arm64jit: ${{ steps.arm64jit.outputs.cache-hit }}
+          HIT_mtlvk: ${{ steps.mtlvk.outputs.cache-hit }}
+          HIT_launcher: ${{ steps.launcher.outputs.cache-hit }}
+          HIT_lavapipe: ${{ steps.lavapipe.outputs.cache-hit }}
+          PACK: ${{ inputs.pack }}
+        run: |
+          rest= hits= cc= rust= any=
+          { echo "| component | |"; echo "|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          for c in darling arm64jit mtlvk launcher lavapipe; do
+            eval hit=\$HIT_$c
+            if [ "$hit" = true ]; then
+              hits="$hits $c"; b=false; echo "| $c | cached |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              b=true any=true; echo "| $c | **built** |" >> "$GITHUB_STEP_SUMMARY"
+              case $c in darling|arm64jit) cc=true ;; mtlvk|launcher) rust=true ;; esac
+              [ $c = darling ] || rest="$rest $c"
+            fi
+            echo "$c=$b" >> "$GITHUB_OUTPUT"
+          done
+          [ "$PACK" = true ] && echo "| AppImage | packed |" >> "$GITHUB_STEP_SUMMARY"
+          { echo "rest=${rest# }"; echo "hits=${hits# }"; echo "cc=$cc"; echo "rust=$rust"; echo "any=$any"; } | tee -a "$GITHUB_OUTPUT"
+
       - name: Free disk space (the runner has ~14 GB free; Darling's checkout + build need ~12 GB)
+        if: steps.plan.outputs.darling == 'true'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
             /usr/local/graalvm /usr/local/share/powershell /usr/share/swift
           sudo docker image prune -af >/dev/null 2>&1 || true
           df -h /
 
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: false
-
-      - name: Submodules (shallow; the forks are public, SSH URLs rewritten to HTTPS)
+      - name: Submodules (only those of the components built; shallow; the forks are public, SSH URLs rewritten to HTTPS)
+        env:
+          B_DARLING: ${{ steps.plan.outputs.darling }}
+          B_ARM64JIT: ${{ steps.plan.outputs.arm64jit }}
+          B_MTLVK: ${{ steps.plan.outputs.mtlvk }}
+          PACK: ${{ inputs.pack }}
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" --add
-          # Darling's ICU keeps its data archive (icudt78l.dat.xz) in Git LFS: the checkout must run the LFS filter
-          git lfs install
-          git submodule sync --recursive
-          git submodule update --init --depth 1 --jobs 8 external/metal2vulkan
-          git submodule update --init --recursive --depth 1 --jobs 8 external/dynarmic
-          git submodule update --init --recursive --depth 1 --jobs 8 external/darling
+          git submodule sync
+          [ "$B_MTLVK" != true ] || git submodule update --init --depth 1 --jobs 8 external/metal2vulkan
+          [ "$B_ARM64JIT" != true ] || git submodule update --init --recursive --depth 1 --jobs 8 external/dynarmic
+          if [ "$B_DARLING" = true ]; then
+            # Darling's ICU keeps its data archive (icudt78l.dat.xz) in Git LFS: the checkout must run the LFS filter
+            git lfs install
+            git submodule sync --recursive external/darling
+            git submodule update --init --recursive --depth 1 --jobs 8 external/darling
+          fi
           # x86sim dev's scripts (appimage.sh packs them; it refuses to pack without them)
-          git submodule update --init --depth 1 external/omarchy-apple-dev
+          [ "$PACK" != true ] || git submodule update --init --depth 1 external/omarchy-apple-dev
           du -sh external/*
 
       - name: Packages
+        if: steps.plan.outputs.any == 'true' || inputs.pack
         timeout-minutes: 15   # ~1 min normally; a hung mirror fails the run instead of holding it for hours
-        run: sudo build/release/deps-ubuntu.sh
+        run: |
+          if [ "${{ steps.plan.outputs.any }}" = true ]; then sudo build/release/deps-ubuntu.sh
+          else sudo build/release/deps-ubuntu.sh --pack; fi
 
       - name: Rust
+        if: steps.plan.outputs.rust == 'true'
         run: rustup toolchain install stable --profile minimal && rustup default stable
 
       - name: ccache
         id: ccache
+        if: steps.plan.outputs.cc == 'true'
         uses: actions/cache/restore@v4
         with:
           path: .ccache
@@ -68,6 +167,7 @@ jobs:
           restore-keys: ccache-${{ runner.os }}-
 
       - name: Cargo cache
+        if: steps.plan.outputs.rust == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -78,12 +178,60 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('linux/mtlvk/Cargo.lock', 'tools/launcher/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Build (Darling, arm64jit, arm64host, mtlvk, launcher)
+      # Darling first and cached at once: the other components install into its destdir
+      - name: Build Darling + arm64host
+        if: steps.plan.outputs.darling == 'true'
         run: |
-          JOBS=$(nproc) build/release/build.sh
-          ccache -s || true
-          du -sh build/release/out/* | sort -h | tail
+          STEPS="darling arm64host" JOBS=$(nproc) build/release/build.sh
+          build/release/ci.sh collect darling
+          du -sh build/release/out/destdir
           df -h /
+      - name: Save Darling + arm64host
+        if: steps.plan.outputs.darling == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/release/out/destdir
+            build/release/out/parts/darling
+          key: ${{ steps.keys.outputs.darling }}
+
+      - name: Stage cached components (${{ steps.plan.outputs.hits }})
+        if: steps.plan.outputs.hits != ''
+        run: for c in ${{ steps.plan.outputs.hits }}; do build/release/ci.sh stage $c; done
+
+      - name: Build ${{ steps.plan.outputs.rest }}
+        if: steps.plan.outputs.rest != ''
+        run: |
+          STEPS="${{ steps.plan.outputs.rest }}" JOBS=$(nproc) build/release/build.sh
+          for c in ${{ steps.plan.outputs.rest }}; do build/release/ci.sh collect $c; done
+          rm -rf build/release/out/lavapipe-build   # Mesa's source and build tree: room for packing
+          ccache -s 2>/dev/null || true
+          df -h /
+
+      - name: Save arm64jit
+        if: steps.plan.outputs.arm64jit == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/release/out/parts/arm64jit
+          key: ${{ steps.keys.outputs.arm64jit }}
+      - name: Save mtlvk
+        if: steps.plan.outputs.mtlvk == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/release/out/parts/mtlvk
+          key: ${{ steps.keys.outputs.mtlvk }}
+      - name: Save launcher
+        if: steps.plan.outputs.launcher == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/release/out/parts/launcher
+          key: ${{ steps.keys.outputs.launcher }}
+      - name: Save lavapipe
+        if: steps.plan.outputs.lavapipe == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/release/out/parts/lavapipe
+          key: ${{ steps.keys.outputs.lavapipe }}
 
       - name: Logs on failure
         if: failure()
@@ -96,8 +244,18 @@ jobs:
           path: .ccache
           key: ccache-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}
 
+      - name: AppImage downloads (pinned tools, the Web Inspector package)
+        if: inputs.pack
+        uses: actions/cache@v4
+        with:
+          path: build/release/out/downloads
+          key: appimage-dl-${{ hashFiles('build/release/appimage.sh', 'build/webinspector.sh') }}
+
       - name: AppImage
         id: pack
+        if: inputs.pack
+        env:
+          ZSTD_LEVEL: ${{ inputs.zstd-level }}
         run: |
           # the Darling build tree is not needed any more: room for the AppDir and squashfs
           rm -rf build/release/out/dbuild/src
@@ -107,6 +265,7 @@ jobs:
           echo "name=x86sim-${V#v}-x86_64.AppImage" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
+        if: inputs.pack
         with:
           name: x86sim-appimage
           path: |
