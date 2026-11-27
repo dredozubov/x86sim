@@ -26,7 +26,10 @@ Kills (SIGKILL, as jetsam; launchd / RunningBoard relaunch what is needed on the
     (com.x86sim.openurl answers it: host/openurl frontmost()) without the frontboard visibility endowment or suspended.
     Never killed (checked again, with a fresh answer, right before the kill): an app RunningBoard reports visible,
     one in SpringBoard's display layout or reported frontmost, and one that was in the foreground when the user last
-    touched or typed (<data>/tmp/x86sim-input, simhid) within X86SIM_JETSAM_INPUT s (default 60).
+    touched or typed (<data>/tmp/x86sim-input, simhid; the MCP server's in-app actions too) within X86SIM_JETSAM_INPUT s
+    (default 60). Issue #60: no app at all while a UI test's runner is alive; an app LLDB attached to; an app with the
+    audio background mode while it streams output (simaudio). Without a fresh answer right before the kill only the
+    Linux-side signals (suspended, darwin bg / role) count; a kill on RunningBoard's view alone logs its full state.
     (RAM 2 fix: SBSCopyFrontmostApplicationDisplayIdentifier answers nil for every app here, which read as "home": every
     app in the foreground past 30 s was taken for a background one and killed 90 s later, Maps in the middle of the
     gate's route test. Maps at the home screen keeps visibility and role UI_FOCAL here, so it is reclaimed only once
@@ -186,6 +189,54 @@ def test_runner(exe):
             plug = False
         _runner[exe] = plug or app.endswith("-Runner.app") or app.endswith("/XCTRunner.app")
     return _runner[exe]
+# Issue #60 audit: an app LLDB was attached to (x86sim debug, MCP debug_start: libarm64jit's gdbstub listens on
+# <debug dir>/x86sim-dbg-<UDID>-<Darling pid>.sock from the first attach until the process exits) is never reclaimed: a
+# kill ends the debug session, and one stopped at a breakpoint in the background is still being worked on. Apple's
+# simulator never reclaims a debugged app (RunningBoard keeps a debugged process; the simulator has no jetsam).
+def _sim_env():
+    out = {}
+    try:
+        for l in open(os.path.join(os.environ.get("X86SIM_DEVICE", ""), "sim.env")):
+            k, _, v = l.strip().partition("=")
+            out[k] = v
+    except OSError:
+        pass
+    return out
+_SIMENV = _sim_env()
+_DBG_DIR = _SIMENV.get("X86SIM_A64_DEBUG_DIR") or None
+def debugged(dpid, start):
+    """(a socket older than the process is a killed one's: a SIGKILL leaves it, and Darling pids are reused)"""
+    udid = _SIMENV.get("SIMULATOR_UDID")
+    if not udid:
+        return False
+    global _DBG_DIR
+    if _DBG_DIR is None:
+        try:
+            _DBG_DIR = x86config.run_dir()
+        except (SystemExit, Exception):
+            _DBG_DIR = ""
+    try:
+        return bool(_DBG_DIR) and os.stat(os.path.join(_DBG_DIR, "x86sim-dbg-%s-%d.sock" % (udid, dpid))).st_mtime + 1 >= start
+    except OSError:
+        return False
+# Issue #60 audit: an app with the audio background mode (UIBackgroundModes audio) is not reclaimed while it plays: a
+# device's memorystatus keeps it in the audio band. Here RunningBoard suspended AudioDemo at the home screen with its
+# tone still streaming (Darling's pid_suspend does not stop it) and it was killed 17 s later. cli/libexec/simaudio.py
+# marks each process with an output stream open: <state>/simaudio-out/<Linux pid>.
+AUDIO_OUT = os.path.join(os.environ.get("X86SIM_STATE", ""), "simaudio-out")
+_bg_modes = {}
+def bg_modes(exe):
+    if exe not in _bg_modes:
+        import plistlib
+        path = exe[len("/Volumes/SystemRoot"):] if exe.startswith("/Volumes/SystemRoot/") else exe
+        try:
+            with open(os.path.join(os.path.dirname(path), "Info.plist"), "rb") as f:
+                _bg_modes[exe] = tuple(plistlib.load(f).get("UIBackgroundModes") or ())
+        except Exception:
+            _bg_modes[exe] = ()
+    return _bg_modes[exe]
+def playing(exe, lpid):
+    return "audio" in bg_modes(exe) and os.path.exists(os.path.join(AUDIO_OUT, str(lpid)))
 # Platforms 1: parked executables (X86SIM_A64_SLIM_PARK, boot-a64.sh: WidgetRenderer by default) hold no translated
 # code and next to no memory, so killing one frees nothing. On a watch Carousel asks for WidgetRenderer_Snapshots again
 # at once: it was killed and relaunched in a loop ("came back 0 s after its kill").
@@ -342,12 +393,13 @@ def bundle_id(exe):
     return _bundle_ids[exe]
 
 
-def ask_front(pids, now):
-    """Asks openurl about these Darling pids (and the layout); returns the request time."""
+def ask_front(pids, now, dumps=()):
+    """Asks openurl about these Darling pids (and the layout; dumps: (pid, bundle id) whose full RunningBoard state
+    is wanted too); returns the request time."""
     _front["asked"] = now
     try:
         with open(FRONT_REQ + ".new", "w") as f:
-            f.write("".join("%d\n" % p for p in pids))
+            f.write("".join("%d\n" % p for p in pids) + "".join("dump %d %s\n" % d for d in dumps))
         os.rename(FRONT_REQ + ".new", FRONT_REQ)
     except OSError:
         pass
@@ -364,11 +416,19 @@ def front_state(newer_than=0.0):
         return None
     if time.time() - mt > 3 * FRONT_EVERY or mt < newer_than:
         return None
-    out = {"front": lines[0].strip() or None if lines else None, "layout": None, "pids": {}}
+    out = {"front": lines[0].strip() or None if lines else None, "layout": None, "pids": {}, "dumps": {}}
     if out["front"] == "?":
         out["front"] = None
+    dump = None
     for l in lines[1:]:
         f = l.split()
+        if f[:1] == ["dump"] and len(f) > 2:   # "dump <pid> state ..." (several lines) / "dump <pid> bks ..."
+            dump = out["dumps"].setdefault(int(f[1]) if f[1].isdigit() else -1, [])
+        elif f[:1] in (["pid"], ["layout"]):
+            dump = None
+        if dump is not None:
+            dump.append(l.strip())
+            continue
         try:
             if f[:1] == ["layout"] and int(f[1]) >= 0:
                 out["layout"] = set(f[2:])
@@ -379,9 +439,9 @@ def front_state(newer_than=0.0):
     return out
 
 
-def wait_front(pids, timeout=4.0):
+def wait_front(pids, timeout=4.0, dumps=()):
     """A fresh answer for these pids (right before a kill), None if openurl gives none in time."""
-    t = ask_front(pids, time.time())
+    t = ask_front(pids, time.time(), dumps)
     while time.time() < t + timeout:
         fs = front_state(newer_than=t)
         if fs is not None:
@@ -501,14 +561,28 @@ def sweep(verbose=False, status=False):
     apps, killed = [], []
     fg_app = False
     rows = [r for r in rows if not parked(r[2])]
-    app_rows = [r for r in rows if ".app/" in r[2] and ".appex/" not in r[2] and not any(k in r[2] for k in NEVER)
-                and not test_runner(r[2])]
-    if app_rows and now - _front["asked"] > FRONT_EVERY:
-        ask_front([r[0] for r in app_rows], now)
+    app_rows = [r for r in rows if ".app/" in r[2] and ".appex/" not in r[2] and not any(k in r[2] for k in NEVER)]
+    # Issue #60: while a UI test runs (its runner is alive), no app is reclaimed: the app under test and the apps the
+    # test activates are driven by testmanagerd, whose events never reach simhid's input mark, and the app under test
+    # was killed in front ("no visible scene") after the test had sent it to the background and back. Apple's simulator
+    # has no jetsam during a test either. Hosted unit tests run in the app itself, which carries the .xctest plug-in.
+    testing = any(test_runner(r[2]) for r in app_rows)
+    app_rows = [r for r in app_rows if not test_runner(r[2])]
+    if testing:
+        fg_app = True   # (daemons get the foreground's grace too, as with any app in front)
+        for r in app_rows:
+            r[3].pop("bg", None)
+    judged = [] if testing else app_rows
+    if judged and now - _front["asked"] > FRONT_EVERY:
+        ask_front([r[0] for r in judged], now)
     fs = front_state()
     inp = last_input()
-    for dpid, lpid, exe, st, sm, jm, idle in app_rows:
+    for dpid, lpid, exe, st, sm, jm, idle in judged:
         back, fore = app_view(exe, dpid, sm, jm, fs, now - procs[dpid][2])
+        if debugged(dpid, procs[dpid][2]):
+            fore.append("debugger")
+        if playing(exe, lpid):
+            fore.append("playing audio")
         if back and not fore:
             if "bg" not in st:
                 memory_warning(now)
@@ -536,18 +610,31 @@ def sweep(verbose=False, status=False):
                                                          ", in use" if used else ""))
     if due and not status:
         # right before the kill: RunningBoard's / SpringBoard's state again, fresh; anything foreground now is kept
-        fresh = wait_front([d[1] for d in due])
+        fresh = wait_front([d[1] for d in due], dumps=[(d[1], bundle_id(d[2])) for d in due if bundle_id(d[2])])
         susp2, js2 = marks(DIR), marks(JDIR)
         for lpid, dpid, exe, st, why in due:
             sm2, jm2 = susp2.get(dpid), js2.get(dpid)
             sm2 = sm2 if sm2 is not None and sm2[0] + 1 >= _start_of(lpid) else None
             jm2 = jm2 if jm2 is not None and jm2[0] + 1 >= _start_of(lpid) else None
-            back, fore = app_view(exe, dpid, sm2, jm2, fresh if fresh is not None else fs, time.time() - _start_of(lpid))
+            # Issue #60: without a fresh answer (openurl busy: a loaded host) only the Linux-side signals count
+            # (suspended, darwin bg / role), not RunningBoard's view from an answer up to 30 s old
+            back, fore = app_view(exe, dpid, sm2, jm2, fresh, time.time() - _start_of(lpid))
+            if debugged(dpid, _start_of(lpid)):
+                fore.append("debugger")
+            if playing(exe, lpid):
+                fore.append("playing audio")
+            if fresh is None and not fore and not back:
+                continue   # (asked again at the next sweep; its background time keeps counting)
             if fore or not back:
                 print("%s jetsam: kept %s (pid %d): %s" % (time.strftime("%H:%M:%S"), name_of(exe), dpid,
                       "foreground (%s)" % ", ".join(fore) if fore else "no background signal any more"), flush=True)
                 st.pop("bg", None)
                 continue
+            # Issue #60: killed on RunningBoard's view alone (no Linux-side signal): its full state, for the log
+            if not (sm2 or "darwin bg" in back or any(b.startswith("role") for b in back)):
+                d = " ".join(fresh["dumps"].get(dpid, []))
+                print("%s jetsam: %s (pid %d) state: %s" % (time.strftime("%H:%M:%S"), name_of(exe), dpid,
+                      " ".join(d.split())[:4000] or "-"), flush=True)
             killed.append((lpid, dpid, exe, why))
     # RAM 9: HOT's long grace is for app opens. At home with no touch or app for IDLE_HOT s (and IDLE_HOT after the
     # phone came up) it no longer applies: the HOT daemons that background launch waves (passd every few minutes, the
@@ -563,7 +650,7 @@ def sweep(verbose=False, status=False):
                 continue
             if any(k in exe for k in NEVER_EXT):
                 continue
-            if sm and now - sm[0] > grace(exe, EXT):
+            if sm and now - sm[0] > grace(exe, EXT) and not debugged(dpid, procs[dpid][2]):
                 killed.append((lpid, dpid, exe, "extension suspended %.0f s" % (now - sm[0])))
             continue
         if ".app/" in exe or not DAEMONS or not jm or len(jm[1]) < 2:
@@ -586,7 +673,7 @@ def sweep(verbose=False, status=False):
         elif status:
             print("  daemon %-40s %5.0f s of %.0f" % (name, now - since, g))
     if status:
-        print("  foreground app: %s" % fg_app)
+        print("  foreground app: %s%s" % (fg_app, " (a UI test runs: no app is reclaimed)" if testing else ""))
         return []
     for lpid, dpid, exe, why in killed:
         try:

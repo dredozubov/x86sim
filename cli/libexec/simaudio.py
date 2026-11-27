@@ -237,7 +237,39 @@ def mic_frames(pos, rate, ch, nframes):
     return m.tobytes(), pos
 
 
+# Issue #60 audit: which processes stream output now, for cli/libexec/jetsam.py (an app with the audio background
+# mode is not reclaimed while it plays, as a device's memorystatus keeps it in the audio band): <state>/simaudio-out/
+# <Linux pid of the client> while it has an output stream open (libsimaudio connects from the playing process itself)
+OUT_DIR = None
+_out_mu = threading.Lock()
+_out_n = {}
+
+
+def out_mark(pid, d):
+    if not OUT_DIR or not pid:
+        return
+    with _out_mu:
+        _out_n[pid] = _out_n.get(pid, 0) + d
+        f = os.path.join(OUT_DIR, str(pid))
+        try:
+            if _out_n[pid] > 0:
+                open(f, "w").close()
+            else:
+                del _out_n[pid]
+                os.unlink(f)
+        except OSError:
+            pass
+
+
+def peer_pid(conn):
+    try:
+        return struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0]
+    except OSError:
+        return 0
+
+
 def serve(conn, n):
+    pid = 0
     try:
         hdr = b""
         while len(hdr) < 16:
@@ -251,6 +283,8 @@ def serve(conn, n):
             return
         log("conn %d: %s %d Hz %d ch" % (n, "input" if direction else "output", rate, ch))
         if direction == 0:
+            pid = peer_pid(conn)
+            out_mark(pid, 1)
             p = spawn(n, True, rate, ch) if PLAYBACK else None
             TAPS.send(OPEN, n, struct.pack("<II", rate, ch))
             frame = 4 * ch
@@ -333,6 +367,8 @@ def serve(conn, n):
     except (BrokenPipeError, ConnectionResetError):
         pass
     finally:
+        if pid:
+            out_mark(pid, -1)
         conn.close()
 
 
@@ -361,6 +397,14 @@ def main():
             threading.Thread(target=TAPS.add, args=(c,), daemon=True).start()
 
     threading.Thread(target=taps, daemon=True).start()
+    global OUT_DIR
+    OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(path)), "simaudio-out")
+    try:
+        os.makedirs(OUT_DIR, exist_ok=True)
+        for x in os.listdir(OUT_DIR):   # a previous boot's
+            os.unlink(os.path.join(OUT_DIR, x))
+    except OSError:
+        OUT_DIR = None
     log("listening on", path, "tap", tap_path, "playback", PLAYBACK, "player", PLAYER, "volume", VOLUME, "mic", MIC)
     n = 0
     while True:

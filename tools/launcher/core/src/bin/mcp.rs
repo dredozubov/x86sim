@@ -239,7 +239,25 @@ fn call(name: &str, a: &Value) -> anyhow::Result<Answer> {
     if name == "__test_panic" && std::env::var_os("X86SIM_MCP_TEST_PANIC").is_some() {
         panic!("test panic");
     }
-    call_json(name, a)
+    let r = call_json(name, a);
+    note_use(name, a);
+    r
+}
+
+/// Issue #60: cli/libexec/jetsam.py spares the app that was in front when the device was last used: host/simhid marks
+/// it (<device>/data/tmp/x86sim-input's mtime) for touches, keys and buttons. These tools drive the app in front
+/// without simhid (in-app accessibility actions, simctl launches / URLs, page scripts, LLDB), so they mark it too.
+fn note_use(name: &str, a: &Value) {
+    if !matches!(name, "set_value" | "ax_action" | "open_url" | "app_launch" | "web_eval" | "debug_start" | "debug_command") {
+        return;
+    }
+    let cfg = aot::Paths::new(&aot::Paths::default_jc()).load_config();
+    if let Ok(inst) = phone_of(a, &cfg) {
+        let tmp = inst.dir.join("data/tmp");
+        if tmp.is_dir() {
+            let _ = std::fs::write(tmp.join("x86sim-input"), "1\n");
+        }
+    }
 }
 
 fn call_json(name: &str, a: &Value) -> anyhow::Result<Answer> {
