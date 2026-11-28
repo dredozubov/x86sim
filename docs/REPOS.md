@@ -4,8 +4,7 @@ Everything lives in the GitHub organization **`x86sim`**. This repo (`x86sim/x86
 code; Darling, dynarmic, metal2vulkan and omarchy-apple-dev are git submodules under `external/`. The submodule repos
 are **public GitHub forks** of their upstreams (`darlinghq/*`, `azahar-emu/dynarmic`, `steelbrain/metal2vulkan`,
 `joshuaswarren/omarchy-apple-dev`). Our work is on branch
-**`x86sim`**; the upstream default branch (`main`/`master`) is mirrored unchanged (omarchy-apple-dev is the
-exception: `.gitmodules` pins its `main`). In the local checkouts, `origin` =
+**`x86sim`**; the upstream default branch (`main`/`master`) is mirrored unchanged. In the local checkouts, `origin` =
 the x86sim fork (SSH), `upstream` = the original repo.
 
 | Local path | Repo | Upstream | Upstream base commit |
@@ -24,7 +23,7 @@ the x86sim fork (SSH), `upstream` = the original repo.
 | `external/darling/src/external/sqlite` | git@github.com:x86sim/darling-sqlite.git | darlinghq/darling-sqlite (`master`) | `3472e256` |
 | `external/metal2vulkan` | git@github.com:x86sim/metal2vulkan.git | steelbrain/metal2vulkan (`master`) | `f6a96b7d` |
 | `external/dynarmic` | git@github.com:x86sim/dynarmic.git | azahar-emu/dynarmic | - |
-| `external/omarchy-apple-dev` | git@github.com:x86sim/omarchy-apple-dev.git (`main`) | joshuaswarren/omarchy-apple-dev | - |
+| `external/omarchy-apple-dev` | git@github.com:x86sim/omarchy-apple-dev.git | joshuaswarren/omarchy-apple-dev | - |
 
 metal2vulkan is dual-licensed GPL-2.0-or-later OR LGPL-3.0-or-later; LICENSE files are kept.
 
