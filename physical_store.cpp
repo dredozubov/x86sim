@@ -121,6 +121,7 @@ using Statement = std::unique_ptr<sqlite3_stmt, StmtCloser>;
 class RecordStore final : public PhysicalIRCache {
     struct Entry {
         Bytes data;
+        uint64_t generation = 0;
         IRCacheSource source{};
         NativeReuse reuse = NativeReuse::Unknown, saved_reuse = NativeReuse::Unknown;
     };
@@ -134,6 +135,7 @@ class RecordStore final : public PhysicalIRCache {
         return recent[index & (recent.size() - 1)];
     }
     size_t total = 0;
+    uint64_t generation = 0;
     std::mutex mutex;
     std::unique_ptr<sqlite3, DbCloser> db;
     Statement insert;
@@ -219,6 +221,7 @@ class RecordStore final : public PhysicalIRCache {
         if (!found) it = records.emplace_hint(it, key, Entry{});
         auto& entry = it->second;
         entry.data.assign(data.begin(), data.end());
+        entry.generation = ++generation;
         entry.source = source;
         entry.reuse = entry.saved_reuse = reuse;
         total = total - old + data.size();
@@ -312,7 +315,16 @@ public:
         return LookupWithReuse(key, record, ignored);
     }
     IRCacheSource LookupWithReuse(const PhysicalIRKey& key, Bytes& record, NativeReuse& reuse) override {
+        uint64_t ignored = 0;
+        return lookup_record(key, record, reuse, ignored, false);
+    }
+    IRCacheSource LookupForEmission(const PhysicalIRKey& key, Bytes& record, NativeReuse& reuse, uint64_t& id) override {
+        return lookup_record(key, record, reuse, id, true);
+    }
+private:
+    IRCacheSource lookup_record(const PhysicalIRKey& key, Bytes& record, NativeReuse& reuse, uint64_t& id, bool disk_prior) {
         std::lock_guard lock(mutex);
+        id = 0;
         reuse = NativeReuse::Unknown;
         ++lookups;
         if (page_demand && (lookups & ((1u << 17) - 1)) == 0) page_demand->report();
@@ -327,14 +339,22 @@ public:
             slot = &*it;
         }
         if (page_demand && slot->second.source == IRCacheSource::Disk) page_demand->probe(key.guest_pa);
-        reuse = slot->second.reuse;
+        id = slot->second.generation;
+        reuse = disk_prior ? slot->second.saved_reuse : slot->second.reuse;
         record = slot->second.data;
         return slot->second.source;
     }
+public:
     void ObserveNativeReuse(const PhysicalIRKey& key, NativeReuse reuse) override {
         std::lock_guard lock(mutex);
         auto it = records.find(key_bytes(key));
         if (it != records.end() && it->second.reuse < reuse) it->second.reuse = reuse;
+    }
+    void ObserveReemission(const PhysicalIRKey& key, uint64_t id, NativeReuse reuse) override {
+        std::lock_guard lock(mutex);
+        auto it = records.find(key_bytes(key));
+        if (it != records.end() && it->second.generation == id && it->second.reuse < reuse)
+            it->second.reuse = reuse;
     }
     void Hit(IRCacheSource source) override {
         if (source == IRCacheSource::Disk) ++disk_hits;
