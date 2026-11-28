@@ -1,0 +1,35 @@
+// x86Sim (host/simswt): the declarations of Swift Testing's tools-integration SPI that libsimswt uses, appended to the
+// platform's own Testing.swiftinterface (Xcode ships only the public one). They are the ones XCTest's
+// libXCTestSwiftSupport.dylib calls (Event.ConsoleOutputRecorder.record(_:in:), Event.Context.test, the Snapshot
+// types and their Codable conformances; Event.kind and Issue.knownIssueContext for a known issue's comment, which
+// Issue.Snapshot leaves out): every type is resilient, so only names and signatures have to match, and
+// build.sh checks each symbol libsimswt imports is one Testing.framework exports.
+
+public struct Event : Swift::Sendable {
+  public struct Context : Swift::Sendable {
+    public var test: Testing::Test? { get }
+  }
+  public struct Snapshot : Swift::Sendable, Swift::Codable {
+    public init(snapshotting event: __shared Testing::Event)
+  }
+  public struct ConsoleOutputRecorder : Swift::Sendable {
+    public func record(_ event: Testing::Event, in context: Testing::Event.Context) -> Swift::Bool
+  }
+  public enum Kind : Swift::Sendable {
+    indirect case issueRecorded(_ issue: Testing::Issue)   // indirect, as Testing declares it: its payload is a box
+  }
+  public var kind: Testing::Event.Kind { get }
+}
+
+extension Testing::Issue {
+  public struct KnownIssueContext : Swift::Sendable {
+    public var comment: Testing::Comment? { get }
+  }
+  public var knownIssueContext: Testing::Issue.KnownIssueContext? { get }
+}
+
+extension Testing::Test {
+  public struct Snapshot : Swift::Sendable, Swift::Codable {
+    public init(snapshotting test: __shared Testing::Test)
+  }
+}

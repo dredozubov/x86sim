@@ -2,19 +2,31 @@
 # x86Sim: run XCTestDemo's tests on a phone with `x86sim test` and check the outcome is Apple's (Xcode 27.2, iOS 27.2
 # simulator on a Mac, see tests/apps/README.md): every test target, the deliberate failures failing with their
 # file:line, the skip skipped. Exit 0 when it matches. On every platform (the phone's: iPhone / iPad, Apple TV, Apple
-# Watch, Vision Pro), UI tests included unless --no-ui.
-#   tests/apps/XCTestDemo/run.sh <phone> [--no-build] [--no-ui]
+# Watch, Vision Pro), UI tests included unless --no-ui. --linux builds the products here instead of on the Mac (the
+# dev toolchain's xcodebuild stand-in on Swift Build: x86sim dev setup swiftbuild, and an SDK from Xcode.xip).
+#   tests/apps/XCTestDemo/run.sh <phone> [--no-build] [--no-ui] [--linux]
 # UI tests need the phone's xctest feature (x86sim-aot --device <phone> features set xctest on; restart the phone).
 set -uo pipefail
 X86SIM_ROOT=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
 . "$X86SIM_ROOT/cli/lib/config.sh"
 phone=${1:?usage: run.sh <phone> [--no-build] [--no-ui]}; shift
-build=1 ui=1
-for a in "$@"; do case $a in --no-build) build=0 ;; --no-ui) ui=0 ;; esac; done
+build=1 ui=1 linux=0
+for a in "$@"; do case $a in --no-build) build=0 ;; --no-ui) ui=0 ;; --linux) linux=1 ;; esac; done
 # the phone's platform picks the build (build.sh X86SIM_PLATFORM): iOS, tvOS, watchOS or visionOS
 plat=$(cut -d- -f1 "$X86SIM_ROOT/var/device-a64-$phone/runtime" 2>/dev/null); plat=${plat:-ios}
-P=$X86SIM_SCRATCH/apps/XCTestDemo-products$([ "$plat" = ios ] || echo "-$plat")
-[ "$build" = 1 ] && { X86SIM_PLATFORM=$plat "$(dirname "$0")/build.sh" "$P" || exit 1; }
+P=$X86SIM_SCRATCH/apps/XCTestDemo-products$([ "$linux" = 1 ] && echo -linux)$([ "$plat" = ios ] || echo "-$plat")
+if [ "$build" = 1 ] && [ "$linux" = 1 ]; then
+	declare -A sdk=([ios]=iphonesimulator [tvos]=appletvsimulator [watchos]=watchsimulator [xros]=xrsimulator)
+	declare -A dest=([ios]=iOS [tvos]=tvOS [watchos]=watchOS [xros]=visionOS)
+	W=$X86SIM_SCRATCH/apps/XCTestDemo-linux-src; rm -rf "$W" "$P"; mkdir -p "$W"
+	cp -r "$(dirname "$0")/XCTestDemo.xcodeproj" "$(dirname "$0")"/XCTestDemo* "$W/"
+	(cd "$W" && PATH="$X86SIM_ROOT/external/omarchy-apple-dev/linux-bin:$PATH" xcodebuild -project XCTestDemo.xcodeproj \
+		-scheme XCTestDemo -sdk "${sdk[$plat]}" -destination "generic/platform=${dest[$plat]} Simulator" \
+		-derivedDataPath "$W/dd" build-for-testing > "$W/build.log" 2>&1) || { tail -30 "$W/build.log" >&2; exit 1; }
+	mv "$W/dd/Build/Products" "$P"
+elif [ "$build" = 1 ]; then
+	X86SIM_PLATFORM=$plat "$(dirname "$0")/build.sh" "$P" || exit 1
+fi
 OUT=$X86SIM_SCRATCH/xctest/XCTestDemo-$(date +%Y%m%d-%H%M%S)
 skip=(); [ "$ui" = 0 ] && skip=(--skip-testing XCTestDemoUITests)
 "$X86SIM_ROOT/cli/x86sim" test "$phone" --xctestrun "$(ls "$P"/*.xctestrun | head -1)" --out "$OUT" "${skip[@]}"
@@ -38,7 +50,9 @@ if sys.argv[3] in ("watchos", "xros"):
     want["XCTestDemoUITests"]["XCTestDemoUITests/testTypeName"] = "failed"
 if sys.argv[2] == "0":
     del want["XCTestDemoUITests"]
-lines = {"CalcTests/testDeliberateFailure": 15, "LogicTests/testDeliberateFailure": 8, "XCTestDemoUITests/testDeliberateUIFailure": 49}
+# testDeliberateThrow: where it throws (Xcode symbolicates the stack XCTest captured at the throw; x86sim test too)
+lines = {"CalcTests/testDeliberateFailure": 15, "LogicTests/testDeliberateFailure": 8, "XCTestDemoUITests/testDeliberateUIFailure": 49,
+         "HostTests/testDeliberateThrow": 35}
 bad = 0
 got = {r["name"]: r for r in s["targets"]}
 for tgt, tests in want.items():

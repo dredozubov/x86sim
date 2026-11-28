@@ -19,11 +19,14 @@ for the simulator, then its logic bundle). XCTest's own frameworks are Xcode's, 
 $X86SIM_XCTEST_PLATFORMS, sdks/<Platform>.platform, or the xtool SDK from `x86sim dev setup` (an Xcode .xip).
 Results: per-test lines while it runs, a summary as xcodebuild prints it, results.json and junit.xml in the output dir,
 and the tests' XCTest attachments (screenshots, strings, data; libsimshim saves them) in attachments/<Class>.<test>/,
-listed per test in results.json (deleteOnSuccess ones of passed tests are dropped, as Xcode does);
-exit status 0 when every test passed (or was skipped), 1 when one failed, 2 when nothing could run.
+listed per test in results.json (deleteOnSuccess ones of passed tests are dropped, as Xcode does); with --coverage,
+code coverage in coverage/ (LLVM_PROFILE_FILE as Xcode sets it, llvm-profdata + llvm-cov for xccov's report);
+exit status 0 when no test failed (passed, skipped or an expected failure: XCTExpectFailure, withKnownIssue), 1
+when one failed, 2 when nothing could run.
 """
 import fcntl
-import json, os, plistlib, re, shutil, subprocess, sys, time, uuid
+import glob, hashlib, tempfile
+import json, os, plistlib, re, shutil, signal, subprocess, sys, time, uuid
 import xml.etree.ElementTree as ET
 from plistlib import UID
 
@@ -49,9 +52,18 @@ Options:
   --target NAME           only this test target of the .xctestrun (repeatable)
   --platform DIR          a dir holding <Platform>.platform (Xcode's Contents/Developer/Platforms)
   --out DIR               logs, results.json, junit.xml (default $X86SIM_SCRATCH/xctest/<phone>-<time>)
+  --result-bundle B.xcresult
+                          also write an Xcode result bundle (what xcodebuild -resultBundlePath writes; xcresulttool,
+                          xccov and CI tools read it): results, failures, attachments, coverage with --coverage
   --json FILE, --junit FILE
                           also write the JSON summary / JUnit XML there ("-": JSON to stdout, nothing else printed)
   --timeout S             per test target (default 1800)
+  --no-screen-recording   UI tests: no screen recording of each test (by default, as Xcode: a failed test keeps one,
+                          attachments/<Class>.<test>/Screen_Recording.mp4)
+  --coverage              collect code coverage, as xcodebuild -enableCodeCoverage YES: the test processes (and the
+                          app a UI test drives) write LLVM profiles; merged into coverage/Coverage.profdata, reported
+                          per product and file (coverage/report.txt, coverage.json, lcov.info; "coverage" in
+                          results.json). The products must be built with coverage (CLANG_COVERAGE_MAPPING=YES)
   --verbose               everything the test processes print (default: XCTest's own lines)
   --quiet                 only the summary
 """
@@ -141,25 +153,47 @@ def archive(root):
                           fmt=plistlib.FMT_BINARY)
 
 
-def test_identifiers(s):
-    """As -[XCTTestIdentifier initWithStringRepresentation:] archives "Class" (o 3), "Class/method" (o 2: an
-    Objective-C style name) and "Class/method()" (o 6, os: a Swift one). A method goes in both forms: the run list
-    matches either, the skip list only the form of the test (Swift tests: the second)."""
-    parts = [p for p in s.replace("()", "").split("/") if p]
-    if len(parts) > 1:
-        return [Obj(["XCTTestIdentifier", "NSObject"], {"a": [], "c": parts[:2], "o": 2, "ocm": True}),
-                Obj(["XCTTestIdentifier", "NSObject"], {"a": [], "c": parts[:2], "o": 6, "ocm": True, "os": True})]
-    return [Obj(["XCTTestIdentifier", "NSObject"], {"a": None, "c": parts, "o": 3, "oc": True, "ocm": True})]
+def test_identifiers(s, skip=False):
+    """The identifiers Xcode 27.2 puts in an XCTestConfiguration for an -only-testing / -skip-testing string (read
+    from the configuration it hands a test process): XCTest's ("Class": o 3; "Class/method": o 2, "Class/method()":
+    o 6, a skip list both) and Swift Testing's (-[XCTTestIdentifier initWithSwiftTestingStringRepresentation:]: the
+    components as written, o 0 for a test, 5 for one with labelled arguments "f(x:)", 1 for a suite; "Class" also
+    gets o 0). The bits: 1 container (oc), 2 XCTest method (ocm, with argument IDs), 4 Swift (os)."""
+    parts = [p for p in s.split("/") if p]
+    if not parts:
+        return []
+
+    def ident(c, o):
+        d = {"a": [] if o & 3 == 2 else None, "c": c, "o": o}
+        d.update({k: True for k, bit in (("oc", 1), ("ocm", 2), ("os", 4)) if o & bit})
+        return Obj(["XCTTestIdentifier", "NSObject"], d)
+
+    last = parts[-1]
+    out = []
+    if len(parts) == 1 and not last.endswith(")"):
+        out.append(ident(parts, 3))
+    elif len(parts) == 2:
+        c = [parts[0], re.sub(r"\(.*\)$", "", last)]
+        swift = last.endswith(")")
+        out += [ident(c, 6)] if swift and not skip else [ident(c, 2)] + ([ident(c, 6)] if skip else [])
+    out.append(ident(parts, 5 if last.endswith(":)") else 0 if last.endswith(")") else 1))
+    if len(parts) == 1 and not last.endswith(")"):
+        out.append(ident(parts, 0))
+    return out
 
 
-def identifier_set(ids):
-    return Obj(["XCTTestIdentifierSet", "NSObject"], {"identifiers": [i for x in ids for i in test_identifiers(x)]})
+def identifier_set(ids, skip=False):
+    return Obj(["XCTTestIdentifierSet", "NSObject"], {"identifiers": [i for x in ids for i in test_identifiers(x, skip)]})
+
+
+# Swift Testing's Interop.Mode, as an .xctestrun names it (TestInteropMode); Xcode 27.2 writes "complete"
+INTEROP_MODES = {"none": 0, "limited": 1, "complete": 2, "strict": 3}
 
 
 def configuration(bundle, module, target_path=None, target_bid=None, target_args=(), target_env=None, ui=False,
-                  only=None, skip=()):
+                  only=None, skip=(), interop=2):
     sel = Obj(["XCTTestSelection", "NSObject"], {
-        "IdentifiersToRun": identifier_set(only) if only else None, "IdentifiersToSkip": identifier_set(skip),
+        "IdentifiersToRun": identifier_set(only) if only else None, "IdentifiersToSkip": identifier_set(skip, skip=True),
         "TagsToRun": None,
         "TagsToSkip": Obj(["XCTTagSelection", "NSObject"], {"XCTTagSelectionIncludeXCTests": False,
                                                           "XCTTagSelectionMode": 1, "XCTTagSelectionTagSet": set()})})
@@ -192,7 +226,7 @@ def configuration(bundle, module, target_path=None, target_bid=None, target_args
         "targetApplicationEnvironment": dict(target_env or {}) if target_path else None,
         "targetApplicationPath": target_path, "testApplicationDependencies": None, "testApplicationUserOverrides": None,
         "testBundleRelativePath": None, "testBundleURL": URL(bundle), "testExecutionOrdering": 0,
-        "testInstructionsSet": None, "testInteropMode": 1, "testSelection": sel, "testTimeoutsEnabled": False,
+        "testInstructionsSet": None, "testInteropMode": interop, "testSelection": sel, "testTimeoutsEnabled": False,
         "testsDrivenByIDE": False, "testsMustRunOnMainThread": False, "traceCollectionEnabled_v2": None,
         "treatMissingBaselinesAsFailures": False, "userAttachmentLifetime": 0,
     }
@@ -295,6 +329,36 @@ def thin_platform(src, name):
     return dst_root
 
 
+def simswt(src, plat):
+    """libsimswt.dylib (host/simswt) for this platform and its Testing.framework, built here on first use and kept in
+    the scratch dir: inserted into the test process, it writes Swift Testing's events as JSON lines (each test's
+    suite path, issues with their source locations, skips), which the console lines do not tell. None when it cannot
+    be built (no Swift toolchain): Swift Testing's results then come from the console."""
+    here = os.path.join(ROOT, "host", "simswt")
+    tface = os.path.join(src, "Developer/Library/Frameworks/Testing.framework/Modules/Testing.swiftmodule",
+                         TRIPLES[plat] + ".swiftinterface")
+    try:
+        h = hashlib.sha256(plat.encode())
+        for p in sorted(glob.glob(os.path.join(here, "*"))) + [tface]:
+            h.update(open(p, "rb").read())
+    except OSError:
+        return None
+    d = os.path.join(x86config.get("X86SIM_SCRATCH"), "xctest", "simswt")
+    out = os.path.join(d, "libsimswt-%s-%s.dylib" % (plat, h.hexdigest()[:16]))
+    if os.path.exists(out):
+        return out
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, ".lock"), "w") as lk:   # several phones' runs at once: one builds
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        if not os.path.exists(out):
+            r = subprocess.run([os.path.join(here, "build.sh"), src, plat, out], capture_output=True, text=True)
+            if r.returncode:
+                print("x86sim test: libsimswt not built (Swift Testing's results from its console lines): %s"
+                      % (r.stderr.strip().splitlines() or ["?"])[-1], file=sys.stderr)
+                return None
+    return out
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Test targets
 
@@ -383,8 +447,18 @@ def spm_targets(a, plat):
     Info.plist on Linux: a flat iOS-style copy with one is made next to it."""
     d = os.path.realpath(a["spm"])
     triple = TRIPLES[plat]
+    desc = spm_describe(d)
+    a["spm_project"] = desc.get("name") or os.path.basename(d)   # the result bundle's project, as Xcode names it
     cmd = ["nice", "swift", "build", "--build-system", "native", "--build-tests", "--swift-sdk", "darwin",
            "--triple", triple, "--package-path", d, "-j", os.environ.get("X86SIM_BUILD_JOBS", "3")]
+    if a["coverage"]:
+        cmd.append("--enable-code-coverage")
+    if plat == "xros":
+        # SwiftPM links the test bundle for XCTest's minimum OS, which it can't read here for visionOS and takes as
+        # 12.0 (clang: "invalid version number in '--target=arm64-apple-xros12.0-simulator'"): the package's own
+        # visionOS version instead, else XCTest's (1.0 in the visionOS 27.2 SDK)
+        v = next((p.get("version") for p in desc.get("platforms") or [] if p.get("name") == "visionos"), None) or "1.0"
+        cmd += ["-Xswiftc", "-target", "-Xswiftc", "arm64-apple-xros%s-simulator" % v]
     print("x86sim test: " + " ".join(cmd[1:]), file=sys.stderr)
     if subprocess.run(cmd, stdout=sys.stderr).returncode:
         die("swift build --build-tests failed", 1)
@@ -393,8 +467,148 @@ def spm_targets(a, plat):
     found = [os.path.join(bindir, x) for x in sorted(os.listdir(bindir)) if x.endswith(".xctest")]
     if not found:
         die("no .xctest in %s" % bindir)
+    # SwiftPM puts every test target in one <Package>PackageTests bundle, Xcode makes a bundle per target: selections
+    # name the test target (CalcKitTests/meanOfNothing()), and Swift Testing finds a selected or skipped test only
+    # when the configuration's productModuleName is that target's module (it matches "<module>.<test>"), while a run
+    # with no run list runs every module's tests in the bundle. So the bundle is linked again once per test target
+    # from the objects SwiftPM built (spm_split), and each target runs alone as in Xcode: every test once, each
+    # selection and skip matched in its own module. The package bundle's name still selects a lone test target.
+    tests = [t for t in desc.get("targets") or [] if t.get("type") == "test" and t.get("c99name")]
+    modules = [t["c99name"] for t in tests]
+    split = spm_split(bindir, found[0], tests) if modules and len(found) == 1 else None
+    if split:
+        pkg = os.path.splitext(os.path.basename(found[0]))[0]
+        return os.path.dirname(split[0][1]), [{"_name": m, "TestBundlePath": b, "ProductModuleName": m,
+                                               "_modules": [pkg] if len(split) == 1 else []} for m, b in split]
+    if len(modules) > 1:
+        print("x86sim test: %s holds %d test targets and could not be linked per target: it runs as one bundle, "
+              "where Swift Testing skips match no test target" % (os.path.basename(found[0]), len(modules)),
+              file=sys.stderr)
     a["bundles"] = [ios_layout(b) for b in found]
-    return explicit_targets(a)
+    root, ts = explicit_targets(a)
+    out = []
+    for t in ts:
+        if len(modules) == 1:
+            out.append(dict(t, _name=modules[0], ProductModuleName=modules[0], _modules=[t["_name"]]))
+        else:
+            out.append(dict(t, _modules=modules))
+    return root, out
+
+
+def link_command(manifest, exe):
+    """The arguments of the llbuild manifest's (SwiftPM's <config>.yaml) command whose output is exe, or None"""
+    try:
+        lines = open(manifest).read().splitlines()
+    except OSError:
+        return None
+    hit = False
+    for l in lines:
+        s = l.strip()
+        if s.startswith('"') and s.endswith(":"):   # the next command
+            hit = False
+        elif s.startswith("outputs: "):
+            try:
+                hit = exe in json.loads(s[len("outputs: "):])
+            except ValueError:
+                hit = False
+        elif hit and s.startswith("args: "):
+            try:
+                return json.loads(s[len("args: "):])
+            except ValueError:
+                return None
+    return None
+
+
+def split_link_args(args, objects, exe, ast_skip):
+    """SwiftPM's link of the package's test bundle, made into the link of one test target's bundle: its own object
+    list file (objects), output exe, the rpath one level less deep (the flat iOS layout: <bundle>/<exe>, the products
+    two up) and no AST paths of the other test targets' modules"""
+    out, i = [], 0
+    while i < len(args):
+        x = args[i]
+        if x == "-o" and i + 1 < len(args):
+            out += ["-o", exe]
+            i += 2
+            continue
+        if x.startswith("@") and x.endswith(".LinkFileList"):
+            out.append("@" + objects)
+        elif x == "@loader_path/../../../":
+            out.append("@loader_path/../../")
+        elif x == "-add_ast_path" and i + 2 < len(args) and args[i + 1] == "-Xlinker" \
+                and os.path.basename(args[i + 2]) in ast_skip and out[-1:] == ["-Xlinker"]:
+            out.pop()
+            i += 3
+            continue
+        else:
+            out.append(x)
+        i += 1
+    # Xcode links every test bundle with XCTest and its Swift support (that runs Swift Testing's tests): a target
+    # with Swift Testing tests only (no `import XCTest`) otherwise runs no test
+    return out + ["-framework", "XCTest", "-lXCTestSwiftSupport"]
+
+
+def target_objects(objs, bindir, tests, module, pkg):
+    """The package bundle's objects (its LinkFileList) without those of the test targets other than module and
+    without SwiftPM's own runner.swift of the bundle (<pkg>.build/: its XCTest observer for `swift test`, which
+    Xcode's bundles don't have). SwiftPM builds a target's objects in <bindir>/<Target>.build/."""
+    def owner(o):
+        top = os.path.relpath(o.strip('"'), bindir).split(os.sep)[0]
+        if top == pkg + ".build":
+            return pkg
+        return next((t["c99name"] for t in tests if top in (t["c99name"] + ".build", t.get("name", "") + ".build")), None)
+    return [o for o in objs if owner(o) in (None, module)]
+
+
+def spm_split(bindir, bundle, tests):
+    """One bundle per test target, as Xcode builds a package's tests: SwiftPM's link of the package bundle again,
+    each time without the other test targets' objects, into <bindir>/x86sim-ios/<Target>.xctest (the flat iOS layout,
+    with the package bundle's resources and an Info.plist). [(module, bundle)], or None when SwiftPM's link can't be
+    found or a link fails (the package bundle then runs as one target)."""
+    name = os.path.splitext(os.path.basename(bundle))[0]
+    exe = os.path.join(bundle, "Contents", "MacOS", name)
+    manifest = os.path.join(os.path.dirname(os.path.dirname(bindir)), os.path.basename(bindir) + ".yaml")
+    args = link_command(manifest, exe)
+    lfl = next((x[1:] for x in args or [] if x.startswith("@") and x.endswith(".LinkFileList")), None)
+    if not args or not lfl:
+        return None
+    try:
+        objs = [l for l in open(lfl).read().splitlines() if l.strip()]
+    except OSError:
+        return None
+    modules = [t["c99name"] for t in tests]
+    shutil.rmtree(os.path.join(bindir, "x86sim-ios"), ignore_errors=True)   # ours only: no stale bundles (coverage)
+    out = []
+    for m in modules:
+        flat = os.path.join(bindir, "x86sim-ios", m + ".xctest")
+        shutil.rmtree(flat, ignore_errors=True)
+        os.makedirs(flat)
+        mine = os.path.join(bindir, "x86sim-ios", m + ".LinkFileList")
+        with open(mine, "w") as f:
+            f.write("".join(o + "\n" for o in target_objects(objs, bindir, tests, m, name)))
+        cmd = split_link_args(args, mine, os.path.join(flat, m), {o + ".swiftmodule" for o in modules if o != m})
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if r.returncode:
+            print("x86sim test: linking %s alone failed:\n%s" % (m, r.stdout[-2000:]), file=sys.stderr)
+            return None
+        res = os.path.join(bundle, "Contents", "Resources")
+        if os.path.isdir(res):
+            for x in os.listdir(res):
+                (shutil.copytree if os.path.isdir(os.path.join(res, x)) else shutil.copy2)(os.path.join(res, x),
+                                                                                       os.path.join(flat, x))
+        plistlib.dump(bundle_info(m, os.path.join(bundle, "Contents", "Info.plist")), open(os.path.join(flat, "Info.plist"), "wb"))
+        out.append((m, flat))
+    return out
+
+
+def spm_describe(d):
+    """swift package describe of the package in d ({} when it can't say)"""
+    r = subprocess.run(["swift", "package", "--package-path", d, "describe", "--type", "json"], capture_output=True,
+                       text=True)
+    try:
+        v = json.loads(r.stdout)
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
 
 
 def ios_layout(b):
@@ -410,37 +624,43 @@ def ios_layout(b):
     if os.path.isdir(res):
         for x in os.listdir(res):
             (shutil.copytree if os.path.isdir(os.path.join(res, x)) else shutil.copy2)(os.path.join(res, x), os.path.join(flat, x))
+    plistlib.dump(bundle_info(name, os.path.join(b, "Contents", "Info.plist")), open(os.path.join(flat, "Info.plist"), "wb"))
+    return flat
+
+
+def bundle_info(name, old):
+    """The Info.plist of a flat test bundle whose executable is name (SwiftPM writes none on Linux; old: its own)"""
     info = {"CFBundleExecutable": name, "CFBundleIdentifier": "x86sim.spm." + re.sub(r"[^A-Za-z0-9.-]", "-", name),
             "CFBundleName": name, "CFBundlePackageType": "BNDL", "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleVersion": "1", "CFBundleShortVersionString": "1.0", "CFBundleSupportedPlatforms": ["iPhoneSimulator"]}
-    old = os.path.join(b, "Contents", "Info.plist")
     if os.path.exists(old):
         info.update(plistlib.load(open(old, "rb")))
-    plistlib.dump(info, open(os.path.join(flat, "Info.plist"), "wb"))
-    return flat
+        info["CFBundleExecutable"] = name
+    return info
 
 
 def selection(t, only, skip, names):
     """(identifiers to run, identifiers to skip) of a target from -only-testing / -skip-testing (Target, Target/Class,
-    Target/Class/test, or Class[/test] for every target) and the .xctestrun's own lists; None: the target is left out.
-    An empty run list means every test."""
-    name = t["_name"]
+    Target/Class/test, Target/Suite/test(), or Class[/test] for every target) and the .xctestrun's own lists; None:
+    the target is left out. An empty run list means every test. A Swift package's bundle also answers to the names
+    of the test targets it holds (_modules)."""
+    mine_names = {t["_name"]} | set(t.get("_modules", ()))
 
     def mine(ids):
         """('all' | list of Class[/test] for this target | None when none is about this target)"""
         out = []
         for i in ids:
-            p = [x for x in i.replace("()", "").split("/") if x]
+            p = [x for x in i.split("/") if x]
             if not p:
                 continue
             if p[0] in names:
-                if p[0] != name:
+                if p[0] not in mine_names:
                     continue
                 if len(p) == 1:
                     return "all"
-                out.append("/".join(p[1:3]))
+                out.append("/".join(p[1:]))
             else:
-                out.append("/".join(p[:2]))
+                out.append("/".join(p))
         return out or None
 
     o, s = mine(only), mine(skip)
@@ -448,8 +668,8 @@ def selection(t, only, skip, names):
         return None
     o = [] if o in (None, "all") else o
     s = s or []
-    o += [x.replace("()", "") for x in t.get("OnlyTestIdentifiers", [])]
-    s += [x.replace("()", "") for x in t.get("SkipTestIdentifiers", [])]
+    o += list(t.get("OnlyTestIdentifiers", []))
+    s += list(t.get("SkipTestIdentifiers", []))
     return o, s
 
 
@@ -460,13 +680,299 @@ R_CASE_START = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' started\.")
 R_CASE_END = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' (passed|failed|skipped) \((\d+(?:\.\d+)?) seconds\)\.")
 R_FAIL = re.compile(r"^(.*?):(\d+): error: -\[(\S+) (\S+)\] : (.*)$")
 R_SKIP = re.compile(r"^(.*?):(\d+): -\[(\S+) (\S+)\] : Test skipped(?: - (.*))?$")
+# XCTExpectFailure's match: "File.swift:45: Expected failure in -[Mod.Class test]: <message>Reason: (<reason>)" (the
+# file without its directory; libsimswt's hook gives the path)
+R_XFAIL = re.compile(r"^(.*?):(\d+): Expected failure in -\[(\S+) (\S+)\]: (.*)$")
+R_XFAIL_REASON = re.compile(r"^(.*)Reason: \((.*)\)$", re.S)
 R_SUITE = re.compile(r"^Test Suite '(.+)' (started|passed|failed) at ")
 R_EXEC = re.compile(r"^\s+Executed (\d+) tests?")
 # Swift Testing (run by XCTest's interop): "✔ Test add() passed after 0.001 seconds.", "✘ Test x() recorded an issue at
-# File.swift:12:5: Expectation failed: ...", "➜ Test y() skipped: ..."
-R_ST_END = re.compile(r"^\S+ Test (.+?) (passed|failed|skipped)(?: after (\d+(?:\.\d+)?) seconds)?")
-R_ST_ISSUE = re.compile(r"^\S+ Test (.+?) recorded an issue at (.+?):(\d+)(?::\d+)?: (.*)$")
+# File.swift:12:5: Expectation failed: ...", "➜ Test y() skipped: ...", "✔ Test f(x:) with 2 test cases passed after ..."
+R_ST_END = re.compile(r"^\S+ Test (.+?)(?: with \d+ test cases?)? (passed|failed|skipped)(?: after (\d+(?:\.\d+)?) seconds)?")
+R_ST_ISSUE = re.compile(r"^\S+ Test (.+?) recorded an issue(?: with \d+ arguments? .+?)? at (.+?):(\d+)(?::\d+)?: (.*)$")
+R_ST_KNOWN = re.compile(r"^\S+ Test (.+?) recorded a known issue(?: with \d+ arguments? .+?)? at (.+?):(\d+)(?::\d+)?: (.*)$")
 R_LOGLINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d|arm64host:|simshim:|objc\[|\s+t = )")
+
+
+# Swift Testing's events (libsimswt, host/simswt): one JSON line per event, {"event": Event.Snapshot, "test":
+# Test.Snapshot, "time"}, in Swift Testing's own Codable encoding
+
+ST_ISSUE_KINDS = {"unconditional": "Issue recorded", "knownIssueNotRecorded": "Known issue was not recorded",
+                  "apiMisused": "An API was misused", "system": "A system failure occurred",
+                  "valueAttachmentFailed": "Caught error while saving attachment"}
+
+
+def st_source(e):
+    """An expression's source code (__Expression's kind: generic(String) / stringLiteral(sourceCode:...))"""
+    k = e.get("kind") or {}
+    for v in k.values():
+        if isinstance(v, dict):
+            for key in ("_0", "sourceCode"):
+                if isinstance(v.get(key), str):
+                    return v[key]
+    return e.get("sourceCode") or ""
+
+
+def st_issue_message(issue):
+    """An issue's text as Xcode 27.2 shows it (XCTest's interop; checked against Apple's .xcresult): "Expectation
+    failed: <expression>", then "<subexpression> → <value>" for each subexpression whose value is not its own source
+    ("<not evaluated>" without a value), "Caught error: <error>", "Issue recorded", then ": <comment>"."""
+    kind = issue.get("kind") or {}
+    k = next(iter(kind), "")
+    v = kind.get(k) or {}
+    if k == "expectationFailed":
+        x = v.get("expectation") or {}
+        e = x.get("evaluatedExpression") or {}
+        src = st_source(e)
+        mism = x.get("mismatchedErrorDescription")
+        lines = ["Expectation failed: " + ("%s: %s" % (mism, src) if mism else src)]
+        for sub in e.get("_subexpressions") or []:
+            s = st_source(sub)
+            rv = sub.get("runtimeValue")
+            if rv is None:
+                lines.append("%s → <not evaluated>" % s)
+            elif rv.get("description") != s:
+                lines.append("%s → %s" % (s, rv.get("description")))
+        msg = "\n".join(lines)
+    elif k == "errorCaught":
+        err = v.get("error") or v.get("_0") or {}
+        msg = "Caught error: " + (err.get("description") or "")
+    elif k == "timeLimitExceeded":
+        msg = "Time limit was exceeded"
+    elif k == "confirmationMiscounted":
+        msg = "Confirmation was confirmed %s time(s), but expected %s" % (v.get("actual"), v.get("expected"))
+    else:
+        msg = ST_ISSUE_KINDS.get(k, k or "Issue recorded")
+    comments = [c for c in issue.get("comments") or [] if c]
+    if comments:
+        msg += ": " + "\n".join(comments)
+    return msg
+
+
+def st_seconds(instant, clock="suspending"):
+    c = (instant or {}).get(clock) or {}
+    return c.get("seconds", 0) + c.get("attoseconds", 0) / 1e18
+
+
+def swift_testing_results(lines):
+    """results.json tests from libsimswt's event lines: one per test function, identified as Xcode does (its suite
+    path: "Second/Inner/same()", "shared()" for one outside a suite), class "<Module>.<Suite>..." with "suite" the
+    path; result, duration (test started -> ended), failures with file:line, skip messages, known issues
+    (withKnownIssue) as "expected_failures" with their comment as "reason" (result "expected_failure" when nothing
+    else failed, as Xcode's "Expected Failure"); a parameterized test also lists its "arguments" (each test case:
+    argument description, id = Xcode's ?args= hash, result, failures). None when no event could be read."""
+    tests, order, read = {}, [], False
+    for ln in lines:
+        try:
+            d = json.loads(ln)
+            ev = d["event"]
+        except (ValueError, KeyError, TypeError):
+            continue   # a line cut short (the process was killed while writing)
+        read = True
+        tid = ev.get("testID") or {}
+        comps = tid.get("nameComponents") or []
+        snap = d.get("test") or {}
+        kind = ev.get("kind") or {}
+        k = next(iter(kind), "")
+        # test functions only (a suite's Test.Snapshot has no parameters)
+        if not comps or ("parameters" not in snap and not comps[-1].endswith(")")):
+            continue
+        key = (tid.get("moduleName"), tuple(comps))
+        t = tests.get(key)
+        if t is None:
+            if k not in ("testStarted", "testSkipped", "testCaseStarted", "issueRecorded"):
+                continue
+            mod, suite = tid.get("moduleName") or "", list(comps[:-1])
+            loc = snap.get("sourceLocation") or tid.get("sourceLocation") or {}
+            t = tests[key] = {"class": ".".join([mod] + suite), "name": comps[-1], "identifier": "/".join(comps),
+                              "suite": suite, "swift_testing": True, "result": "running", "duration": None,
+                              "failures": [], "source": {"file": loc.get("filePath"), "line": loc.get("line")},
+                              "_cases": {}, "_args": {}}
+            for c in snap.get("testCases") or []:
+                ids = (c.get("id") or {}).get("argIDs")
+                if ids:
+                    h = "".join("%02x" % b for a in ids for b in (a.get("bytes") or []))
+                    args = []
+                    for a in c.get("arguments") or []:
+                        pv, vv = a.get("parameter") or {}, a.get("value") or {}
+                        pt, vt = pv.get("typeInfo") or {}, vv.get("typeInfo") or {}
+                        args.append({"label": pv.get("firstName") or "", "type": pt.get("unqualifiedName") or "",
+                                     "full_type": pt.get("fullyQualifiedName") or "",
+                                     "value": vv.get("description") or "", "debug": vv.get("debugDescription") or "",
+                                     "value_type": vt.get("unqualifiedName") or "",
+                                     "value_full_type": vt.get("fullyQualifiedName") or "",
+                                     "is_collection": bool(vv.get("isCollection"))})
+                    t["_args"][h] = args
+            order.append(key)
+        ids = (ev.get("testCaseID") or {}).get("argIDs")
+        case = None
+        if ids:
+            h = "".join("%02x" % b for a in ids for b in (a.get("bytes") or []))
+            args = t["_args"].get(h) or []
+            case = t["_cases"].setdefault(h, {"name": ", ".join(a["value"] for a in args), "id": h, "args": args,
+                                              "result": "running", "duration": None, "failures": [], "_start": None})
+        now = st_seconds(ev.get("instant"))
+        if k == "testStarted":
+            t["_start"] = now
+        elif k == "testCaseStarted" and case is not None:
+            case["_start"] = now
+        elif k == "testCaseEnded" and case is not None:
+            case["result"] = "failed" if case["failures"] else "expected_failure" if case.get("expected_failures") else "passed"
+            if case["_start"] is not None:
+                case["duration"] = round(now - case["_start"], 6)
+        elif k == "issueRecorded":
+            issue = kind[k].get("_0") or {}
+            if (issue.get("severity") or {}).keys() - {"error"}:
+                continue   # a warning: shown, does not fail the test
+            loc = (issue.get("sourceContext") or {}).get("sourceLocation") or {}
+            f = {"file": loc.get("filePath"), "line": loc.get("line"), "message": st_issue_message(issue)}
+            if not loc:
+                f["file"] = f["line"] = None
+            if issue.get("isKnown"):
+                f["reason"] = d.get("known") or None   # withKnownIssue's comment (libsimswt)
+                t.setdefault("expected_failures", []).append(f)
+                if case is not None:
+                    case.setdefault("expected_failures", []).append(f)
+                continue
+            t["failures"].append(f)
+            if case is not None:
+                case["failures"].append(f)
+        elif k == "testSkipped":
+            t["result"] = "skipped"
+            info = kind[k].get("_0") or {}
+            t["skip_message"] = info.get("comment") or ""
+            loc = (info.get("sourceContext") or {}).get("sourceLocation") or {}
+            t["skip_file"], t["skip_line"] = loc.get("filePath"), loc.get("line")
+            t["duration"] = 0.0
+        elif k == "testEnded":
+            if t["result"] != "skipped":
+                t["result"] = "failed" if t["failures"] else "expected_failure" if t.get("expected_failures") else "passed"
+            if t.get("_start") is not None:
+                t["duration"] = round(now - t["_start"], 6)
+    if not read:
+        return None
+    out = []
+    for key in order:
+        t = tests[key]
+        cases = list(t.pop("_cases").values())
+        t.pop("_args")
+        t.pop("_start", None)
+        for c in cases:
+            c.pop("_start")
+        if cases:
+            t["arguments"] = cases
+        out.append(t)
+    return out
+
+
+def symbolize(binary, offsets):
+    """[(file, line, function) | None] for offsets into a Mach-O image (llvm-symbolizer). Its DWARF: the bundle's
+    dSYM, else one dsymutil makes from the objects the image's debug map names (a Debug build keeps them: Xcode's
+    DEBUG_INFORMATION_FORMAT dwarf), in a temporary dir."""
+    tool = llvm_tool("llvm-symbolizer")
+    if not tool or not offsets:
+        return [None] * len(offsets)
+    args = [tool, "--obj", binary, "--output-style=JSON", "--no-inlines"]
+    b = binary
+    while b != os.path.dirname(b) and not b.endswith((".xctest", ".app", ".framework")):
+        b = os.path.dirname(b)
+    tmp = None
+    try:
+        if os.path.isdir(b + ".dSYM"):
+            args += ["--dsym-hint", b + ".dSYM"]
+        else:
+            ds = llvm_tool("dsymutil")
+            if ds:
+                tmp = tempfile.mkdtemp(prefix="dsym-", dir=x86config.get("X86SIM_SCRATCH"))
+                d = os.path.join(tmp, os.path.basename(b) + ".dSYM")
+                if subprocess.run([ds, binary, "-o", d], capture_output=True, timeout=120).returncode == 0:
+                    args += ["--dsym-hint", d]
+        r = subprocess.run(args + ["0x%x" % o for o in offsets], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return [None] * len(offsets)
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+    entries = []
+    for ln in r.stdout.splitlines():
+        try:
+            v = json.loads(ln)
+        except ValueError:
+            continue
+        entries += v if isinstance(v, list) else [v]
+    out = []
+    for e in entries[:len(offsets)]:
+        sym = ((e or {}).get("Symbol") or [{}])[0]
+        out.append((sym.get("FileName"), sym.get("Line"), sym.get("FunctionName")) if sym.get("Line") else None)
+    return out + [None] * (len(offsets) - len(out))
+
+
+def throw_location(frames, products=None):
+    """(file, line) of a thrown error's issue, as Xcode reports it: the first frame of its call stack (captured where
+    the error was thrown) in the test bundle (the image inside a .xctest) that symbolicates to a line.
+    The image's path is the device's view of it (/Volumes/SystemRoot/...); its caller is the frame's return address,
+    so the offset looked up is one before it. None when nothing symbolicates."""
+    mine = [(i, undv(p), off) for i, (p, off) in enumerate(frames)
+            if p and ".xctest/" in p and os.path.isfile(undv(p))]
+    if not mine:
+        return None
+    binary = mine[0][1]
+    mine = [x for x in mine if x[1] == binary]
+    syms = symbolize(binary, [off - (1 if i else 0) for i, _, off in mine])
+    for (i, _, _), s in zip(mine, syms):
+        if s and s[0] and s[1]:
+            f = s[0]
+            if not os.path.isabs(f) and products:
+                f = os.path.normpath(os.path.join(products, f))
+            return f, int(s[1])
+    return None
+
+
+class Recorder:
+    """UI tests' screen recordings, as Xcode makes them (the .xctestrun's PreferredScreenCaptureFormat screenRecording,
+    Xcode's default for UI tests): the device's screen while each test case runs (x86sim io recordVideo, the
+    device's frame ring), kept as the test's "Screen Recording" attachment when the attachment lifetime says so
+    (deleteOnSuccess: failed tests only)."""
+
+    def __init__(self, dev, folder):
+        self.dev, self.folder = dev, folder
+        self.proc = self.test = self.path = None
+        self.done = []   # (test, mp4)
+        os.makedirs(folder, exist_ok=True)
+
+    def start(self, t):
+        self.stop()
+        self.test = t
+        self.path = os.path.join(self.folder, "%d.mp4" % len(self.done))
+        self.proc = subprocess.Popen([os.path.join(ROOT, "cli/x86sim"), "--phone", self.dev, "io", "recordVideo",
+                                      "--fps", "30", self.path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+    def stop(self, t=None):
+        if not self.proc:
+            return
+        self.proc.send_signal(signal.SIGTERM)   # simctl.record finishes the mp4 on SIGTERM
+        try:
+            self.proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        if os.path.getsize(self.path) if os.path.exists(self.path) else 0:
+            self.done.append((self.test, self.path))
+        self.proc = self.test = None
+
+    def keep(self, base, lifetime):
+        """Move the recordings to keep into attachments/<Class>.<test>/ and list them on their tests"""
+        self.stop()
+        for t, mp4 in self.done:
+            keep = lifetime == "keepAlways" or (lifetime != "keepNever" and t["result"] == "failed")
+            if not keep:
+                continue
+            dst = os.path.join(base, "%s.%s" % (t["class"].split(".")[-1], t["name"]), "Screen_Recording.mp4")
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(mp4, dst)
+            t.setdefault("attachments", []).append({"name": "Screen Recording", "path": dst, "type": "public.mpeg-4",
+                                                     "from": "x86sim"})
+        shutil.rmtree(self.folder, ignore_errors=True)
 
 
 class Parser:
@@ -478,6 +984,7 @@ class Parser:
         self.top = None
         self.done = False
         self.last_fail = None
+        self.on_start = self.on_end = None   # UI tests' screen recording: called with the test at its start / end
 
     def test(self, cls, name):
         k = (cls, name)
@@ -494,12 +1001,18 @@ class Parser:
         if m:
             self.current = self.test(m.group(1), m.group(2))
             self.last_fail = None
+            if self.on_start:
+                self.on_start(self.current)
             return True
         m = R_CASE_END.match(l)
         if m:
             t = self.test(m.group(1), m.group(2))
             t["result"], t["duration"] = m.group(3), float(m.group(4))
+            if t["result"] == "passed" and t.get("expected_failures"):
+                t["result"] = "expected_failure"   # XCTest says passed; Xcode: Expected Failure
             self.current = self.last_fail = None
+            if self.on_end:
+                self.on_end(t)
             return True
         m = R_FAIL.match(l)
         if m:
@@ -508,6 +1021,13 @@ class Parser:
             if f["file"] == "<unknown>":
                 f["file"], f["line"] = None, None
             t["failures"].append(f)
+            self.last_fail = f
+            return True
+        m = R_XFAIL.match(l)
+        if m:
+            t = self.test(m.group(3), m.group(4))
+            f = {"file": m.group(1), "line": int(m.group(2)), "message": m.group(5), "reason": None}
+            t.setdefault("expected_failures", []).append(f)
             self.last_fail = f
             return True
         m = R_SKIP.match(l)
@@ -533,12 +1053,21 @@ class Parser:
             t["failures"].append(f)
             self.last_fail = f
             return True
+        m = R_ST_KNOWN.match(l)
+        if m:
+            t = self.test("SwiftTesting", m.group(1))
+            f = {"file": m.group(2), "line": int(m.group(3)), "message": m.group(4), "reason": None}
+            t.setdefault("expected_failures", []).append(f)
+            self.last_fail = f
+            return True
         m = R_ST_END.match(l)
         if m and m.group(1).startswith("run with "):   # Swift Testing's closing line ("Test run with N tests ...")
             return True
         if m and not l.startswith("Test "):
             t = self.test("SwiftTesting", m.group(1))
             t["result"] = m.group(2)
+            if t["result"] == "passed" and t.get("expected_failures"):
+                t["result"] = "expected_failure"
             if m.group(3):
                 t["duration"] = float(m.group(3))
             return True
@@ -549,6 +1078,82 @@ class Parser:
             self.last_fail["message"] += "\n" + l
             return True
         return False
+
+    def swift_testing(self, path, keep=None):
+        """Swift Testing's results from libsimswt's events (path), in place of what its console lines told: each test
+        by its suite path, as Xcode names it. Nothing changes when no event came (no libsimswt: console lines kept)."""
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return
+        if not lines:
+            return
+        if keep:
+            shutil.copy(path, keep)
+        tests = swift_testing_results(lines)
+        if tests is None:
+            return
+        self.tests = [t for t in self.tests if t["class"] != "SwiftTesting"] + tests
+        self.by_key = {k: v for k, v in self.by_key.items() if k[0] != "SwiftTesting"}
+
+    @staticmethod
+    def split_reasons(tests):
+        """XCTest's console expected failures: "<message>Reason: (<reason>)" -> message, reason."""
+        for t in tests:
+            for f in t.get("expected_failures") or []:
+                if f.get("reason") is None and not t.get("swift_testing"):
+                    m = R_XFAIL_REASON.match(f["message"])
+                    if m:
+                        f["message"], f["reason"] = m.group(1), m.group(2)
+
+    def issue_stacks(self, path, keep=None, products=None):
+        """XCTest failures without a location (a thrown error): the location Xcode gives them, from the stack XCTest
+        captured when the error was thrown (libsimswt writes it), symbolicated here: the first frame in the test
+        bundle with a source line. Left empty when no frame can be symbolicated. XCTExpectFailure's matches
+        ("expected" lines): in place of the console's, with their path, message and reason."""
+        self.split_reasons(self.tests)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return
+        if not lines:
+            return
+        if keep:
+            shutil.copy(path, keep)
+        for ln in lines:
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            m = re.match(r"-\[(\S+) (\S+)\]$", e.get("test") or "")
+            if not m:
+                continue
+            # XCTest names it -[Class test] here (no module): the test of that class name and method
+            t = next((x for k, x in self.by_key.items()
+                      if k[1] == m.group(2) and k[0].split(".")[-1] == m.group(1).split(".")[-1]), None)
+            if e.get("expected"):
+                if t is None:
+                    continue
+                if not t.get("_xfail_hook"):   # the hook's list replaces the console's (the same, in order)
+                    t["_xfail_hook"], t["expected_failures"] = True, []
+                f = {"file": e.get("file"), "line": e.get("line"), "message": e.get("message") or "",
+                     "reason": e.get("reason")}
+                if not f["file"]:
+                    loc = throw_location(e.get("frames") or [], products)
+                    f["file"], f["line"] = loc if loc else (None, None)
+                t["expected_failures"].append(f)
+                continue
+            f = next((x for x in (t or {}).get("failures", []) if x.get("file") is None
+                      and x.get("message", "").split("\n")[0] == (e.get("message") or "").split("\n")[0]), None)
+            if f is None:
+                continue
+            loc = throw_location(e.get("frames") or [], products)
+            if loc:
+                f["file"], f["line"] = loc
+        for t in self.tests:
+            t.pop("_xfail_hook", None)
 
     def finish(self, why=None):
         """The process ended (or was stopped): a test still running failed with `why`."""
@@ -575,6 +1180,7 @@ class Runner:
                       if os.path.exists(os.path.join(self.dev, "name")) else os.path.basename(self.dev))
         self.work = os.path.join(self.data, "tmp", "x86sim-xctest", uuid.uuid4().hex[:8])
         os.makedirs(self.work, exist_ok=True)
+        self.profraw = os.path.join(self.work, "profraw")
         self.out = a["out"] or os.path.join(x86config.get("X86SIM_SCRATCH"), "xctest",
                                             "%s-%s" % (self.phone, time.strftime("%Y%m%d-%H%M%S")))
         os.makedirs(self.out, exist_ok=True)
@@ -595,6 +1201,7 @@ class Runner:
         src = find_platform(self.pname, self.a["platform"])
         self.platforms = thin_platform(src, self.pname)
         self.pdev = os.path.join(self.platforms, self.pname + ".platform", "Developer")
+        self.swt = None if os.environ.get("X86SIM_XCTEST_NO_SWT") else simswt(src, self.plat)
 
     def install(self, app):
         app = os.path.realpath(app)
@@ -655,12 +1262,24 @@ class Runner:
             ins.insert(0, pl + "/libXCTestBundleInject.dylib")
             env.setdefault("XCInjectBundleInto", "unused")
         ins = [x for x in self.insert.split(":") if x] + [x for x in ins if x not in self.insert.split(":")]
+        if self.swt:   # Swift Testing's events (simswt): loads the platform's Testing.framework (DYLD_FRAMEWORK_PATH)
+            ins.append(dv(self.swt))
         if ins:
             env["DYLD_INSERT_LIBRARIES"] = ":".join(ins)
         env.setdefault("OS_ACTIVITY_DT_MODE", "YES")
+        env.update(self.profile_env(t["_name"]))
         for k in [k for k in env if k.startswith("DYLD_")]:
             env["X86SIM_A64_GENV_" + k] = env[k]
         return env
+
+    def profile_env(self, name):
+        """--coverage: where a process's LLVM profile goes, as Xcode sets it (<dir>/<id>-%p%c.profraw: one file per
+        process, in continuous mode, so a process that is killed at the end still leaves its counters)"""
+        if not self.a["coverage"]:
+            return {}
+        os.makedirs(self.profraw, exist_ok=True)
+        f = "%s/%s-%%p%%c.profraw" % (dv(self.profraw), re.sub(r"[^A-Za-z0-9._-]", "_", name))
+        return {"LLVM_PROFILE_FILE": f, "__XPC_LLVM_PROFILE_FILE": f}
 
     def write_config(self, name, data):
         p = os.path.join(self.work, name + ".xctestconfiguration")
@@ -719,6 +1338,11 @@ class Runner:
         only, skip = sel
         t0 = time.monotonic()
         parser = Parser(name)
+        rec = None
+        if kind == "ui" and t.get("PreferredScreenCaptureFormat", "screenRecording") == "screenRecording" \
+                and not self.a["no_recording"] and shutil.which("ffmpeg"):
+            rec = Recorder(self.dev, os.path.join(self.work, "rec-" + name))
+            parser.on_start, parser.on_end = rec.start, rec.stop
         log = os.path.join(self.out, name + ".log")
         res["log"] = log
         # issue #50: libsimshim (simshim_xct.c) writes every XCTest attachment of the test process here
@@ -727,7 +1351,12 @@ class Runner:
         os.makedirs(att, exist_ok=True)
         outf = os.path.join(self.work, name + ".out")
         open(outf, "w").close()
+        swt_events = os.path.join(self.work, name + ".swt.jsonl")   # Swift Testing's events (simswt)
+        open(swt_events, "w").close()
+        swt_issues = os.path.join(self.work, name + ".issues.jsonl")   # call stacks of unlocated XCTest issues (simswt)
+        open(swt_issues, "w").close()
         module = t.get("ProductModuleName") or name
+        interop = INTEROP_MODES.get(str(t.get("TestInteropMode", "complete")).lower(), 2)
         products = self.root
         self.say("\n=== %s (%s tests)" % (name, kind))
         try:
@@ -738,7 +1367,9 @@ class Runner:
                 agent = dv(agent) if os.path.exists(agent) else dv(os.path.join(self.rtroot, "Developer/usr/bin/xctest"))
                 env = self.environment(t, None, products)
                 env["X86SIM_XCTEST_ATTACHMENTS"] = dv(att)
-                env["XCTestConfigurationFilePath"] = self.write_config(name, configuration(bundle, module, only=only or None, skip=skip))
+                env["X86SIM_SWT_EVENTS"] = dv(swt_events)
+                env["X86SIM_SWT_ISSUES"] = dv(swt_issues)
+                env["XCTestConfigurationFilePath"] = self.write_config(name, configuration(bundle, module, only=only or None, skip=skip, interop=interop))
                 env["XCTestBundlePath"] = bundle
                 rel = os.path.relpath(outf, self.data)
                 r = self.simctl.check(self.simctl.request("spawn", path=agent, args=[bundle] + t.get("CommandLineArguments", []),
@@ -763,15 +1394,18 @@ class Runner:
                     bundle = dv(bundle)
                 env = self.environment(t, host, products)
                 env["X86SIM_XCTEST_ATTACHMENTS"] = dv(att)
+                env["X86SIM_SWT_EVENTS"] = dv(swt_events)
+                env["X86SIM_SWT_ISSUES"] = dv(swt_issues)
                 if kind == "ui":
                     tenv = {k: self.subst(str(v), host) for k, v in t.get("UITargetAppEnvironmentVariables", {}).items()}
+                    tenv.update(self.profile_env(t["_name"] + "-app"))
                     for k in [k for k in tenv if k.startswith("DYLD_")]:
                         tenv["X86SIM_A64_GENV_" + k] = tenv[k]
                     cfg = configuration(bundle, module, target_path=tpath, target_bid=tbid,
                                         target_args=[self.subst(x, host) for x in t.get("UITargetAppCommandLineArguments", [])],
-                                        target_env=tenv, ui=True, only=only or None, skip=skip)
+                                        target_env=tenv, ui=True, only=only or None, skip=skip, interop=interop)
                 else:
-                    cfg = configuration(bundle, module, only=only or None, skip=skip)
+                    cfg = configuration(bundle, module, only=only or None, skip=skip, interop=interop)
                 env["XCTestConfigurationFilePath"] = self.write_config(name, cfg)
                 env["XCTestBundlePath"] = bundle
                 rel = os.path.relpath(outf, self.data)
@@ -783,6 +1417,8 @@ class Runner:
                 time.sleep(1)
             with open(log, "wb") as raw:
                 how = self.wait(parser, outf, self.a["timeout"], alive, raw)
+            parser.swift_testing(swt_events, os.path.join(self.out, name + ".swt.jsonl"))
+            parser.issue_stacks(swt_issues, os.path.join(self.out, name + ".issues.jsonl"), self.root)
             if how == "timeout":
                 parser.finish("timed out after %d s" % self.a["timeout"])
             elif how == "exited":
@@ -810,6 +1446,8 @@ class Runner:
             res["error"] = "the device did not answer (%s)" % e
         res["tests"] = parser.tests
         res["attachments"] = self.attachments(att, parser.tests)
+        if rec:
+            rec.keep(os.path.join(self.out, "attachments"), t.get("SystemAttachmentLifetime", "deleteOnSuccess"))
         res["duration"] = round(time.monotonic() - t0, 3)
         failed = any(x["result"] == "failed" for x in parser.tests) or "error" in res
         res["result"] = "failed" if failed else "passed"
@@ -841,7 +1479,7 @@ class Runner:
             if m:
                 cls, tn = m.group(1).split(".")[-1], m.group(2)
                 t = next((x for x in tests if x["name"] == tn and x["class"].split(".")[-1] == cls), None)
-            if t and t["result"] == "passed" and e.get("lifetime") == 1:
+            if t and t["result"] in ("passed", "expected_failure") and e.get("lifetime") == 1:
                 continue
             folder = "%s.%s" % (t["class"].split(".")[-1], t["name"]) if t else "_run"
             stem = re.sub(r"[^A-Za-z0-9._-]+", "_", e.get("name") or "") or "attachment-%d" % e.get("seq", 0)
@@ -873,19 +1511,128 @@ class Runner:
             targets = [t for t in targets if t["_name"] in self.a["targets"]]
             if not targets:
                 die("no test target named %s" % ", ".join(self.a["targets"]))
-        self.names = {t["_name"] for t in targets}
+        self.names = {n for t in targets for n in [t["_name"]] + list(t.get("_modules", ()))}
         t0 = time.time()
         results = [r for r in (self.run_target(t) for t in targets) if r]
+        cov = coverage(self.profraw, self.root, os.path.join(self.out, "coverage"), self.say) if self.a["coverage"] else None
         try:
             shutil.rmtree(self.work)
         except OSError:
             pass
-        return summary(self, results, t0)
+        s = summary(self, results, t0)
+        if cov is not None:
+            s["coverage"] = cov
+        return s
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# code coverage (--coverage): what Xcode does with -enableCodeCoverage YES, with LLVM's tools for its xccov
+
+
+def llvm_tool(name):
+    """llvm-profdata / llvm-cov of the Swift toolchain that built the products (x86sim dev's), else sdks/ or PATH"""
+    cands = []
+    sw = shutil.which("swift")
+    if sw:
+        cands.append(os.path.join(os.path.dirname(os.path.realpath(sw)), name))
+    cands += sorted(glob_dirs(os.path.join(ROOT, "sdks"), "swift-*/usr/bin/" + name), reverse=True)
+    cands.append(shutil.which(name) or "")
+    return next((c for c in cands if c and os.access(c, os.X_OK)), None)
+
+
+def glob_dirs(base, pattern):
+    import glob
+    return glob.glob(os.path.join(base, pattern))
+
+
+def covered_binaries(root):
+    """Mach-O files under the products with coverage mapping (__llvm_covmap), by product: {product: [path]}"""
+    out = {}
+    objdump = llvm_tool("llvm-objdump")
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if not x.endswith((".dSYM", ".swiftmodule", "_CodeSignature"))]
+        for f in files:
+            p = os.path.join(d, f)
+            try:
+                with open(p, "rb") as h:
+                    if h.read(4) not in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
+                        continue
+            except OSError:
+                continue
+            r = subprocess.run([objdump, "--macho", "--section-headers", p], capture_output=True, text=True) if objdump \
+                else None
+            if r is None or "__llvm_covmap" not in r.stdout:
+                continue
+            rel = os.path.relpath(p, root).split(os.sep)
+            bundle = next((x for x in rel if x.endswith((".app", ".xctest", ".framework", ".appex"))), rel[-1])
+            # a test bundle inside its app is its own product, as in xccov
+            inner = [x for x in rel[:-1] if x.endswith((".app", ".xctest", ".framework", ".appex"))]
+            out.setdefault(inner[-1] if inner else bundle, []).append(p)
+    return out
+
+
+def coverage(profraw, root, out, say):
+    """Merge the test processes' profiles and report line coverage per product and file, as xccov view --report"""
+    os.makedirs(out, exist_ok=True)
+    raws = sorted(glob_dirs(profraw, "*.profraw")) if os.path.isdir(profraw) else []
+    profdata, cov = llvm_tool("llvm-profdata"), llvm_tool("llvm-cov")
+    res = {"profdata": None, "products": [], "lines": {"covered": 0, "executable": 0, "percent": 0.0}}
+    if not raws:
+        say("\ncoverage: no profiles were written (built without coverage? CLANG_COVERAGE_MAPPING=YES)")
+        res["error"] = "no profiles"
+        return res
+    if not (profdata and cov):
+        res["error"] = "llvm-profdata / llvm-cov not found"
+        say("\ncoverage: " + res["error"])
+        return res
+    pd = os.path.join(out, "Coverage.profdata")
+    r = subprocess.run([profdata, "merge", "-sparse", "-o", pd] + raws, capture_output=True, text=True)
+    if r.returncode:
+        res["error"] = "llvm-profdata merge: " + (r.stderr.strip().splitlines() or ["failed"])[-1]
+        say("\ncoverage: " + res["error"])
+        return res
+    res["profdata"] = pd
+    lcov = []
+    tot_c = tot_n = 0
+    for product, bins in sorted(covered_binaries(root).items()):
+        objs = [x for b in bins for x in ("-object", b)][1:]
+        r = subprocess.run([cov, "export", "-format=text", "-summary-only", "-instr-profile", pd] + objs,
+                           capture_output=True, text=True)
+        try:
+            data = json.loads(r.stdout)["data"][0]
+        except (ValueError, KeyError, IndexError):
+            continue
+        files = []
+        for f in data.get("files", []):
+            ln = f["summary"]["lines"]
+            files.append({"file": f["filename"], "covered": ln["covered"], "executable": ln["count"],
+                          "percent": round(ln["percent"], 2)})
+        ln = data["totals"]["lines"]
+        res["products"].append({"name": product, "binaries": bins, "covered": ln["covered"], "executable": ln["count"],
+                                "percent": round(ln["percent"], 2), "files": sorted(files, key=lambda x: x["file"])})
+        tot_c, tot_n = tot_c + ln["covered"], tot_n + ln["count"]
+        r = subprocess.run([cov, "export", "-format=lcov", "-instr-profile", pd] + objs, capture_output=True, text=True)
+        lcov.append(r.stdout)
+    res["lines"] = {"covered": tot_c, "executable": tot_n, "percent": round(100.0 * tot_c / tot_n, 2) if tot_n else 0.0}
+    with open(os.path.join(out, "lcov.info"), "w") as f:
+        f.write("".join(lcov))
+    with open(os.path.join(out, "coverage.json"), "w") as f:
+        json.dump(res, f, indent=1)
+    lines = ["%-70s %s" % ("Name", "Coverage"), "%s %s" % ("-" * 70, "-" * 15)]
+    for p in res["products"]:
+        lines.append("%-70s %.2f%% (%d/%d)" % (p["name"], p["percent"], p["covered"], p["executable"]))
+        for f in p["files"]:
+            lines.append("    %-66s %.2f%% (%d/%d)" % (f["file"], f["percent"], f["covered"], f["executable"]))
+    with open(os.path.join(out, "report.txt"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    say("\nCode coverage (%s):\n" % out + "\n".join(lines))
+    return res
 
 
 def summary(run, results, t0):
     tests = [x for r in results for x in r["tests"]]
     counts = {k: sum(1 for x in tests if x["result"] == k) for k in ("passed", "failed", "skipped")}
+    counts["expected_failures"] = sum(1 for x in tests if x["result"] == "expected_failure")
     counts["total"] = len(tests)
     ok = results and all(r["result"] == "passed" for r in results)
     return {"phone": run.phone, "device": run.dev, "runtime": run.rt, "platform": run.plat,
@@ -922,6 +1669,11 @@ def junit(s):
                                        for f in t["failures"])
                 elif t["result"] == "skipped":
                     ET.SubElement(tc, "skipped", message=t.get("skip_message", ""))
+                elif t["result"] == "expected_failure":   # not a failure (Xcode: Expected Failure): said in its output
+                    ET.SubElement(tc, "system-out").text = "\n".join(
+                        "Expected failure%s: %s%s" % (" (%s)" % f["reason"] if f.get("reason") else "",
+                                                      "%s:%s: " % (f["file"], f["line"]) if f.get("file") else "",
+                                                      f["message"]) for f in t.get("expected_failures") or [])
     ET.indent(root)
     return ET.tostring(root, encoding="unicode", xml_declaration=True) + "\n"
 
@@ -931,14 +1683,20 @@ def report(s, quiet):
     c = s["counts"]
     p = (lambda *x: print(*x, file=sys.stderr)) if quiet == "json" else print
     p("\nTest session results: %s" % s["out"])
-    p("\t%d tests: %d passed, %d failed, %d skipped in %.1f s on %s" % (c["total"], c["passed"], c["failed"], c["skipped"],
-                                                                       s["duration"], s["phone"]))
+    xf = c.get("expected_failures") or 0
+    p("\t%d tests: %d passed, %d failed, %d skipped%s in %.1f s on %s" % (
+        c["total"], c["passed"], c["failed"], c["skipped"], ", %d expected failure%s" % (xf, "" if xf == 1 else "s") if xf else "",
+        s["duration"], s["phone"]))
     fails = [(r, t) for r in s["targets"] for t in r["tests"] if t["result"] == "failed"]
     errs = [r for r in s["targets"] if "error" in r]
     if fails or errs:
         p("\nFailing tests:")
         for r, t in fails:
-            p("\t%s: %s.%s()" % (r["name"], t["class"].split(".")[-1], t["name"].replace("()", "")))
+            if t.get("swift_testing"):   # Swift Testing: as Xcode names it (Suite/test())
+                p("\t%s: %s" % (r["name"], t["identifier"]))
+            else:
+                n = t["name"] if t["name"].endswith(")") else t["name"] + "()"   # "positive(x:)" keeps its own
+                p("\t%s: %s.%s" % (r["name"], t["class"].split(".")[-1], n))
             for f in t["failures"]:
                 where = "%s:%s: " % (f["file"], f["line"]) if f.get("file") else ""
                 p("\t\t%s%s" % (where, f["message"].split("\n")[0]))
@@ -980,7 +1738,7 @@ def fetch_platform(args):
 def parse(argv):
     a = {"xctestrun": None, "products": None, "app": None, "bundles": [], "runner": None, "spm": None, "only": [],
          "skip": [], "targets": [], "platform": None, "out": None, "json": None, "junit": None, "timeout": 1800.0,
-         "verbose": False, "quiet": False}
+         "verbose": False, "quiet": False, "coverage": False, "no_recording": False, "result_bundle": None}
     it = iter(argv)
     for x in it:
         k, _, v = x.partition("=") if x.startswith("--") else (x, "", "")
@@ -1016,10 +1774,16 @@ def parse(argv):
             a["json"] = val()
         elif k == "--junit":
             a["junit"] = val()
+        elif k == "--result-bundle":
+            a["result_bundle"] = val()
         elif k == "--timeout":
             a["timeout"] = float(val())
         elif k == "--verbose":
             a["verbose"] = True
+        elif k == "--coverage":
+            a["coverage"] = True
+        elif k == "--no-screen-recording":
+            a["no_recording"] = True
         elif k == "--quiet":
             a["quiet"] = True
         elif k in ("-h", "--help", "help"):
@@ -1051,6 +1815,8 @@ def main(argv):
     except (RuntimeError, OSError, plistlib.InvalidFileException) as e:
         die(str(e))
     s = run.run(root, targets)
+    if a.get("spm_project"):   # the package: the .xcresult's project and scheme, as Xcode names them
+        s.setdefault("project", a["spm_project"])
     with open(os.path.join(run.out, "results.json"), "w") as f:
         json.dump(s, f, indent=1)
     x = junit(s)
@@ -1059,6 +1825,13 @@ def main(argv):
     if a["junit"]:
         with open(a["junit"], "w") as f:
             f.write(x)
+    if a["result_bundle"]:
+        import xcresult
+        try:
+            xcresult.write(s, a["result_bundle"], root)
+            s["result_bundle"] = os.path.abspath(a["result_bundle"])
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
+            print("x86sim test: result bundle not written: %s" % e, file=sys.stderr)
     if a["json"] == "-":
         json.dump(s, sys.stdout, indent=1)
         print()
