@@ -5,8 +5,11 @@
 // libsimswt (inserted into the test process by xctest.py) interposes ConsoleOutputRecorder.record(_:in:) and, before
 // it prints, writes the event as one JSON line to $X86SIM_SWT_EVENTS: {"event": Event.Snapshot, "test": the event's
 // Test.Snapshot, "time": wall clock} with Swift Testing's own Codable encoding (test IDs with module, suite path and
-// source location, issues with their source location and expression, skip comments, instants), and for a known
-// issue "known": its withKnownIssue comment ("" without one; Issue.Snapshot keeps only isKnown).
+// source location, issues with their source location and expression, skip comments, instants), for a known
+// issue "known": its withKnownIssue comment ("" without one; Issue.Snapshot keeps only isKnown), and for an issue
+// with a backtrace "frames": per address the image it is in, the offset into it and the address ([path, offset,
+// address]; [null, address, address] outside any image), which xctest.py symbolicates on Linux for the issue's
+// call stack (Xcode's "Source Code Reference"s).
 import Testing   // with the SPI declarations of Testing-SPI.swiftinterface (build.sh)
 import Foundation
 
@@ -21,6 +24,30 @@ private struct Line: Encodable {
     var test: Test.Snapshot?
     var time: Double
     var known: String?
+    var frames: [Frame]?
+}
+
+private struct Frame: Encodable {
+    var image: String?
+    var offset: UInt64
+    var address: UInt64
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.unkeyedContainer()
+        try c.encode(image)
+        try c.encode(offset)
+        try c.encode(address)
+    }
+}
+
+private func frames(_ event: Event) -> [Frame]? {
+    guard case .issueRecorded(let issue) = event.kind, let bt = issue.sourceContext.backtrace else { return nil }
+    return bt.addresses.map { a in
+        var info = Dl_info()
+        if a != 0, let p = UnsafeRawPointer(bitPattern: UInt(a)), dladdr(p, &info) != 0, let f = info.dli_fname {
+            return Frame(image: String(cString: f), offset: a - UInt64(UInt(bitPattern: info.dli_fbase)), address: a)
+        }
+        return Frame(image: nil, offset: a, address: a)
+    }
 }
 
 private func knownComment(_ event: Event) -> String? {
@@ -35,7 +62,7 @@ extension Event.ConsoleOutputRecorder {
     func x86simRecord(_ event: Event, in context: Event.Context) -> Bool {
         if out >= 0 {
             let line = Line(event: Event.Snapshot(snapshotting: event), test: context.test.map { Test.Snapshot(snapshotting: $0) },
-                            time: Date().timeIntervalSince1970, known: knownComment(event))
+                            time: Date().timeIntervalSince1970, known: knownComment(event), frames: frames(event))
             if var d = try? JSONEncoder().encode(line) {
                 d.append(10)
                 lock.lock()

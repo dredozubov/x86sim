@@ -43,9 +43,11 @@ x86sim test qa --xctestrun F.xctestrun --result-bundle R.xcresult   # also an Xc
   are named as Xcode names them, by suite path (`Second/Inner/same()`; the same function in two suites is two
   tests), from Swift Testing's own events: `libsimswt` (`host/simswt`, built here on first use against the
   platform's Testing.framework) is inserted into the test process and writes them; without it they come from the
-  console lines, which name no suite. A test that fails by throwing gets the line it threw from, as Xcode reports
-  it: the stack XCTest captured at the throw, symbolicated here (llvm-symbolizer, a dSYM made by dsymutil from a
-  Debug build's objects).
+  console lines, which name no suite. Each issue keeps its call stack (`stack` in `results.json`: the frames in the
+  test bundle with function and `file:line`, as Xcode shows them), symbolicated here (llvm-symbolizer, a dSYM made
+  by dsymutil from a Debug build's objects); a failed `#expect` / `#require` keeps its expression with each
+  subexpression's value (`expression`). A test that fails by throwing, or an `XCTExpectFailure` a thrown error
+  matched, gets the line it threw from, as Xcode reports it: the stack XCTest captured at the throw.
 - **Attachments and screen recordings**: the tests' XCTest attachments (screenshots, UI hierarchies, their own) go to
   `attachments/<Class>.<test>/` and are listed per test in `results.json`. UI tests are screen-recorded test by test,
   as Xcode does (`PreferredScreenCaptureFormat` screenRecording, its default): a failed test keeps its
@@ -60,9 +62,11 @@ x86sim test qa --xctestrun F.xctestrun --result-bundle R.xcresult   # also an Xc
 - **Result bundles** (`--result-bundle R.xcresult`, `xcodebuild -resultBundlePath`): an `.xcresult` in Xcode 27.2's
   format (`cli/libexec/xcresult.py`, written on Linux), so `xcresulttool get test-results summary / tests /
   test-details`, `export attachments`, `xccov view --report` and the CI tools built on them read it as one Xcode made:
-  results, failures with `file:line`, skips, expected failures, attachments and screen recordings, code coverage down to functions and
-  line ranges, Swift Testing's suites and each argument of a parameterized test. Left out: build logs, Xcode's
-  activity tree, call stacks past the test's own frame. `tests/xcresult/check.py` compares bundles with Apple's on the comparison Mac.
+  results, failures with `file:line`, their call stacks and `#expect` values, skips, expected failures, attachments
+  and screen recordings, code coverage down to functions and line ranges, Swift Testing's suites and each argument of
+  a parameterized test. Left out: build logs, Xcode's activity tree, the UI test runner's own frames (Xcode names
+  them by symbol alone; test-details does not show them). `tests/xcresult/check.py` compares bundles with Apple's on
+  the comparison Mac, test-details included.
   The `xcodebuild` stand-in writes the bundle at `-resultBundlePath` and `x86sim test`'s own output next to it
   (`<bundle>.x86sim/`).
 - **Where the bundles come from**, built on Linux:

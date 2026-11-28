@@ -5,8 +5,9 @@
 # when all match. positive(x:) and GammaTests' Second/check() fail on purpose; GammaTests has the same function
 # names in two suites and a nested one (First/same(), Second/same(), Second/Inner/same()), told apart as Xcode does.
 # DeltaTests has known issues: withKnownIssue and XCTExpectFailure are Apple's "Expected Failure" (expected_failure),
-# a known issue that did not occur fails (knownIssueNotRecorded(), testExpectFailureNone, Known/partly() also fails
-# outside its withKnownIssue).
+# testExpectFailureThrown's matched by a thrown error (no location: XCTest's stack at the throw gives it), a known
+# issue that did not occur fails (knownIssueNotRecorded(), testExpectFailureNone, Known/partly() also fails outside
+# its withKnownIssue).
 #   tests/apps/XCTestDemo/spm-multi/check.sh <phone>
 set -uo pipefail
 X86SIM_ROOT=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../../../.." && pwd)}
@@ -39,6 +40,7 @@ BetaTests shared() passed
 DeltaTests DeltaXCTests/testExpectFailure expected_failure
 DeltaTests DeltaXCTests/testExpectFailureBlock expected_failure
 DeltaTests DeltaXCTests/testExpectFailureNone failed
+DeltaTests DeltaXCTests/testExpectFailureThrown expected_failure
 DeltaTests Known/partly() failed
 DeltaTests Known/thrown() expected_failure
 DeltaTests knownIssue() expected_failure
@@ -79,6 +81,7 @@ BetaTests shared() passed
 DeltaTests DeltaXCTests/testExpectFailure expected_failure
 DeltaTests DeltaXCTests/testExpectFailureBlock expected_failure
 DeltaTests DeltaXCTests/testExpectFailureNone failed
+DeltaTests DeltaXCTests/testExpectFailureThrown expected_failure
 DeltaTests Known/partly() failed
 DeltaTests Known/thrown() expected_failure
 DeltaTests knownIssue() expected_failure
@@ -108,6 +111,7 @@ AlphaTests shared() passed
 DeltaTests DeltaXCTests/testExpectFailure expected_failure
 DeltaTests DeltaXCTests/testExpectFailureBlock expected_failure
 DeltaTests DeltaXCTests/testExpectFailureNone failed
+DeltaTests DeltaXCTests/testExpectFailureThrown expected_failure
 DeltaTests Known/partly() failed
 DeltaTests Known/thrown() expected_failure
 DeltaTests knownIssue() expected_failure
@@ -146,6 +150,7 @@ BetaTests shared() passed
 DeltaTests DeltaXCTests/testExpectFailure expected_failure
 DeltaTests DeltaXCTests/testExpectFailureBlock expected_failure
 DeltaTests DeltaXCTests/testExpectFailureNone failed
+DeltaTests DeltaXCTests/testExpectFailureThrown expected_failure
 DeltaTests Known/partly() failed
 DeltaTests Known/thrown() expected_failure
 DeltaTests knownIssue() expected_failure
@@ -192,6 +197,7 @@ DeltaTests Known/thrown() expected_failure
 ### -skip-testing:DeltaTests/DeltaXCTests/testExpectFailureNone -only-testing:DeltaTests
 DeltaTests DeltaXCTests/testExpectFailure expected_failure
 DeltaTests DeltaXCTests/testExpectFailureBlock expected_failure
+DeltaTests DeltaXCTests/testExpectFailureThrown expected_failure
 DeltaTests Known/partly() failed
 DeltaTests Known/thrown() expected_failure
 DeltaTests knownIssue() expected_failure

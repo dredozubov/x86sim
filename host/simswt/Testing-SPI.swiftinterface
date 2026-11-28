@@ -2,8 +2,9 @@
 // platform's own Testing.swiftinterface (Xcode ships only the public one). They are the ones XCTest's
 // libXCTestSwiftSupport.dylib calls (Event.ConsoleOutputRecorder.record(_:in:), Event.Context.test, the Snapshot
 // types and their Codable conformances; Event.kind and Issue.knownIssueContext for a known issue's comment, which
-// Issue.Snapshot leaves out): every type is resilient, so only names and signatures have to match, and
-// build.sh checks each symbol libsimswt imports is one Testing.framework exports.
+// Issue.Snapshot leaves out; Issue.sourceContext.backtrace for the images its addresses are in): every type is
+// resilient, so only names and signatures have to match, and build.sh checks each symbol libsimswt imports is one
+// Testing.framework exports.
 
 public struct Event : Swift::Sendable {
   public struct Context : Swift::Sendable {
@@ -21,7 +22,16 @@ public struct Event : Swift::Sendable {
   public var kind: Testing::Event.Kind { get }
 }
 
+public struct SourceContext : Swift::Sendable {
+  public var backtrace: Testing::Backtrace? { get }
+}
+
+public struct Backtrace : Swift::Sendable {
+  public var addresses: [Swift::UInt64] { get }
+}
+
 extension Testing::Issue {
+  public var sourceContext: Testing::SourceContext { get }
   public struct KnownIssueContext : Swift::Sendable {
     public var comment: Testing::Comment? { get }
   }

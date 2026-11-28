@@ -1,14 +1,16 @@
-// x86Sim: the call stacks of XCTest issues that have no source location, for `x86sim test` (cli/libexec/xctest.py).
-// A test that fails by throwing ("failed: caught error: ...") is recorded by XCTest with the stack it captured when
-// the error was thrown (libXCTestSwiftSupport's swift_willThrow hook); on a Mac, XCTest symbolicates it with
-// CoreSymbolication and reports the throwing line of the test method (Xcode: XCTestDemoTests.swift:35). Here that
-// finds no symbols, so the issue's location stays empty and the log says "<unknown>:0". With X86SIM_SWT_ISSUES=<file>
-// (set by xctest.py), -[XCTestCase recordIssue:] first writes such an issue's frames as one JSON line,
-// {"test": "-[Class test]", "message": ..., "frames": [["<image path>", <offset>], ...]}; xctest.py symbolicates
-// them on Linux (llvm-symbolizer + the test bundle's debug info) and takes the first frame in the test bundle.
+// x86Sim: the call stacks of XCTest issues, for `x86sim test` (cli/libexec/xctest.py). XCTest records each issue with
+// the call stack it captured (XCTIssue.sourceCodeContext.callStack); on a Mac, Xcode symbolicates it with
+// CoreSymbolication and shows the frames in the test's own images ("Source Code Reference": function, file:line). A
+// test that fails by throwing ("failed: caught error: ...") is recorded with the stack captured where the error was
+// thrown (libXCTestSwiftSupport's swift_willThrow hook) and no location; Xcode reports the throwing line of the test
+// method (XCTestDemoTests.swift:35), which XCTest here cannot find ("<unknown>:0" in the log). With
+// X86SIM_SWT_ISSUES=<file> (set by xctest.py), -[XCTestCase recordIssue:] first writes each issue as one JSON line,
+// {"test": "-[Class test]", "message": ..., "file", "line" (when located), "frames": [["<image path>", <offset>,
+// <address>], ...]}; xctest.py symbolicates the frames on Linux (llvm-symbolizer + the test bundle's debug info),
+// locates an issue without a location at the first frame in the test bundle, and keeps the frames as its call stack.
 // Expected failures (XCTExpectFailure): XCTest's log names only the file (no directory), so the observation center's
 // -_testCase:didRecordExpectedFailure: also writes each one, {"test", "expected": true, "reason": its failure reason
-// (null without one), "message", "file", "line"} (+ "frames" when the issue has no location).
+// (null without one), "message", "file", "line" (when located), "frames"}.
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
@@ -51,8 +53,6 @@ static void iss_write(id self, id issue, id expected)
 {
 	id ctx = iss_msg(issue, "sourceCodeContext");
 	id loc = iss_msg(ctx, "location");
-	if (!expected && (!ctx || loc))
-		return;   // located already (XCTAssert's file:line)
 	id stack = iss_msg(ctx, "callStack");
 	unsigned long n = stack ? ((unsigned long (*)(id, SEL)) objc_msgSend)(stack, sel_registerName("count")) : 0;
 	if (!n && !expected)
@@ -68,17 +68,15 @@ static void iss_write(id self, id issue, id expected)
 			const char* why = iss_cstr(iss_msg(expected, "failureReason"));
 			fputs(",\"expected\":true,\"reason\":", f);
 			if (why) iss_str(f, why); else fputs("null", f);
-			if (loc) {
-				fputs(",\"file\":", f);
-				iss_str(f, iss_cstr(iss_msg(iss_msg(loc, "fileURL"), "path")));
-				fprintf(f, ",\"line\":%ld", ((long (*)(id, SEL)) objc_msgSend)(loc, sel_registerName("lineNumber")));
-			}
+		}
+		if (loc) {
+			fputs(",\"file\":", f);
+			iss_str(f, iss_cstr(iss_msg(iss_msg(loc, "fileURL"), "path")));
+			fprintf(f, ",\"line\":%ld", ((long (*)(id, SEL)) objc_msgSend)(loc, sel_registerName("lineNumber")));
 		}
 		fputs(",\"frames\":[", f);
-		if (expected && loc)
-			n = 0;   // located: no stack needed
 		SEL at = sel_registerName("objectAtIndex:"), addr = sel_registerName("address");
-		for (unsigned long i = 0; i < n && i < 64; i++) {
+		for (unsigned long i = 0; i < n && i < 256; i++) {
 			id fr = ((id (*)(id, SEL, unsigned long)) objc_msgSend)(stack, at, i);
 			uint64_t a = fr && class_respondsToSelector(object_getClass(fr), addr)
 			             ? ((uint64_t (*)(id, SEL)) objc_msgSend)(fr, addr) : 0;
@@ -87,9 +85,10 @@ static void iss_write(id self, id issue, id expected)
 			if (a && dladdr((const void*) (uintptr_t) a, &info) && info.dli_fname) {
 				fputc('[', f);
 				iss_str(f, info.dli_fname);
-				fprintf(f, ",%llu]", (unsigned long long) (a - (uint64_t) (uintptr_t) info.dli_fbase));
+				fprintf(f, ",%llu,%llu]", (unsigned long long) (a - (uint64_t) (uintptr_t) info.dli_fbase),
+				        (unsigned long long) a);
 			} else
-				fprintf(f, "[null,%llu]", (unsigned long long) a);
+				fprintf(f, "[null,%llu,%llu]", (unsigned long long) a, (unsigned long long) a);
 		}
 		fputs("]}\n", f);
 		fclose(f);

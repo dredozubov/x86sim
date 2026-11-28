@@ -40,6 +40,16 @@ The bundle is Info.plist + Data/. Format facts (measured on bundles Xcode 27.2 w
   summary counts them, "expectedFailures", from the statuses); test-results tests names each by its reason, else
   "<file name>:<line>: <message>". A known issue that did not occur is a failure of issueType "Unmatched Expected
   Failure" ("Expected failure 'why' but none recorded", "Known issue was not recorded").
+- Issues' call stacks (sourceCodeContext.callStack): every frame of the stack XCTest / Swift Testing captured, as
+  SourceCodeFrame {addressString: the address in decimal, one before it for a return address}; only frames in the
+  test bundle that symbolicate to a source line have symbolInfo {imageName: the image's name, symbolName: swift-demangle
+  --simplified ("closure #1 in Known.thrown()"), location}: macro expansions (#expect, @Test's thunks) and
+  compiler-generated code have none. test-details shows the frames with a location as "Source Code Reference"s; a
+  known issue that was not recorded has no stack (test-details: one reference named "" at the issue's location).
+- A failed #expect / #require: ActionTestFailureSummary.expression = TestExpression {sourceCode, value: TestValue
+  {description, debugDescription, typeName, fullyQualifiedTypeName, isCollection}, subexpressions: the same, nested}
+  (test-details: "Results" with "<subexpression> : <value>", "_" for one whose value is its source). XCTest's
+  assertions have none.
 - Line numbers: ActionTestFailureSummary.lineNumber is 1-based; the TestFailureIssueSummary's document URL
   (#StartingLineNumber=) is 0-based, one less.
 - The screen recording's attachment is named "kXCTAttachmentScreenRecording" (xcresulttool shows "Screen Recording
@@ -61,8 +71,8 @@ The bundle is Info.plist + Data/. Format facts (measured on bundles Xcode 27.2 w
 
 Left out, as x86Sim has no such thing: the build log and build result's log, the Mac's machine record (the local
 computer record describes this Linux host), crash/diagnostic files other than the targets' logs (Diagnostics:
-<Target>/StandardOutputAndStandardError.txt), failure call stacks beyond the test's own frame, and activities other
-than the attachments' (XCTest's activity tree is not in x86sim test's output).
+<Target>/StandardOutputAndStandardError.txt), and activities other than the attachments' (XCTest's activity tree
+is not in x86sim test's output).
 """
 import base64, datetime, hashlib, json, os, platform, plistlib, re, shutil, struct, subprocess, sys, time, uuid
 import urllib.parse
@@ -381,7 +391,8 @@ def issue_type(msg):
         return "Thrown Error"
     if re.match(r"(Expected failure( '.*')? but none recorded|Known issue was not recorded)", msg, re.S):
         return "Unmatched Expected Failure"
-    if msg.startswith("XCT") or " failed" in msg.split("\n")[0][:60]:
+    # XCTFail("why"): "failed - why" (Apple's: Assertion Failure)
+    if msg.startswith(("XCT", "failed - ")) or msg == "failed" or " failed" in msg.split("\n")[0][:60]:
         return "Assertion Failure"
     return "Uncategorized"
 
@@ -598,6 +609,34 @@ def coverage_report(cov):
 # ---------------------------------------------------------------------------------------------------------------------
 # the graph
 
+def call_frame(x):
+    """A call stack frame (results.json's {"address", "image", "symbol", "file", "line"}): SourceCodeFrame, with
+    symbolInfo for a frame symbolicated to a source line (Xcode shows those as the issue's "Source Code Reference"s)"""
+    sym = None
+    if x.get("symbol") is not None:
+        sym = O("SourceCodeSymbolInfo", imageName=S(x.get("image")), symbolName=S(x["symbol"]),
+                location=O("SourceCodeLocation", filePath=S(x.get("file")), lineNumber=I(x.get("line")))
+                if x.get("file") else None)
+    return O("SourceCodeFrame", addressString=S(None if x.get("address") is None else str(x["address"])), symbolInfo=sym)
+
+
+def test_value(v):
+    if not v:
+        return None
+    return O("TestValue", description=S(v.get("description") or ""), debugDescription=S(v.get("debug")),
+             typeName=S(v.get("type")), fullyQualifiedTypeName=S(v.get("full_type")),
+             isCollection=B(bool(v.get("is_collection"))))
+
+
+def expression(x):
+    """A failed #expect / #require's expression (results.json's {"source", "value", "subexpressions"}): TestExpression,
+    which test-details shows as the issue's "Results" (each subexpression "<source> : <value>")"""
+    if not x:
+        return None
+    return O("TestExpression", sourceCode=S(x.get("source") or ""), value=test_value(x.get("value")),
+             subexpressions=[expression(c) for c in x.get("subexpressions") or []])
+
+
 class Writer:
     def __init__(self, summary, bundle, products_root):
         self.s = summary
@@ -689,15 +728,16 @@ class Writer:
         def failure(f, u, atts, top):
             msg = f.get("message") or ""
             loc = O("SourceCodeLocation", filePath=S(f.get("file")), lineNumber=I(f.get("line"))) if f.get("file") else None
-            # the test method's frame, as Xcode symbolicates it (its "Source Code Reference")
-            frame = O("SourceCodeFrame", addressString=S("0"), symbolInfo=O(
-                "SourceCodeSymbolInfo", imageName=S(target["name"]), symbolName=S(symbol),
-                location=loc)) if loc else None
+            if "stack" in f:   # the issue's call stack (x86sim test symbolicated it: its frames in the test bundle)
+                stack = [call_frame(x) for x in f["stack"]]
+            else:   # the test method's frame, as Xcode symbolicates it (its "Source Code Reference")
+                stack = [O("SourceCodeFrame", addressString=S("0"), symbolInfo=O(
+                    "SourceCodeSymbolInfo", imageName=S(target["name"]), symbolName=S(symbol), location=loc))] if loc else []
             return O("ActionTestFailureSummary", message=S(msg), fileName=S(f.get("file") or ""),
                      lineNumber=I(f.get("line") or 0), isPerformanceFailure=B(False), uuid=S(u),
                      issueType=S(issue_type(msg)), attachments=atts,
-                     sourceCodeContext=O("SourceCodeContext", location=loc, callStack=[frame] if frame else []),
-                     timestamp=T(start + dur), isTopLevelFailure=B(top))
+                     sourceCodeContext=O("SourceCodeContext", location=loc, callStack=stack),
+                     timestamp=T(start + dur), isTopLevelFailure=B(top), expression=expression(f.get("expression")))
         expected = [O("ActionTestExpectedFailure", failureReason=S(f.get("reason") or None),
                       failureSummary=failure(f, uid("expected-issue", target["name"], key, i), [], False),
                       isTopLevelFailure=B(True), uuid=S(uid("expected", target["name"], key, i)))

@@ -55,4 +55,14 @@ final class DeltaXCTests: XCTestCase {
         XCTExpectFailure("nothing fails")
         XCTAssertEqual(Core.twice(1), 2)
     }
+
+    // a thrown error's issue has no source location: Xcode gives it the throw's (its stack's first frame here)
+    func testExpectFailureThrown() throws {
+        XCTExpectFailure("thrown on purpose")
+        try oops()
+    }
+
+    private func oops() throws {
+        throw Oops()
+    }
 }

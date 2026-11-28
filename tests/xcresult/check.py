@@ -10,7 +10,8 @@ get test-results summary / tests / test-details / activities, export attachments
 
 --apple: compare the bundle made from RUN with an .xcresult Xcode wrote on the Mac for the same suite: the same
 counts, test identifiers, results, failure messages and failure lines (files compared by name: paths differ), skip
-messages; durations, dates, device and paths are not compared. Default fixtures, when they are there: the XCTestDemo
+messages, and every test's test-details (issues with their expressions' values and call stack frames: function,
+file:line); durations, dates, device, addresses and paths are not compared. Default fixtures, when they are there: the XCTestDemo
 runs in ~/scratch (cov1: iPhone, full suite, Apple's /tmp/xtdc/r.xcresult on the Mac; rec1: UI tests with a screen
 recording; the watchOS full run) and spm-multi's full run (spmall: tests/apps/XCTestDemo/spm-multi on an iPhone, its
 known issues and expected failures; Apple's ~/x86sim-spm-multi/apple-all.xcresult on the Mac, xcodebuild test of the
@@ -189,15 +190,19 @@ def mac_tool(remote, name, run):
         check(rc == 0 and "ActionTestPlanRunSummaries" in out, "%s: get object --legacy --id <testsRef>" % name)
     rc, out, err = get("get log --type action --path %s" % b)
     check(rc == 0 and out.strip().startswith("{"), "%s: get log --type action" % name)
+    res["legacy_issues"] = legacy_issues(remote + "/" + name)
     # every test's details and activities
     ids = []
     nodes(res["tests"], urls=ids)   # by URL: an identifier can be in two targets
     bad = []
+    res["details"] = {}
     for tid in ids:
         rc1, o1, e1 = get("get test-results test-details --path %s --test-id %s" % (b, shlex.quote(tid)))
         rc2, o2, e2 = get("get test-results activities --path %s --test-id %s" % (b, shlex.quote(tid)))
         if rc1 or rc2:
             bad.append(tid)
+        else:
+            res["details"][tid] = json.loads(o1)
     check(ids and not bad, "%s: test-details + activities for all %d tests%s" % (name, len(ids), " (bad: %s)" % bad if bad else ""))
     # attachments: every one in results.json comes out of export attachments, byte for byte
     want = {}
@@ -256,7 +261,103 @@ def apple(remote_bundle, coverage=False):
         if rc:
             return None
         res[k] = json.loads(out)
+    res["legacy_issues"] = legacy_issues(remote_bundle)
+    urls = []
+    nodes(res["tests"], urls=urls)
+    b = shlex.quote(remote_bundle)
+    rc, out, err = ssh("; ".join("echo @@@; xcrun xcresulttool get test-results test-details --path %s --test-id %s"
+                                 % (b, shlex.quote(u)) for u in urls))
+    parts = out.split("@@@\n")[1:]
+    res["details"] = {u: json.loads(p) for u, p in zip(urls, parts) if p.strip().startswith("{")}
     return res
+
+
+# run on the Mac (python3 - BUNDLE): every test's issues in the legacy graph (get object --legacy: its
+# ActionTestSummary's failureSummaries and expectedFailures), one JSON line per test summary
+LEGACY_ISSUES = r"""
+import json, subprocess, sys
+b = sys.argv[1]
+def get(i=None):
+    a = ["xcrun", "xcresulttool", "get", "object", "--legacy", "--format", "json", "--path", b] + (["--id", i] if i else [])
+    return json.loads(subprocess.run(a, capture_output=True, text=True).stdout)
+def plain(o):
+    if isinstance(o, dict):
+        if "_value" in o and len([k for k in o if k != "_type"]) == 1: return o["_value"]
+        if "_values" in o: return [plain(x) for x in o["_values"]]
+        return {k: plain(v) for k, v in o.items() if k != "_type"}
+    return o
+root = get()
+runs = get(root["actions"]["_values"][0]["actionResult"]["testsRef"]["id"]["_value"])
+def walk(n):
+    if isinstance(n, dict):
+        if n.get("_type", {}).get("_name") == "ActionTestMetadata":
+            s = get(n["summaryRef"]["id"]["_value"])
+            print(json.dumps({"url": n["identifierURL"]["_value"],
+                              "issues": {k: plain(s[k]) for k in ("failureSummaries", "expectedFailures") if k in s}}))
+            return
+        for v in n.values(): walk(v)
+    elif isinstance(n, list):
+        for v in n: walk(v)
+walk(runs)
+"""
+
+
+def legacy_issues(bundle):
+    """{test URL (with ?args=): its issues in the legacy graph, without what is not compared (ids, dates, addresses,
+    an error's domain: Apple's names a type's runtime context; paths: file names), the call stack's frames without a
+    source location left out: Xcode keeps every address (their number is the stack's depth on each machine) and names
+    the UI test runner's frames by symbol alone (_XCTRunnerRunTests, main: x86Sim's runner calls the tests through
+    other frames), neither shown by test-details}"""
+    rc, out, err = ssh("python3 - %s" % shlex.quote(bundle), inp=LEGACY_ISSUES.encode())
+    if rc:
+        return None
+
+    def norm(x):
+        if isinstance(x, dict):
+            r = {k: (os.path.basename(v) if k in ("filePath", "fileName") else norm(v)) for k, v in x.items()
+                 if k not in ("uuid", "timestamp", "addressString", "associatedError", "attachments")}
+            if isinstance(r.get("callStack"), list):
+                r["callStack"] = [f for f in r["callStack"] if (f.get("symbolInfo") or {}).get("location")]
+            return r
+        return [norm(v) for v in x] if isinstance(x, list) else x
+    res = {}
+    for ln in out.splitlines():
+        d = json.loads(ln)
+        res[d["url"]] = norm(d["issues"])
+    return res
+
+
+def details_tree(d):
+    """test-details without what is not compared (durations, devices, paths: file names): the test's identity and
+    result, then its runs' nodes (issues with their "Results" expressions and "Source Code Reference" frames, skip
+    messages, arguments), Device / Test Plan Configuration levels left out (Apple's device is another), attachments too
+    (export attachments checks them; a UI test's failure here has XCTest's screenshot where Apple's 27.2 simulator
+    records a UI snapshot activity instead)."""
+    def norm(n):
+        out = []
+        if n.get("nodeType") == "Attachment":
+            return out
+        if n.get("nodeType") in ("Device", "Test Plan Configuration"):
+            for c in n.get("children", []):
+                out += norm(c)
+            return out
+        m = {k: n[k] for k in ("name", "nodeType", "result", "details", "nodeIdentifierURL") if k in n}
+        if n.get("sourceLocation"):
+            m["at"] = "%s:%s" % (os.path.basename(n["sourceLocation"].get("filePath") or ""), n["sourceLocation"].get("lineNumber"))
+        kids = []
+        for c in n.get("children", []):
+            kids += norm(c)
+        if kids:
+            m["children"] = kids
+        return [m]
+    top = {k: d.get(k) for k in ("testIdentifier", "testIdentifierURL", "testName", "testResult", "testDescription")}
+    # a parameterized test's argument values: xcresulttool lists them in no fixed order (Apple's bundle too)
+    top["arguments"] = sorted(json.dumps(a, sort_keys=True) for a in d.get("arguments") or [])
+    runs = []
+    for r in d.get("testRuns", []):
+        runs += norm(r)
+    top["runs"] = runs
+    return top
 
 
 def compare(ours, theirs, name):
@@ -284,6 +385,23 @@ def compare(ours, theirs, name):
     for d in diff:
         print("     %s\n       ours:  %s\n       Apple: %s" % d)
     check(bundles_of(ours["tests"]) == bundles_of(theirs["tests"]), "%s vs Apple: test bundle kinds %s" % (name, bundles_of(ours["tests"])))
+    # test-details: issues, their expressions' values and call stack frames (function, file:line), skips, arguments
+    do, da = ours.get("details") or {}, theirs.get("details") or {}
+    both = sorted(set(do) & set(da))
+    ddiff = [u for u in both if details_tree(do[u]) != details_tree(da[u])]
+    check(both and not ddiff, "%s vs Apple: test-details of %d tests equal (issues, expression values, call stack "
+          "frames: function + file:line; not durations, devices, paths)" % (name, len(both)))
+    for u in ddiff:
+        print("     %s\n       ours:  %s\n       Apple: %s" % (u, json.dumps(details_tree(do[u])["runs"], ensure_ascii=False),
+                                                         json.dumps(details_tree(da[u])["runs"], ensure_ascii=False)))
+    lo, la = ours.get("legacy_issues") or {}, theirs.get("legacy_issues") or {}
+    both = sorted(set(lo) & set(la))
+    ldiff = [u for u in both if lo[u] != la[u]]
+    check(both and not ldiff, "%s vs Apple: legacy issues of %d test summaries equal (messages, issueType, expressions, "
+          "located call stack frames)" % (name, len(both)))
+    for u in ldiff:
+        print("     %s\n       ours:  %s\n       Apple: %s" % (u, json.dumps(lo[u], ensure_ascii=False)[:2000],
+                                                         json.dumps(la[u], ensure_ascii=False)[:2000]))
     co, ca = ours.get("coverage"), theirs.get("coverage")
     if co and ca:
         check(co["report"] == ca["report"], "%s vs Apple: xccov report: %d entries (targets, files, functions: lines, "

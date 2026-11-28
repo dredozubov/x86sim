@@ -24,7 +24,7 @@ code coverage in coverage/ (LLVM_PROFILE_FILE as Xcode sets it, llvm-profdata + 
 exit status 0 when no test failed (passed, skipped or an expected failure: XCTExpectFailure, withKnownIssue), 1
 when one failed, 2 when nothing could run.
 """
-import fcntl
+import atexit, fcntl
 import glob, hashlib, tempfile
 import json, os, plistlib, re, shutil, signal, subprocess, sys, time, uuid
 import xml.etree.ElementTree as ET
@@ -682,7 +682,8 @@ R_FAIL = re.compile(r"^(.*?):(\d+): error: -\[(\S+) (\S+)\] : (.*)$")
 R_SKIP = re.compile(r"^(.*?):(\d+): -\[(\S+) (\S+)\] : Test skipped(?: - (.*))?$")
 # XCTExpectFailure's match: "File.swift:45: Expected failure in -[Mod.Class test]: <message>Reason: (<reason>)" (the
 # file without its directory; libsimswt's hook gives the path)
-R_XFAIL = re.compile(r"^(.*?):(\d+): Expected failure in -\[(\S+) (\S+)\]: (.*)$")
+# an expected failure; one without a location (a thrown error's) has no "<file>:<line>: "
+R_XFAIL = re.compile(r"^(?:(.*?):(\d+): )?Expected failure in -\[(\S+) (\S+)\]: (.*)$")
 R_XFAIL_REASON = re.compile(r"^(.*)Reason: \((.*)\)$", re.S)
 R_SUITE = re.compile(r"^Test Suite '(.+)' (started|passed|failed) at ")
 R_EXEC = re.compile(r"^\s+Executed (\d+) tests?")
@@ -747,6 +748,31 @@ def st_issue_message(issue):
     if comments:
         msg += ": " + "\n".join(comments)
     return msg
+
+
+def st_value(rv):
+    """A runtime value (Swift Testing's __Expression.Value) as Xcode keeps it (TestValue)."""
+    if rv is None:
+        return None
+    ti = rv.get("typeInfo") or {}
+    return {"description": rv.get("description") or "", "debug": rv.get("debugDescription"),
+            "type": ti.get("unqualifiedName"), "full_type": ti.get("fullyQualifiedName"),
+            "is_collection": bool(rv.get("isCollection"))}
+
+
+def st_expression(issue):
+    """A failed expectation's expression as Xcode keeps it (ActionTestFailureSummary.expression, TestExpression;
+    test-details' "Results" node with a "<subexpression> : <value>" per subexpression): its source code, value and
+    subexpressions, each the same. None for any other issue."""
+    kind = issue.get("kind") or {}
+    e = ((kind.get("expectationFailed") or {}).get("expectation") or {}).get("evaluatedExpression")
+    if not e:
+        return None
+
+    def conv(x):
+        return {"source": st_source(x), "value": st_value(x.get("runtimeValue")),
+                "subexpressions": [conv(c) for c in x.get("_subexpressions") or []]}
+    return conv(e)
 
 
 def st_seconds(instant, clock="suspending"):
@@ -828,6 +854,11 @@ def swift_testing_results(lines):
             f = {"file": loc.get("filePath"), "line": loc.get("line"), "message": st_issue_message(issue)}
             if not loc:
                 f["file"] = f["line"] = None
+            x = st_expression(issue)
+            if x:
+                f["expression"] = x
+            if d.get("frames"):
+                f["_frames"] = d["frames"]   # its backtrace (libsimswt): Parser.swift_testing symbolicates it
             if issue.get("isKnown"):
                 f["reason"] = d.get("known") or None   # withKnownIssue's comment (libsimswt)
                 t.setdefault("expected_failures", []).append(f)
@@ -865,34 +896,59 @@ def swift_testing_results(lines):
     return out
 
 
-def symbolize(binary, offsets):
-    """[(file, line, function) | None] for offsets into a Mach-O image (llvm-symbolizer). Its DWARF: the bundle's
-    dSYM, else one dsymutil makes from the objects the image's debug map names (a Debug build keeps them: Xcode's
-    DEBUG_INFORMATION_FORMAT dwarf), in a temporary dir."""
-    tool = llvm_tool("llvm-symbolizer")
-    if not tool or not offsets:
-        return [None] * len(offsets)
-    args = [tool, "--obj", binary, "--output-style=JSON", "--no-inlines"]
+_DSYMS = {}   # binary -> its DWARF for llvm-symbolizer (None: none), made once per run
+
+
+def dsym_of(binary):
+    """The test bundle's debug info: its dSYM (beside the bundle, or inside it as SwiftPM puts it), else one dsymutil
+    makes from the objects the image's debug map names (a Debug build keeps them: Xcode's DEBUG_INFORMATION_FORMAT
+    dwarf), kept in a temporary dir until x86sim test ends."""
+    if binary in _DSYMS:
+        return _DSYMS[binary]
     b = binary
     while b != os.path.dirname(b) and not b.endswith((".xctest", ".app", ".framework")):
         b = os.path.dirname(b)
-    tmp = None
+    d = next((c for c in (b + ".dSYM", binary + ".dSYM") if os.path.isdir(c)), None)
+    ds = None if d else llvm_tool("dsymutil")
+    if ds:
+        try:
+            tmp = tempfile.mkdtemp(prefix="dsym-", dir=x86config.get("X86SIM_SCRATCH"))
+            atexit.register(shutil.rmtree, tmp, True)
+            d = os.path.join(tmp, os.path.basename(b) + ".dSYM")
+            if subprocess.run([ds, binary, "-o", d], capture_output=True, timeout=120).returncode:
+                d = None
+        except (OSError, subprocess.SubprocessError):
+            d = None
+    _DSYMS[binary] = d
+    return d
+
+
+def source_frame(chain):
+    """(file, line, function) of a symbolicated address as Xcode shows it: llvm-symbolizer's inlining chain (innermost
+    first), the first entry whose line is in a source file. A line in a macro's expansion (#expect's
+    "@__swiftmacro_..." buffer, @Test's thunks) or the compiler's own code ("<compiler-generated>", line 0) is not
+    one: Xcode leaves such frames out (an #expect inlined into its test function: the function's line)."""
+    for e in chain or []:
+        f, ln = e.get("FileName") or "", e.get("Line") or 0
+        if f and ln and "<compiler-generated>" not in f and not os.path.basename(f).startswith("@__swiftmacro_"):
+            return f, int(ln), e.get("FunctionName")
+    return None
+
+
+def symbolize(binary, offsets):
+    """[(file, line, function) | None] for offsets into a Mach-O image (llvm-symbolizer with the image's DWARF,
+    dsym_of()): the frame Xcode shows for each (source_frame()), function as its linkage name."""
+    tool = llvm_tool("llvm-symbolizer")
+    if not tool or not offsets:
+        return [None] * len(offsets)
+    args = [tool, "--obj", binary, "--output-style=JSON", "--functions=linkage"]
+    d = dsym_of(binary)
+    if d:
+        args += ["--dsym-hint", d]
     try:
-        if os.path.isdir(b + ".dSYM"):
-            args += ["--dsym-hint", b + ".dSYM"]
-        else:
-            ds = llvm_tool("dsymutil")
-            if ds:
-                tmp = tempfile.mkdtemp(prefix="dsym-", dir=x86config.get("X86SIM_SCRATCH"))
-                d = os.path.join(tmp, os.path.basename(b) + ".dSYM")
-                if subprocess.run([ds, binary, "-o", d], capture_output=True, timeout=120).returncode == 0:
-                    args += ["--dsym-hint", d]
         r = subprocess.run(args + ["0x%x" % o for o in offsets], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return [None] * len(offsets)
-    finally:
-        if tmp:
-            shutil.rmtree(tmp, ignore_errors=True)
     entries = []
     for ln in r.stdout.splitlines():
         try:
@@ -900,20 +956,83 @@ def symbolize(binary, offsets):
         except ValueError:
             continue
         entries += v if isinstance(v, list) else [v]
-    out = []
-    for e in entries[:len(offsets)]:
-        sym = ((e or {}).get("Symbol") or [{}])[0]
-        out.append((sym.get("FileName"), sym.get("Line"), sym.get("FunctionName")) if sym.get("Line") else None)
+    out = [source_frame((e or {}).get("Symbol")) for e in entries[:len(offsets)]]
     return out + [None] * (len(offsets) - len(out))
+
+
+def demangle(names):
+    """{linkage name: Xcode's name for it} (swift-demangle --simplified: "closure #1 in Known.thrown()"); names it
+    does not demangle (C, ObjC) stay as they are."""
+    names = sorted({n for n in names if n})
+    tool = llvm_tool("swift-demangle")
+    if not tool or not names:
+        return {n: n for n in names}
+    try:
+        r = subprocess.run([tool, "--simplified"], input="\n".join(names) + "\n", capture_output=True, text=True,
+                           timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return {n: n for n in names}
+    out = r.stdout.split("\n")
+    return {n: (out[i] if i < len(out) and out[i] else n) for i, n in enumerate(names)}
+
+
+def frame_parts(fr):
+    """(image path on this host, offset, address) of a libsimswt frame ([path, offset] or [path, offset, address])"""
+    p, off = fr[0], fr[1]
+    return (undv(p) if p else None), off, (fr[2] if len(fr) > 2 else None)
+
+
+def in_test_bundle(path):
+    return bool(path) and ".xctest/" in path and os.path.isfile(path)
+
+
+def absolute(f, products):
+    return os.path.normpath(os.path.join(products, f)) if f and not os.path.isabs(f) and products else f
+
+
+def call_stacks(stacks, products=None):
+    """Issues' call stacks as Xcode keeps them (ActionTestFailureSummary.sourceCodeContext.callStack): per frame of
+    libsimswt's ([image path, offset, address]), {"address"} (Xcode's addressString: the frame's address, one before
+    it for a return address), and for a frame in the test bundle that symbolicates to a source line (source_frame())
+    also "image" (the image's name), "symbol" (its function, swift-demangle --simplified) and "file", "line". stacks:
+    a list of frame lists, symbolicated together (one llvm-symbolizer run per image)."""
+    want = {}
+    for frames in stacks:
+        for i, fr in enumerate(frames or []):
+            path, off, _ = frame_parts(fr)
+            if in_test_bundle(path):
+                want.setdefault(path, set()).add(off - (1 if i else 0))
+    syms = {}
+    for path, offs in want.items():
+        offs = sorted(offs)
+        for o, s in zip(offs, symbolize(path, offs)):
+            syms[(path, o)] = s
+    names = demangle(s[2] for s in syms.values() if s)
+    out = []
+    for frames in stacks:
+        st = []
+        for i, fr in enumerate(frames or []):
+            path, off, addr = frame_parts(fr)
+            f = {"address": None if addr is None else addr - (1 if i and addr else 0)}
+            s = syms.get((path, off - (1 if i else 0))) if path else None
+            if s:
+                f.update(image=os.path.basename(path), symbol=names.get(s[2], s[2]) or "", file=absolute(s[0], products),
+                         line=s[1])
+            st.append(f)
+        out.append(st)
+    return out
+
+
+def symbolicated(stack):
+    return any("symbol" in x for x in stack or [])
 
 
 def throw_location(frames, products=None):
     """(file, line) of a thrown error's issue, as Xcode reports it: the first frame of its call stack (captured where
-    the error was thrown) in the test bundle (the image inside a .xctest) that symbolicates to a line.
+    the error was thrown) in the test bundle (the image inside a .xctest) that symbolicates to a source line.
     The image's path is the device's view of it (/Volumes/SystemRoot/...); its caller is the frame's return address,
     so the offset looked up is one before it. None when nothing symbolicates."""
-    mine = [(i, undv(p), off) for i, (p, off) in enumerate(frames)
-            if p and ".xctest/" in p and os.path.isfile(undv(p))]
+    mine = [(i, p, off) for i, (p, off, _) in enumerate(frame_parts(fr) for fr in frames) if in_test_bundle(p)]
     if not mine:
         return None
     binary = mine[0][1]
@@ -921,10 +1040,7 @@ def throw_location(frames, products=None):
     syms = symbolize(binary, [off - (1 if i else 0) for i, _, off in mine])
     for (i, _, _), s in zip(mine, syms):
         if s and s[0] and s[1]:
-            f = s[0]
-            if not os.path.isabs(f) and products:
-                f = os.path.normpath(os.path.join(products, f))
-            return f, int(s[1])
+            return absolute(s[0], products), int(s[1])
     return None
 
 
@@ -1026,7 +1142,8 @@ class Parser:
         m = R_XFAIL.match(l)
         if m:
             t = self.test(m.group(3), m.group(4))
-            f = {"file": m.group(1), "line": int(m.group(2)), "message": m.group(5), "reason": None}
+            f = {"file": m.group(1), "line": int(m.group(2)) if m.group(2) else None, "message": m.group(5),
+                 "reason": None}
             t.setdefault("expected_failures", []).append(f)
             self.last_fail = f
             return True
@@ -1079,9 +1196,10 @@ class Parser:
             return True
         return False
 
-    def swift_testing(self, path, keep=None):
+    def swift_testing(self, path, keep=None, products=None):
         """Swift Testing's results from libsimswt's events (path), in place of what its console lines told: each test
-        by its suite path, as Xcode names it. Nothing changes when no event came (no libsimswt: console lines kept)."""
+        by its suite path, as Xcode names it, its issues with their call stacks (call_stacks()). Nothing changes when
+        no event came (no libsimswt: console lines kept)."""
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 lines = f.read().splitlines()
@@ -1094,6 +1212,18 @@ class Parser:
         tests = swift_testing_results(lines)
         if tests is None:
             return
+        issues, seen = [], set()
+        for t in tests:
+            for c in [t] + (t.get("arguments") or []):
+                for f in (c.get("failures") or []) + (c.get("expected_failures") or []):
+                    if id(f) not in seen:   # a parameterized test's issue is its case's too
+                        seen.add(id(f))
+                        issues.append(f)
+        # without a backtrace (a known issue that was not recorded) no frames, as Xcode has none; frames of which none
+        # symbolicates (no debug info here): left out, the .xcresult then has the test's own frame (xcresult.py)
+        for f, st in zip(issues, call_stacks([f.pop("_frames", None) for f in issues], products)):
+            if not st or symbolicated(st):
+                f["stack"] = st
         self.tests = [t for t in self.tests if t["class"] != "SwiftTesting"] + tests
         self.by_key = {k: v for k, v in self.by_key.items() if k[0] != "SwiftTesting"}
 
@@ -1108,10 +1238,11 @@ class Parser:
                         f["message"], f["reason"] = m.group(1), m.group(2)
 
     def issue_stacks(self, path, keep=None, products=None):
-        """XCTest failures without a location (a thrown error): the location Xcode gives them, from the stack XCTest
-        captured when the error was thrown (libsimswt writes it), symbolicated here: the first frame in the test
-        bundle with a source line. Left empty when no frame can be symbolicated. XCTExpectFailure's matches
-        ("expected" lines): in place of the console's, with their path, message and reason."""
+        """XCTest issues' call stacks (libsimswt writes each issue's), symbolicated here (call_stacks()) and kept with
+        the failure they belong to (the test's, by message and location) as its "stack". A failure without a location
+        (a thrown error) gets the one Xcode gives it from the stack XCTest captured when the error was thrown: the
+        first frame in the test bundle with a source line (left empty when none symbolicates). XCTExpectFailure's
+        matches ("expected" lines): in place of the console's, with their path, message, reason and stack."""
         self.split_reasons(self.tests)
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
@@ -1122,20 +1253,24 @@ class Parser:
             return
         if keep:
             shutil.copy(path, keep)
+        recs = []
         for ln in lines:
             try:
                 e = json.loads(ln)
             except ValueError:
                 continue
             m = re.match(r"-\[(\S+) (\S+)\]$", e.get("test") or "")
-            if not m:
-                continue
+            if m:
+                recs.append((e, m))
+        stacks = call_stacks([e.get("frames") or [] for e, _ in recs], products)
+        taken = set()
+        for (e, m), st in zip(recs, stacks):
             # XCTest names it -[Class test] here (no module): the test of that class name and method
             t = next((x for k, x in self.by_key.items()
                       if k[1] == m.group(2) and k[0].split(".")[-1] == m.group(1).split(".")[-1]), None)
+            if t is None:
+                continue
             if e.get("expected"):
-                if t is None:
-                    continue
                 if not t.get("_xfail_hook"):   # the hook's list replaces the console's (the same, in order)
                     t["_xfail_hook"], t["expected_failures"] = True, []
                 f = {"file": e.get("file"), "line": e.get("line"), "message": e.get("message") or "",
@@ -1143,17 +1278,28 @@ class Parser:
                 if not f["file"]:
                     loc = throw_location(e.get("frames") or [], products)
                     f["file"], f["line"] = loc if loc else (None, None)
+                if symbolicated(st):
+                    f["stack"] = st
                 t["expected_failures"].append(f)
                 continue
-            f = next((x for x in (t or {}).get("failures", []) if x.get("file") is None
-                      and x.get("message", "").split("\n")[0] == (e.get("message") or "").split("\n")[0]), None)
+            first = (e.get("message") or "").split("\n")[0]
+            f = next((x for x in t.get("failures", []) if id(x) not in taken
+                      and x.get("message", "").split("\n")[0] == first
+                      and (x.get("file") is None if not e.get("file") else
+                           (os.path.basename(x.get("file") or "") == os.path.basename(e["file"])
+                            and x.get("line") == e.get("line")))), None)
             if f is None:
                 continue
-            loc = throw_location(e.get("frames") or [], products)
-            if loc:
-                f["file"], f["line"] = loc
+            taken.add(id(f))
+            if f.get("file") is None:
+                loc = throw_location(e.get("frames") or [], products)
+                if loc:
+                    f["file"], f["line"] = loc
+            if symbolicated(st):
+                f["stack"] = st
         for t in self.tests:
-            t.pop("_xfail_hook", None)
+            if t.pop("_xfail_hook", None) and t["result"] == "passed" and t["expected_failures"]:
+                t["result"] = "expected_failure"
 
     def finish(self, why=None):
         """The process ended (or was stopped): a test still running failed with `why`."""
@@ -1417,7 +1563,7 @@ class Runner:
                 time.sleep(1)
             with open(log, "wb") as raw:
                 how = self.wait(parser, outf, self.a["timeout"], alive, raw)
-            parser.swift_testing(swt_events, os.path.join(self.out, name + ".swt.jsonl"))
+            parser.swift_testing(swt_events, os.path.join(self.out, name + ".swt.jsonl"), self.root)
             parser.issue_stacks(swt_issues, os.path.join(self.out, name + ".issues.jsonl"), self.root)
             if how == "timeout":
                 parser.finish("timed out after %d s" % self.a["timeout"])

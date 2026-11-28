@@ -32,6 +32,13 @@ Rows (expected values are Xcode's, copied from the captured configurations):
      known issues, a parameterized test's case too; "Known issue was not recorded" fails; XCTExpectFailure's console
      line (file name only, "Reason: (...)") and libsimswt's hook line (the path) -> expected_failure; Swift Testing's
      console "recorded a known issue"; counts' expected_failures; junit: not a failure
+ 15  issues' call stacks and expressions as Xcode 27.2 shows them in test-details (spm-multi on Apple's simulator,
+     2026-11-28): a frame's line is the first of its inlining chain in a source file (an #expect inlined into its
+     test function -> the function's line; macro expansions and compiler-generated code -> no frame); frames in the
+     test bundle symbolicated (image name, swift-demangle'd function, file:line), every frame's address (one before a
+     return address); located XCTest failures get their stack by message + location; an XCTExpectFailure matched by
+     a thrown error (no location in the console line: "Expected failure in -[C t]: ...") -> expected_failure at the
+     throw; a failed #expect's expression (source, value, subexpressions) -> results.json -> TestExpression
 Mutants (each must fail its row; checked by hand when the test was written):
   M1  both XCTest method forms in a run list (the old double run)          -> rows 2, 3, 5
   M2  a=[] on the class form (made Swift Testing run every test)            -> row 1
@@ -43,6 +50,8 @@ Mutants (each must fail its row; checked by hand when the test was written):
   M8  every subexpression listed (literals too) / comment before the lines   -> row 12
   M9  the return address itself looked up / the first frame of any image     -> row 13
   M10 a known issue's test left "passed" (the old result) / its comment dropped -> row 14
+  M11 the innermost inlined entry kept (macro buffer lines) / the return address itself / R_XFAIL needing a
+      "<file>:<line>: " -> row 15
 """
 import importlib.util
 import json
@@ -388,6 +397,110 @@ class KnownIssues(unittest.TestCase):
         self.assertIn('failures="0"', j)
         self.assertNotIn("<failure", j)
         self.assertIn("Expected failure (known bug): /p/Tests/DeltaTests/DeltaTests.swift:45: XCTAssertEqual failed", j)
+
+
+class CallStacks(unittest.TestCase):
+    MACRO = "/tmp/swift-generated-sources/@__swiftmacro_10GammaTests0021GammaTestsswift_IfFDefMX6_49_6expectfMf_.swift"
+
+    def test_row15_source_frame(self):
+        sf = X.source_frame
+        # llvm-symbolizer's chain for positive(x:)'s #expect (a run's, innermost first)
+        self.assertEqual(sf([{"FunctionName": "$s10GammaTests0021GammaTestsswift_IfFDefMX6_49_6expectfMf_", "FileName": self.MACRO, "Line": 1},
+                             {"FunctionName": "$s10GammaTests8positive1xySi_tF", "FileName": "/p/GammaTests.swift", "Line": 7}]),
+                         ("/p/GammaTests.swift", 7, "$s10GammaTests8positive1xySi_tF"))
+        self.assertIsNone(sf([{"FunctionName": "c", "FileName": self.MACRO, "Line": 1}]))   # knownIssue()'s closure
+        self.assertIsNone(sf([{"FunctionName": "t", "FileName": "/<compiler-generated>", "Line": 0}]))
+        self.assertIsNone(sf([{"FunctionName": "t", "FileName": "/p/x.swift", "Line": 0}]))
+
+    def with_symbols(self, table):
+        """X.symbolize / X.demangle replaced: table {(binary name, offset): (file, line, linkage name)}"""
+        asked = []
+
+        def sym(binary, offsets):
+            asked.append((os.path.basename(binary), list(offsets)))
+            return [table.get((os.path.basename(binary), o)) for o in offsets]
+        old = X.symbolize, X.demangle
+        X.symbolize, X.demangle = sym, lambda names: {n: "dm(%s)" % n for n in names if n}
+        self.addCleanup(lambda: setattr(X, "symbolize", old[0]) or setattr(X, "demangle", old[1]))
+        return asked
+
+    def test_row15_stacks(self):
+        with tempfile.TemporaryDirectory() as d:
+            b = os.path.join(d, "DeltaTests.xctest/DeltaTests")
+            os.makedirs(os.path.dirname(b))
+            open(b, "w").close()
+            core = os.path.join(d, "XCTestCore")
+            open(core, "w").close()
+            asked = self.with_symbols({("DeltaTests", 0x10): ("/p/D.swift", 66, "oops"),
+                                       ("DeltaTests", 0x1f): ("/p/D.swift", 62, "thrown")})
+            frames = [[X.dv(core), 100, 5000], [X.dv(b), 0x10, 6000], [X.dv(b), 0x20, 7000], [X.dv(b), 0x30, 8000], [None, 9, 9]]
+            st = X.call_stacks([frames])[0]
+            self.assertEqual(st, [{"address": 5000}, {"address": 5999}, {"address": 6999, "image": "DeltaTests", "symbol": "dm(thrown)",
+                                                                       "file": "/p/D.swift", "line": 62},
+                                  {"address": 7999}, {"address": 8}])
+            self.assertEqual(asked, [("DeltaTests", [0xf, 0x1f, 0x2f])])
+            # XCTest: an XCTExpectFailure matched by a thrown error (console line without a location), a located failure
+            p = X.Parser("DeltaTests")
+            for l in ["Test Case '-[DeltaTests.DeltaXCTests testThrown]' started.",
+                      'Expected failure in -[DeltaTests.DeltaXCTests testThrown]: failed: caught error: "Oops()"Reason: (thrown on purpose)',
+                      "Test Case '-[DeltaTests.DeltaXCTests testThrown]' passed (0.008 seconds).",
+                      "Test Case '-[DeltaTests.DeltaXCTests testFail]' started.",
+                      "/p/D.swift:45: error: -[DeltaTests.DeltaXCTests testFail] : XCTAssertEqual failed: (\"2\") is not equal to (\"3\")",
+                      "Test Case '-[DeltaTests.DeltaXCTests testFail]' failed (0.008 seconds)."]:
+                self.assertTrue(p.line(l), l)
+            got = {t["identifier"]: t for t in p.tests}
+            X.Parser.split_reasons(p.tests)   # the console's alone (no libsimswt)
+            self.assertEqual((got["DeltaXCTests/testThrown"]["result"], [(x["file"], x["message"], x["reason"]) for x in
+                                                                          got["DeltaXCTests/testThrown"]["expected_failures"]]),
+                             ("expected_failure", [(None, 'failed: caught error: "Oops()"', "thrown on purpose")]))
+            th = [[X.dv(core), 100, 5000], [X.dv(b), 0x11, 6001], [X.dv(b), 0x20, 7000]]
+            f = os.path.join(d, "i.jsonl")
+            with open(f, "w") as fh:
+                fh.write(json.dumps({"test": "-[DeltaXCTests testThrown]", "message": 'failed: caught error: "Oops()"', "expected": True,
+                                     "reason": "thrown on purpose", "frames": th}) + "\n")
+                fh.write(json.dumps({"test": "-[DeltaXCTests testFail]", "message": 'XCTAssertEqual failed: ("2") is not equal to ("3")',
+                                     "file": "/p/D.swift", "line": 45, "frames": th}) + "\n")
+            p.issue_stacks(f)
+            x = got["DeltaXCTests/testThrown"]["expected_failures"]
+            self.assertEqual((got["DeltaXCTests/testThrown"]["result"], [(e["file"], e["line"]) for e in x]),
+                             ("expected_failure", [("/p/D.swift", 66)]))
+            self.assertEqual([(s.get("symbol"), s.get("line")) for s in x[0]["stack"]], [(None, None), ("dm(oops)", 66), ("dm(thrown)", 62)])
+            self.assertEqual([s.get("symbol") for s in got["DeltaXCTests/testFail"]["failures"][0]["stack"]], [None, "dm(oops)", "dm(thrown)"])
+
+    def test_row15_swift_testing(self):
+        e = expectation("Core.twice(1) == 3", [("Core.twice(1)", "2"), ("3", "3")])
+        x = X.st_expression(e)
+        self.assertEqual((x["source"], x["value"]["description"], [(c["source"], c["value"]["description"]) for c in x["subexpressions"]]),
+                         ("Core.twice(1) == 3", "false", [("Core.twice(1)", "2"), ("3", "3")]))
+        self.assertIsNone(X.st_expression({"kind": {"errorCaught": {}}}))
+        with tempfile.TemporaryDirectory() as d:
+            b = os.path.join(d, "GammaTests.xctest/GammaTests")
+            os.makedirs(os.path.dirname(b))
+            open(b, "w").close()
+            self.with_symbols({("GammaTests", 0x2f): ("/p/G.swift", 18, "check")})
+            check = fn(["Second", "check()"], 18)
+            lines = [ev("testStarted", ["Second", "check()"], t=1.0, test=check),
+                     json.dumps(dict(json.loads(ev("issueRecorded", ["Second", "check()"], {"_0": e}, t=1.1, test=check)),
+                                     frames=[[None, 1, 1], [X.dv(b), 0x30, 900]])),
+                     ev("testEnded", ["Second", "check()"], t=1.2, test=check)]
+            f = os.path.join(d, "e.jsonl")
+            with open(f, "w") as fh:
+                fh.write("\n".join(lines) + "\n")
+            p = X.Parser("GammaTests")
+            p.swift_testing(f)
+        fail = p.tests[0]["failures"][0]
+        self.assertEqual(fail["stack"], [{"address": 1}, {"address": 899, "image": "GammaTests", "symbol": "dm(check)",
+                                                          "file": "/p/G.swift", "line": 18}])
+        self.assertNotIn("_frames", fail)
+        import xcresult
+        fr = xcresult.call_frame(fail["stack"][1])
+        self.assertEqual((fr.f["addressString"].v, fr.f["symbolInfo"].f["symbolName"].v,
+                          fr.f["symbolInfo"].f["location"].f["lineNumber"].v), ("899", "dm(check)", "18"))
+        self.assertIsNone(xcresult.call_frame(fail["stack"][0]).f["symbolInfo"])
+        xe = xcresult.expression(fail["expression"])
+        self.assertEqual((xe.t, xe.f["sourceCode"].v, [c.f["sourceCode"].v for c in xe.f["subexpressions"]],
+                          xe.f["subexpressions"][0].f["value"].f["description"].v), ("TestExpression", "Core.twice(1) == 3",
+                                                                                     ["Core.twice(1)", "3"], "2"))
 
 
 if __name__ == "__main__":
