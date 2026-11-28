@@ -5,13 +5,14 @@ from the framebuffer.bgra dump. x86Sim: GTK 4: each new frame becomes a Gdk.Memo
 window, checked on every tick of the display's frame clock (so up to the display's rate, ~60 fps). The Tk version
 spent ~200 ms redrawing each 590x1278 photo image (about 5 fps).
     cli/libexec/simview.py [framebuffer.bgra] [scale-divisor]   (default: 2; the window can be resized)
+    cli/libexec/simview.py --external-ring PATH --input-socket PATH   (a standalone Linux SFBR producer)
 Mouse: click/drag = touch; Ctrl+drag = two-finger pinch around the window centre (fingers mirrored through the
 centre); Shift+drag = two-finger pan (fingers 100 px apart at device scale, moving together). Keyboard: typed keys go
 to the simulator's hardware keyboard (host/simhid). F1 or Ctrl+H = home button, F2 = lock button, F3/F4 = volume
 up/down. Input goes through <device data>/simhid.sock (backboardd's SimulatorHID stand-in).
 Right of the screen, a column of the launcher's tools: Home, Lock (side button), volume, Siri, Save Screenshot (to
 Pictures), gesture help. The phone's logs are in the launcher (Logs)."""
-import os, threading, socket, struct, sys, time
+import argparse, os, threading, socket, struct, sys, time
 import gi
 # x86Sim: GTK's GPU renderers (vulkan, the default, and gl) upload the whole frame texture for every
 # frame, and on the NVIDIA driver ~75% of that CPU time is kernel time inside the driver's ioctls: 46% of a core at
@@ -27,13 +28,23 @@ import x86config  # noqa: E402
 import fbring
 
 here = os.path.dirname(os.path.abspath(__file__))
-src = sys.argv[1] if len(sys.argv) > 1 else os.path.join(x86config.data(), "framebuffer.bgra")
-div = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-sockpath = os.environ.get("SIMHID_SOCKET", os.path.join(os.path.dirname(src), "simhid.sock"))
+parser = argparse.ArgumentParser(description="Show an x86Sim or external SFBR framebuffer.")
+parser.add_argument("framebuffer", nargs="?")
+parser.add_argument("scale_divisor", type=int, nargs="?", default=2)
+parser.add_argument("--external-ring", metavar="PATH", help="follow the lifetime of this producer's ring file")
+parser.add_argument("--input-socket", metavar="PATH", help="send keyboard and pointer events to this simhid socket")
+args = parser.parse_args()
+if bool(args.external_ring) != bool(args.input_socket):
+    parser.error("--external-ring and --input-socket must be specified together")
+src = args.framebuffer or os.path.join(x86config.data(), "framebuffer.bgra")
+div = args.scale_divisor
+sockpath = args.input_socket or os.environ.get("SIMHID_SOCKET", os.path.join(os.path.dirname(src), "simhid.sock"))
 # Speed 22: an arm64 boot records its device in var/run-a64/device (boot-a64.sh); input follows the booted device
 
 
 def booted_device():
+    if args.external_ring:
+        return None
     try:
         return open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                                  "var/run-a64/device")).read().strip() or None
@@ -43,6 +54,8 @@ def booted_device():
 
 def phone_name():
     """The device's name (<device>/name; the device is the one whose data/ holds the input socket)."""
+    if args.external_ring:
+        return "External display"
     for d in (os.path.dirname(os.path.dirname(os.path.abspath(sockpath))), booted_device()):
         try:
             return open(os.path.join(d, "name")).read().strip() or "x86Sim"
@@ -53,6 +66,8 @@ def phone_name():
 
 def device_model():
     """Platforms 1: the device's model identifier (SIMULATOR_MODEL_IDENTIFIER of <device>/sim.env): Watch*, AppleTV*, ..."""
+    if args.external_ring:
+        return ""
     for d in (os.path.dirname(os.path.dirname(os.path.abspath(sockpath))), booted_device()):
         try:
             for line in open(os.path.join(d, "sim.env")):
@@ -76,6 +91,8 @@ STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(here)), "var/run-a64")
 
 def device_ring():
     """The booted device's frame ring (sim.env SIMFB_RING), else fbring's default: each device has its own."""
+    if args.external_ring:
+        return args.external_ring
     d = booted_device()
     if d and os.environ.get("SIMVIEW_FOLLOW", "1") != "0":
         try:
@@ -89,6 +106,8 @@ def device_ring():
 
 def sim_running():
     """A darlingserver is up (the sim's scope can outlive it: mtlvk stays for the next boot)."""
+    if args.external_ring:
+        return os.path.isfile(args.external_ring)
     for pid in os.listdir("/proc"):
         if pid.isdigit():
             try:
@@ -109,6 +128,9 @@ def boot_started():
 
 def frame_is_current(t):
     """A ring outlives its sim: only frames published by this boot of a running sim are the screen."""
+    if args.external_ring:
+        # An external producer owns its ring inode. It may keep one still frame up indefinitely.
+        return bool(ring.seq())
     return sim_running() and t >= boot_started() - 2
 
 
@@ -247,7 +269,7 @@ def on_activate(app):
         sw = pic.get_width()
         if sw and abs(sw - state.get("shape_w", 0)) > 1:
             state["shape_w"] = sw
-            rad = max(sw * 0.11, 4)
+            rad = 0 if args.external_ring else max(sw * 0.11, 4)
             rule = ".x86screen { border-radius: %dpx; } .x86bezel { border-radius: %dpx; }" % (rad, rad + BEZEL * 0.7)
             shape.load_from_string(rule) if hasattr(shape, "load_from_string") else shape.load_from_data(rule.encode())
         return GLib.SOURCE_CONTINUE
@@ -488,7 +510,7 @@ def on_activate(app):
                         state.pop("noframe", None)
                     else:
                         state.setdefault("noframe", time.monotonic())
-            else:
+            elif not args.external_ring:
                 st = os.stat(src)
                 # only a live dump: an old file (another device's, or a dead sim's) would pass for the screen
                 if st.st_mtime_ns != state["mtime"] and time.time() - st.st_mtime < 10:
@@ -526,4 +548,5 @@ def on_activate(app):
 
 app = Gtk.Application(application_id="org.x86sim.simview", flags=Gio.ApplicationFlags.NON_UNIQUE)
 app.connect("activate", on_activate)
-app.run([sys.argv[0]])
+if __name__ == "__main__":
+    app.run([sys.argv[0]])
