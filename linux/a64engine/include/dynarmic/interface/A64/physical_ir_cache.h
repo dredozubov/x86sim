@@ -35,6 +35,13 @@ public:
         return Lookup(key, out);
     }
     virtual void ObserveNativeReuse(const PhysicalIRKey&, NativeReuse) {}
+    // A nonzero generation names these exact bytes for this cache's lifetime.
+    virtual IRCacheSource LookupForEmission(const PhysicalIRKey& key, std::vector<std::uint8_t>& out,
+                                             NativeReuse& prior, std::uint64_t& generation) {
+        generation = 0;
+        return LookupWithReuse(key, out, prior);
+    }
+    virtual void ObserveReemission(const PhysicalIRKey&, std::uint64_t, NativeReuse) {}
 };
 
 }  // namespace Dynarmic::A64
