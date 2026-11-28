@@ -865,7 +865,13 @@ src, dst = sys.argv[1:3]
 ondemand = ["com.apple.usernoted", "com.apple.locationd", "com.apple.coreservices.launchservicesd", "com.apple.securityd",
             "com.apple.aslmanager", "com.apple.diskarbitrationd"]
 off = ["org.darlinghq.eventmonitor", "com.darlinghq.settingsd"]
+# launchd skips a job whose plist (or a folder above it) others can write, as on macOS, and the system bootstrap then
+# never started shellspawn: no phone booted where the user's umask is 002 (Ubuntu's default for login users).
+os.umask(0o022)
 os.makedirs(dst, exist_ok=True)
+for d in (os.path.dirname(os.path.dirname(dst)), os.path.dirname(dst), dst):
+    if os.stat(d).st_mode & 0o022:
+        os.chmod(d, 0o755)
 for name in ondemand + off:
     try:
         with open(os.path.join(src, name + ".plist"), "rb") as f:
@@ -881,6 +887,7 @@ for name in ondemand + off:
         continue
     with open(os.path.join(dst, name + ".plist"), "wb") as f:
         plistlib.dump(p, f)
+    os.chmod(os.path.join(dst, name + ".plist"), 0o644)  # a copy from an earlier boot keeps its mode
 PY
 else
 	rm -f "$DPREFIX"/System/Library/LaunchDaemons/*.plist
