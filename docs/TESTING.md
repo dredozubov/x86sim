@@ -64,9 +64,9 @@ x86sim test qa --xctestrun F.xctestrun --result-bundle R.xcresult   # also an Xc
   test-details`, `export attachments`, `xccov view --report` and the CI tools built on them read it as one Xcode made:
   results, failures with `file:line`, their call stacks and `#expect` values, skips, expected failures, attachments
   and screen recordings, code coverage down to functions and line ranges, Swift Testing's suites and each argument of
-  a parameterized test. Left out: build logs, Xcode's activity tree, the UI test runner's own frames (Xcode names
-  them by symbol alone; test-details does not show them). `tests/xcresult/check.py` compares bundles with Apple's on
-  the comparison Mac, test-details included.
+  a parameterized test, UI tests' activity trees (UI snapshots, waits, taps) with their attachments, and the frames
+  Xcode names in the UI test runner. Left out: build logs. `tests/xcresult/check.py` compares bundles with Apple's
+  on the comparison Mac: test-details, the legacy issue summaries, frames and activities.
   The `xcodebuild` stand-in writes the bundle at `-resultBundlePath` and `x86sim test`'s own output next to it
   (`<bundle>.x86sim/`).
 - **Where the bundles come from**, built on Linux:
@@ -94,7 +94,31 @@ x86sim test qa --xctestrun F.xctestrun --result-bundle R.xcresult   # also an Xc
   results on iPhone, iPad, Apple TV, Apple Watch and Vision Pro.
 
 `tests/apps/XCTestDemo/run.sh <phone>` runs the fixture (hosted unit tests, logic tests, UI tests, each with a
-deliberate failure) and checks every result against Apple's simulator.
+deliberate failure) and checks every result against Apple's simulator; `tests/apps/XCTestDemo/spm-multi/check.sh
+<phone>` does the same for a Swift package with four test targets (selections, skips, known issues, values).
+
+### Differences from Xcode
+
+What still differs from Xcode 27.2 on a Mac, measured with the fixtures above (none of it changes a test's result):
+
+- **No IDE session.** Xcode hands the test process its configuration over its IDE session; `x86sim test` writes the
+  `.xctestconfiguration` file `xcodebuild test-without-building` would read. A few fields differ from what Xcode sends
+  a UI test: `testsMustRunOnMainThread`, in-process parallelization, `userAttachmentLifetime` (Xcode 1, x86Sim 0) and
+  the session identifiers.
+- **Screen recordings** are made by x86Sim from the device's frame ring (`x86sim io recordVideo`, 30 fps), not by
+  Xcode; the runner is told so (`-DisableDiagnosticScreenshots YES`), and XCTest then records the UI snapshot Xcode's
+  run has instead of screenshots.
+- **Result bundles**: no build logs; the run destination's host record describes the Linux machine (the environment
+  reads `XCTestDemo`, not `XCTestDemo · Built with macOS …`); test start times are placed from the run's end and
+  attachment times come from their files. How often a UI test's "Waiting …" activity re-checks before it times out
+  depends on timing, so a slow host can record a different count than Apple's.
+- **Selection**: a bare `-only-testing Class` (no target) selects that class in every target; Xcode refuses it.
+- **Swift packages**: SwiftPM builds one `<Package>PackageTests` bundle; `x86sim test --spm` relinks it once per test
+  target (as Xcode's bundles are). If that relink fails it runs the one bundle and says so; Swift Testing selections
+  and skips then match no test target (XCTest ones still work).
+- **Code coverage** comes from LLVM's tools (`llvm-profdata`, `llvm-cov`), not `xccov`'s own; the counts are the same.
+- **Darwin SDKs built before XCTRunner.app was kept** (and before the `-rpath=$ORIGIN` fix) can't build UI-test targets
+  or visionOS package tests: rebuild with `x86sim dev setup sdk --xip Xcode.xip`.
 
 ## Accessibility Inspector
 
