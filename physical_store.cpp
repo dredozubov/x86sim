@@ -132,7 +132,7 @@ class RecordStore final : public PhysicalIRCache {
     Statement insert;
     unsigned pending = 0;
     bool transaction = false;
-    std::atomic<uint64_t> memory_hits{0}, disk_hits{0};
+    std::atomic<uint64_t> memory_hits{0}, disk_hits{0}, native_replays{0};
     uint64_t lookups = 0, stores = 0, written = 0;
 
     void exec(const char* sql) {
@@ -238,9 +238,10 @@ public:
             std::fprintf(stderr, "a64engine cache save: %s\n", error.what());
         }
         commit();
-        std::fprintf(stderr, "a64engine memory_hits=%llu disk_hits=%llu lookups=%llu stores=%llu written=%llu\n",
+        std::fprintf(stderr, "a64engine memory_hits=%llu disk_hits=%llu lookups=%llu stores=%llu written=%llu native_replays=%llu\n",
             (unsigned long long)memory_hits.load(), (unsigned long long)disk_hits.load(),
-            (unsigned long long)lookups, (unsigned long long)stores, (unsigned long long)written);
+            (unsigned long long)lookups, (unsigned long long)stores, (unsigned long long)written,
+            (unsigned long long)native_replays.load());
     }
     IRCacheSource Lookup(const PhysicalIRKey& key, Bytes& record) override {
         std::lock_guard lock(mutex);
@@ -259,6 +260,7 @@ public:
         if (source == IRCacheSource::Disk) ++disk_hits;
         if (source == IRCacheSource::Memory) ++memory_hits;
     }
+    void NativeReplays(uint64_t hits) override { native_replays += hits; }
     void InvalidatePage(uint64_t pa) override {
         std::lock_guard lock(mutex);
         const uint64_t page = pa & ~uint64_t{4095};
