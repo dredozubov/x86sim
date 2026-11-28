@@ -17,7 +17,7 @@ recording; the watchOS full run) and spm-multi's full run (spmall: tests/apps/XC
 known issues and expected failures; Apple's ~/x86sim-spm-multi/apple-all.xcresult on the Mac, xcodebuild test of the
 same package). The Mac is only used to run Apple's xcresulttool; nothing comes back into the tree.
 """
-import base64, hashlib, json, os, plistlib, shlex, subprocess, sys, tempfile
+import base64, hashlib, json, os, plistlib, re, shlex, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -293,7 +293,8 @@ def walk(n):
         if n.get("_type", {}).get("_name") == "ActionTestMetadata":
             s = get(n["summaryRef"]["id"]["_value"])
             print(json.dumps({"url": n["identifierURL"]["_value"],
-                              "issues": {k: plain(s[k]) for k in ("failureSummaries", "expectedFailures") if k in s}}))
+                              "issues": {k: plain(s[k]) for k in ("failureSummaries", "expectedFailures", "activitySummaries")
+                                         if k in s}}))
             return
         for v in n.values(): walk(v)
     elif isinstance(n, list):
@@ -302,12 +303,37 @@ walk(runs)
 """
 
 
+VARYING = [(re.compile(r"\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(\.\d+)?"), "<date>"), (re.compile(r"\b(pid|with pid) \d+"), r"\1 <pid>"),
+           (re.compile(r"(Terminate \S+):\d+"), r"\1:<pid>"),
+           (re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"), "<uuid>"),
+           (re.compile(r"\d{4}-\d\d-\d\d at \d\d\.\d\d\.\d\d [AP]M"), "<date>")]
+
+
+def varying(s):
+    """a title / name without what differs between runs (dates, pids, uuids)"""
+    for r, w in VARYING:
+        s = r.sub(w, s)
+    return s
+
+
+def activity(a):
+    """an activity of the legacy graph as compared: title, type, its attachments (name, type, filename), the same for
+    its subactivities (dates, pids and uuids left out)"""
+    atts = a.get("attachments") if isinstance(a.get("attachments"), list) else []
+    subs = a.get("subactivities") if isinstance(a.get("subactivities"), list) else []
+    return {"title": varying(a.get("title") or ""), "type": a.get("activityType"),
+            "attachments": [(varying(x.get("name") or ""), x.get("uniformTypeIdentifier"), varying(x.get("filename") or ""))
+                            for x in atts],
+            "subactivities": [activity(c) for c in subs]}
+
+
 def legacy_issues(bundle):
     """{test URL (with ?args=): its issues in the legacy graph, without what is not compared (ids, dates, addresses,
-    an error's domain: Apple's names a type's runtime context; paths: file names), the call stack's frames without a
-    source location left out: Xcode keeps every address (their number is the stack's depth on each machine) and names
-    the UI test runner's frames by symbol alone (_XCTRunnerRunTests, main: x86Sim's runner calls the tests through
-    other frames), neither shown by test-details}"""
+    an error's domain: Apple's names a type's runtime context; paths: file names), the call stack's frames that are not
+    symbolicated left out (Xcode keeps every address: their number is the stack's depth on each machine); the named
+    ones are compared: located frames and the UI test runner's, named by symbol alone (_XCTRunnerRunTests, main); an
+    issue's attachments by name and type; the test's activities (activity(): XCTest's tree, a UI test's failure triage
+    "UI Snapshot" and debug descriptions where XCTest added them)}"""
     rc, out, err = ssh("python3 - %s" % shlex.quote(bundle), inp=LEGACY_ISSUES.encode())
     if rc:
         return None
@@ -315,9 +341,14 @@ def legacy_issues(bundle):
     def norm(x):
         if isinstance(x, dict):
             r = {k: (os.path.basename(v) if k in ("filePath", "fileName") else norm(v)) for k, v in x.items()
-                 if k not in ("uuid", "timestamp", "addressString", "associatedError", "attachments")}
+                 if k not in ("uuid", "timestamp", "addressString", "associatedError", "attachments", "activitySummaries")}
+            if "attachments" in x:
+                r["attachments"] = [(varying(a.get("name") or ""), a.get("uniformTypeIdentifier"))
+                                    for a in (x["attachments"] if isinstance(x["attachments"], list) else [])]
+            if "activitySummaries" in x:
+                r["activities"] = [activity(a) for a in (x["activitySummaries"] if isinstance(x["activitySummaries"], list) else [])]
             if isinstance(r.get("callStack"), list):
-                r["callStack"] = [f for f in r["callStack"] if (f.get("symbolInfo") or {}).get("location")]
+                r["callStack"] = [f for f in r["callStack"] if f.get("symbolInfo")]
             return r
         return [norm(v) for v in x] if isinstance(x, list) else x
     res = {}
@@ -330,13 +361,12 @@ def legacy_issues(bundle):
 def details_tree(d):
     """test-details without what is not compared (durations, devices, paths: file names): the test's identity and
     result, then its runs' nodes (issues with their "Results" expressions and "Source Code Reference" frames, skip
-    messages, arguments), Device / Test Plan Configuration levels left out (Apple's device is another), attachments too
-    (export attachments checks them; a UI test's failure here has XCTest's screenshot where Apple's 27.2 simulator
-    records a UI snapshot activity instead)."""
+    messages, arguments, attachments by name without dates), Device / Test Plan Configuration levels left out (Apple's
+    device is another)."""
     def norm(n):
         out = []
         if n.get("nodeType") == "Attachment":
-            return out
+            return [{"name": varying(n.get("name") or ""), "nodeType": "Attachment"}]
         if n.get("nodeType") in ("Device", "Test Plan Configuration"):
             for c in n.get("children", []):
                 out += norm(c)

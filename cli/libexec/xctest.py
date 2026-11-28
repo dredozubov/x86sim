@@ -19,14 +19,15 @@ for the simulator, then its logic bundle). XCTest's own frameworks are Xcode's, 
 $X86SIM_XCTEST_PLATFORMS, sdks/<Platform>.platform, or the xtool SDK from `x86sim dev setup` (an Xcode .xip).
 Results: per-test lines while it runs, a summary as xcodebuild prints it, results.json and junit.xml in the output dir,
 and the tests' XCTest attachments (screenshots, strings, data; libsimshim saves them) in attachments/<Class>.<test>/,
-listed per test in results.json (deleteOnSuccess ones of passed tests are dropped, as Xcode does); with --coverage,
+listed per test in results.json (deleteOnSuccess ones of passed tests are dropped, as Xcode does), each with the
+activity it was added in, and XCTest's activity tree per test ("activities", libsimshim's); with --coverage,
 code coverage in coverage/ (LLVM_PROFILE_FILE as Xcode sets it, llvm-profdata + llvm-cov for xccov's report);
 exit status 0 when no test failed (passed, skipped or an expected failure: XCTExpectFailure, withKnownIssue), 1
 when one failed, 2 when nothing could run.
 """
 import atexit, fcntl
 import glob, hashlib, tempfile
-import json, os, plistlib, re, shutil, signal, subprocess, sys, time, uuid
+import json, os, plistlib, re, shutil, signal, struct, subprocess, sys, time, uuid
 import xml.etree.ElementTree as ET
 from plistlib import UID
 
@@ -751,27 +752,41 @@ def st_issue_message(issue):
 
 
 def st_value(rv):
-    """A runtime value (Swift Testing's __Expression.Value) as Xcode keeps it (TestValue)."""
+    """A runtime value (Swift Testing's __Expression.Value) as Xcode keeps it (TestValue): with its "label" (a
+    struct's property, an optional's "some", a dictionary pair's "key" / "value") and "children" (an array's
+    elements, a dictionary's pairs, an optional's wrapped value, a struct's properties: Swift Testing's Mirror of it),
+    each the same, when Swift Testing has them."""
     if rv is None:
         return None
     ti = rv.get("typeInfo") or {}
-    return {"description": rv.get("description") or "", "debug": rv.get("debugDescription"),
-            "type": ti.get("unqualifiedName"), "full_type": ti.get("fullyQualifiedName"),
-            "is_collection": bool(rv.get("isCollection"))}
+    v = {"description": rv.get("description") or "", "debug": rv.get("debugDescription"),
+         "type": ti.get("unqualifiedName"), "full_type": ti.get("fullyQualifiedName"),
+         "is_collection": bool(rv.get("isCollection"))}
+    if rv.get("label") is not None:
+        v["label"] = rv["label"]
+    if rv.get("children") is not None:
+        v["children"] = [st_value(c) for c in rv["children"]]
+    return v
 
 
 def st_expression(issue):
     """A failed expectation's expression as Xcode keeps it (ActionTestFailureSummary.expression, TestExpression;
     test-details' "Results" node with a "<subexpression> : <value>" per subexpression): its source code, value and
-    subexpressions, each the same. None for any other issue."""
+    subexpressions, each the same (an expression without subexpressions of its own: its value's labelled children,
+    "x : 1" under "Point(...)"). None for any other issue."""
     kind = issue.get("kind") or {}
     e = ((kind.get("expectationFailed") or {}).get("expectation") or {}).get("evaluatedExpression")
     if not e:
         return None
 
     def conv(x):
-        return {"source": st_source(x), "value": st_value(x.get("runtimeValue")),
-                "subexpressions": [conv(c) for c in x.get("_subexpressions") or []]}
+        subs = x.get("_subexpressions") or []
+        if not subs:
+            # as Swift Testing's __Expression.subexpressions (Xcode's): without subexpressions of its own, one per
+            # child of its value that has a label (a struct's properties, an optional's "some"), named by it
+            subs = [{"kind": {"generic": {"_0": c["label"]}}, "runtimeValue": c}
+                    for c in (x.get("runtimeValue") or {}).get("children") or [] if c.get("label") is not None]
+        return {"source": st_source(x), "value": st_value(x.get("runtimeValue")), "subexpressions": [conv(c) for c in subs]}
     return conv(e)
 
 
@@ -960,6 +975,62 @@ def symbolize(binary, offsets):
     return out + [None] * (len(offsets) - len(out))
 
 
+def text_vmaddr(binary):
+    """The arm64 slice's __TEXT address (0x100000000 for an executable, 0 for a bundle / dylib): llvm-symbolizer takes
+    addresses, libsimswt's frames are offsets from the image's Mach-O header."""
+    try:
+        with open(binary, "rb") as f:
+            b = f.read(1 << 16)
+        base = 0
+        if b[:4] == b"\xca\xfe\xba\xbe":   # universal: the arm64 slice
+            n = struct.unpack(">I", b[4:8])[0]
+            for i in range(n):
+                cpu, _, off, _, _ = struct.unpack(">iiIII", b[8 + 20 * i:28 + 20 * i])
+                if cpu == 0x0100000c:
+                    base = off
+            with open(binary, "rb") as f:
+                f.seek(base)
+                b = f.read(1 << 16)
+        if b[:4] != b"\xcf\xfa\xed\xfe":
+            return 0
+        ncmds = struct.unpack("<I", b[16:20])[0]
+        p = 32
+        for _ in range(ncmds):
+            cmd, size = struct.unpack("<II", b[p:p + 8])
+            if cmd == 0x19 and b[p + 8:p + 24].rstrip(b"\0") == b"__TEXT":   # LC_SEGMENT_64
+                return struct.unpack("<Q", b[p + 24:p + 32])[0]
+            p += size
+    except (OSError, struct.error):
+        pass
+    return 0
+
+
+def symbol_names(binary, offsets):
+    """[function name | None] for offsets into an image without debug info, from its symbol table (llvm-symbolizer:
+    "_XCTRunnerRunTests", "main"), as Xcode names a frame of such an image it symbolicates (the UI test runner's).
+    None where the image has line information there (symbolize() decides) or no symbol covers it."""
+    tool = llvm_tool("llvm-symbolizer")
+    if not tool or not offsets:
+        return [None] * len(offsets)
+    base = text_vmaddr(binary)
+    try:
+        r = subprocess.run([tool, "--obj", binary, "--default-arch=arm64", "--output-style=JSON", "--functions=linkage"]
+                           + ["0x%x" % (base + o) for o in offsets], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return [None] * len(offsets)
+    out = []
+    for ln in r.stdout.splitlines():
+        try:
+            v = json.loads(ln)
+        except ValueError:
+            continue
+        for e in v if isinstance(v, list) else [v]:
+            ch = (e or {}).get("Symbol") or [{}]
+            out.append(ch[0].get("FunctionName") or None if not ch[0].get("FileName") else None)
+    out = out[:len(offsets)]
+    return out + [None] * (len(offsets) - len(out))
+
+
 def demangle(names):
     """{linkage name: Xcode's name for it} (swift-demangle --simplified: "closure #1 in Known.thrown()"); names it
     does not demangle (C, ObjC) stay as they are."""
@@ -990,41 +1061,70 @@ def absolute(f, products):
     return os.path.normpath(os.path.join(products, f)) if f and not os.path.isabs(f) and products else f
 
 
+def app_executable(app):
+    """The main executable of an .app (its Info.plist's CFBundleExecutable, else the bundle's name)"""
+    try:
+        with open(os.path.join(app, "Info.plist"), "rb") as f:
+            exe = plistlib.load(f).get("CFBundleExecutable")
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        exe = None
+    return os.path.join(app, exe or os.path.splitext(os.path.basename(app))[0])
+
+
 def call_stacks(stacks, products=None):
     """Issues' call stacks as Xcode keeps them (ActionTestFailureSummary.sourceCodeContext.callStack): per frame of
     libsimswt's ([image path, offset, address]), {"address"} (Xcode's addressString: the frame's address, one before
     it for a return address), and for a frame in the test bundle that symbolicates to a source line (source_frame())
     also "image" (the image's name), "symbol" (its function, swift-demangle --simplified) and "file", "line". stacks:
-    a list of frame lists, symbolicated together (one llvm-symbolizer run per image)."""
-    want = {}
+    a list of frame lists, symbolicated together (one llvm-symbolizer run per image).
+    The test host's executable (the app whose PlugIns/ holds the test bundle: a UI test's XCTRunner) is one of the
+    images Xcode has XCTest symbolicate too (XCTestConfiguration.symbolicationImageNames: the scheme's products,
+    by image name; XCTestDemo.debug.dylib or the xctest agent are not): a frame there with a source line is named as
+    a test bundle's, one in an image without debug info (XCTRunner: "_XCTRunnerRunTests", "main") by its symbol
+    alone, {"image", "symbol"} without file and line (symbol_names())."""
+    want, apps = {}, set()
+    for frames in stacks:
+        for fr in frames or []:
+            path = frame_parts(fr)[0]
+            if in_test_bundle(path) and "/PlugIns/" in path:
+                apps.add(path.rsplit("/PlugIns/", 1)[0])
+    hosts = {app_executable(a) for a in apps}
     for frames in stacks:
         for i, fr in enumerate(frames or []):
             path, off, _ = frame_parts(fr)
-            if in_test_bundle(path):
+            if in_test_bundle(path) or (path in hosts and os.path.isfile(path)):
                 want.setdefault(path, set()).add(off - (1 if i else 0))
-    syms = {}
+    syms, bare = {}, {}
     for path, offs in want.items():
         offs = sorted(offs)
         for o, s in zip(offs, symbolize(path, offs)):
             syms[(path, o)] = s
-    names = demangle(s[2] for s in syms.values() if s)
+        if path in hosts:
+            rest = [o for o in offs if not syms[(path, o)]]
+            for o, n in zip(rest, symbol_names(path, rest)):
+                bare[(path, o)] = n
+    names = demangle([s[2] for s in syms.values() if s] + [n for n in bare.values() if n])
     out = []
     for frames in stacks:
         st = []
         for i, fr in enumerate(frames or []):
             path, off, addr = frame_parts(fr)
             f = {"address": None if addr is None else addr - (1 if i and addr else 0)}
-            s = syms.get((path, off - (1 if i else 0))) if path else None
+            k = (path, off - (1 if i else 0))
+            s = syms.get(k) if path else None
             if s:
                 f.update(image=os.path.basename(path), symbol=names.get(s[2], s[2]) or "", file=absolute(s[0], products),
                          line=s[1])
+            elif path and bare.get(k):
+                f.update(image=os.path.basename(path), symbol=names.get(bare[k], bare[k]))
             st.append(f)
         out.append(st)
     return out
 
 
 def symbolicated(stack):
-    return any("symbol" in x for x in stack or [])
+    """a stack with a frame symbolicated to a source line (frames named by symbol alone do not count)"""
+    return any("file" in x for x in stack or [])
 
 
 def throw_location(frames, products=None):
@@ -1555,8 +1655,16 @@ class Runner:
                 env["XCTestConfigurationFilePath"] = self.write_config(name, cfg)
                 env["XCTestBundlePath"] = bundle
                 rel = os.path.relpath(outf, self.data)
+                args = list(t.get("CommandLineArguments", []))
+                if rec:
+                    # XCTest takes no diagnostic screenshots while a screen recording is on (XCUIAutomation's
+                    # XCUIDiagnosticScreenCapturePolicy.allowsScreenshot(withScreenRecordingActive:): only with the
+                    # screenshots capture format): Apple's failed UI test has its recording and a UI snapshot, no
+                    # screenshots. x86sim records the screen itself (Recorder), so XCTest's recording never starts;
+                    # its DisableDiagnosticScreenshots default (the same policy's screenshotsDisabled) does the same.
+                    args += ["-DisableDiagnosticScreenshots", "YES"]
                 r = self.simctl.check(self.simctl.request("launch", timeout=50, bundle=bid, env=env,
-                                                          args=t.get("CommandLineArguments", []), stdout=rel, stderr=rel,
+                                                          args=args, stdout=rel, stderr=rel,
                                                           terminate=True), "launch")
                 pid = r.get("pid")
                 alive = lambda: self.simctl.pidof(bid) is not None   # noqa: E731
@@ -1611,6 +1719,7 @@ class Runner:
             lines = open(os.path.join(raw, "index.jsonl")).read().splitlines()
         except OSError:
             lines = []
+        self.activities(raw, tests)
         used = set()
         for ln in lines:
             try:
@@ -1642,6 +1751,8 @@ class Runner:
             except OSError:
                 continue
             item = {"name": e.get("name"), "path": dst, "type": e.get("uti"), "from": e.get("from")}
+            if e.get("activity"):
+                item["activity"] = e["activity"]   # the uuid of its activity (its test's "activities")
             (t.setdefault("attachments", []) if t else loose).append(item)
         shutil.rmtree(raw, ignore_errors=True)
         try:
@@ -1649,6 +1760,37 @@ class Runner:
         except OSError:
             pass
         return loose
+
+    @staticmethod
+    def activities(raw, tests):
+        """XCTest's activity tree of each test (libsimshim's activities.jsonl: every activity when it finished), as
+        Xcode keeps it (ActionTestSummary.activitySummaries): a test's "activities", each {"uuid", "title", "type",
+        "start", "finish", "children"}, in the order they started; an attachment's "activity" names its own."""
+        try:
+            lines = open(os.path.join(raw, "activities.jsonl")).read().splitlines()
+        except OSError:
+            return
+        per = {}
+        for ln in lines:
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            m = re.match(r"-\[(\S+) (\S+)\]$", e.get("test") or "")
+            if not m or not e.get("uuid"):
+                continue
+            cls, tn = m.group(1).split(".")[-1], m.group(2)
+            t = next((x for x in tests if x["name"] == tn and x["class"].split(".")[-1] == cls), None)
+            if t is not None:
+                per.setdefault(id(t), (t, {}))[1][e["uuid"]] = {
+                    "uuid": e["uuid"], "parent": e.get("parent"), "title": e.get("title") or "", "type": e.get("type"),
+                    "start": e.get("start"), "finish": e.get("finish"), "children": []}
+        for t, nodes in per.values():
+            roots = []
+            for n in sorted(nodes.values(), key=lambda n: (n["start"] or 0, n["finish"] or 0)):
+                p = nodes.get(n.pop("parent"))
+                (p["children"] if p else roots).append(n)
+            t["activities"] = roots
 
     def run(self, root, targets):
         self.root = root

@@ -44,16 +44,29 @@ The bundle is Info.plist + Data/. Format facts (measured on bundles Xcode 27.2 w
   SourceCodeFrame {addressString: the address in decimal, one before it for a return address}; only frames in the
   test bundle that symbolicate to a source line have symbolInfo {imageName: the image's name, symbolName: swift-demangle
   --simplified ("closure #1 in Known.thrown()"), location}: macro expansions (#expect, @Test's thunks) and
-  compiler-generated code have none. test-details shows the frames with a location as "Source Code Reference"s; a
+  compiler-generated code have none. The UI test runner's frames (an image Xcode lists in symbolicationImageNames,
+  without debug info) have symbolInfo without a location: "_XCTRunnerRunTests", the runTestsInBackground: block,
+  "main"; test-details does not show them. test-details shows the frames with a location as "Source Code Reference"s; a
   known issue that was not recorded has no stack (test-details: one reference named "" at the issue's location).
 - A failed #expect / #require: ActionTestFailureSummary.expression = TestExpression {sourceCode, value: TestValue
-  {description, debugDescription, typeName, fullyQualifiedTypeName, isCollection}, subexpressions: the same, nested}
-  (test-details: "Results" with "<subexpression> : <value>", "_" for one whose value is its source). XCTest's
-  assertions have none.
+  {description, debugDescription, typeName, fullyQualifiedTypeName, isCollection, label, children: TestValue}: an
+  array's elements and a dictionary's (key: value) pairs (unlabelled, each pair's children labelled "key" / "value"),
+  an optional's "some", a struct's properties by name; subexpressions: the same, nested, and for an expression with
+  none of its own one per labelled child of its value (source = the label: "x", "y" under "Point(x: 1, y: 2)")}
+  (test-details: "Results" with "<subexpression> : <value>", "_" for one whose value is its source, a collection's
+  "<source> : 3 elements" with "0 : 1" ... under it). XCTest's assertions have none.
 - Line numbers: ActionTestFailureSummary.lineNumber is 1-based; the TestFailureIssueSummary's document URL
   (#StartingLineNumber=) is 0-based, one less.
 - The screen recording's attachment is named "kXCTAttachmentScreenRecording" (xcresulttool shows "Screen Recording
   <date>.mp4"); XCTest's automatic screenshots keep their kXCTAttachmentLegacyScreenImageData name.
+- A UI test's activities (results.json's test "activities", XCTest's tree from libsimshim): ActionTestActivitySummary
+  {title, activityType, uuid (XCTest's), start, finish, attachments, subactivities}, every activity XCTest ran
+  ("Start Test at ...", "Set Up", "Open ...", ..., "Tear Down"), each attachment in the activity it was added to
+  (inActivityIdentifier = its index there, filename "<name>_<index>_<activity uuid>.<ext>", the extension after a
+  "." in the name: "App UI hierarchy for com.x_0_<uuid>.y"; an element snapshot "Snapshot_<index>_<uuid>"), the
+  screen recording in "Start Test at". A failed UI test of Apple's has no failure screenshot while the screen is
+  recorded: its "Collecting debug information to assist test failure triage" activity holds "App UI hierarchy for
+  <bundle id>" (text) and kXCTAttachmentLegacySnapshot (xcresulttool: "UI Snapshot <date>").
 - The summary's environmentDescription is "<scheme> · Built with macOS <localComputerRecord.operatingSystemVersion>",
   "macOS" whatever the platform record says: the Linux host's record leaves that version empty (just "<scheme>").
 - Code coverage (CodeCoverageInfo): reportRef = an NSKeyedArchiver XCTHCodeCoverage (buildableCoverageObjects:
@@ -71,8 +84,8 @@ The bundle is Info.plist + Data/. Format facts (measured on bundles Xcode 27.2 w
 
 Left out, as x86Sim has no such thing: the build log and build result's log, the Mac's machine record (the local
 computer record describes this Linux host), crash/diagnostic files other than the targets' logs (Diagnostics:
-<Target>/StandardOutputAndStandardError.txt), and activities other than the attachments' (XCTest's activity tree
-is not in x86sim test's output).
+<Target>/StandardOutputAndStandardError.txt); without XCTest's activity tree (a results.json without "activities")
+each attachment gets an activity of its own.
 """
 import base64, datetime, hashlib, json, os, platform, plistlib, re, shutil, struct, subprocess, sys, time, uuid
 import urllib.parse
@@ -625,7 +638,8 @@ def test_value(v):
         return None
     return O("TestValue", description=S(v.get("description") or ""), debugDescription=S(v.get("debug")),
              typeName=S(v.get("type")), fullyQualifiedTypeName=S(v.get("full_type")),
-             isCollection=B(bool(v.get("is_collection"))))
+             isCollection=B(bool(v.get("is_collection"))), label=S(v.get("label")),
+             children=None if v.get("children") is None else [test_value(c) for c in v["children"]])
 
 
 def expression(x):
@@ -653,8 +667,11 @@ class Writer:
     def url(self, *parts):
         return "test://com.apple.xcode/" + "/".join(url_part(p) for p in (self.project,) + parts)
 
-    def attachment(self, a, start, end, lifetime):
-        """(ActionTestAttachment, its time): the file's mtime (when the test added it), kept inside the test's run."""
+    def attachment(self, a, start, end, lifetime, slot=None):
+        """(ActionTestAttachment, its time): the file's mtime (when the test added it), kept inside the test's run.
+        slot: (its index in its activity, the activity's uuid), for its inActivityIdentifier and filename as Xcode
+        writes them ("<name>_<index>_<activity uuid>.<ext>", the extension the name's own after a "." in it, an element
+        snapshot's "Snapshot_<index>_<activity uuid>")."""
         path = a.get("path")
         if not path or not os.path.isfile(path):
             return None
@@ -676,9 +693,17 @@ class Writer:
                 when = end
         u = uid("attachment", path)
         ext = os.path.splitext(path)[1]
+        idx, au = slot or (0, u)
+        if a.get("type") == "com.apple.dt.xctest.element-snapshot":
+            fn = "Snapshot_%d_%s" % (idx, au)
+        elif slot and "." in name:
+            stem, _, sfx = name.rpartition(".")
+            fn = "%s_%d_%s.%s" % (stem, idx, au, sfx)
+        else:
+            fn = "%s_%d_%s%s" % (name, idx, au, ext)
         return O("ActionTestAttachment", uniformTypeIdentifier=S(a.get("type") or "public.data"), name=S(name),
-                 uuid=S(u), timestamp=T(when), userInfo=info, lifetime=S(lifetime), inActivityIdentifier=I(0),
-                 filename=S("%s_0_%s%s" % (name, u, ext)), payloadRef=Ref(oid), payloadSize=I(size)), when
+                 uuid=S(u), timestamp=T(when), userInfo=info, lifetime=S(lifetime), inActivityIdentifier=I(idx),
+                 filename=S(fn), payloadRef=Ref(oid), payloadSize=I(size)), when
 
     @staticmethod
     def activity(a, att, when, start, key):
@@ -693,6 +718,23 @@ class Writer:
         return O("ActionTestActivitySummary", title=S(title), activityType=S("com.apple.dt.xctest.activity-type." + kind),
                  uuid=S(uid("activity", *key)), start=T(when), finish=T(when), attachments=[att], subactivities=[],
                  failureSummaryIDs=[], expectedFailureIDs=[], warningSummaryIDs=[])
+
+    def activity_tree(self, nodes, atts, start, end, lifetime):
+        """XCTest's activities (results.json's test "activities": {"uuid", "title", "type", "start", "finish",
+        "children"}) as Xcode keeps them, each with the attachments added to it (atts: {activity uuid: [attachment]})"""
+        out = []
+        for n in nodes:
+            mine = []
+            for i, a in enumerate(atts.get(n["uuid"]) or []):
+                r = self.attachment(a, start, end, lifetime, (i, n["uuid"]))
+                if r:
+                    mine.append(r[0])
+            out.append(O("ActionTestActivitySummary", title=S(n.get("title") or ""),
+                         activityType=S(n.get("type") or "com.apple.dt.xctest.activity-type.internal"),
+                         uuid=S(n["uuid"]), start=T(n.get("start")), finish=T(n.get("finish") or n.get("start")),
+                         attachments=mine, subactivities=self.activity_tree(n.get("children") or [], atts, start, end, lifetime),
+                         failureSummaryIDs=[], expectedFailureIDs=[], warningSummaryIDs=[]))
+        return out
 
     def test_summary(self, target, t, start, skips, arg=None):
         """A test's ActionTestMetadata (+ its summary). Swift Testing's (x86sim test's "swift_testing" entries) are
@@ -715,7 +757,24 @@ class Writer:
                   "expected_failure": "Expected Failure"}.get(t.get("result"), "Failure")
         lifetime = "deleteOnSuccess" if status == "Failure" else "keepAlways"
         fails, issue_atts, acts = [], [], []
-        for i, a in enumerate(t.get("attachments") or []):
+        # XCTest's activity tree (libsimshim's): each attachment in its activity, the screen recording (x86sim's) in
+        # "Start Test at ...", as XCTest's own recording is; the others as before
+        tree = [] if arg else t.get("activities") or []
+        uuids, placed, stack = set(), {}, list(tree)
+        while stack:
+            n = stack.pop()
+            uuids.add(n["uuid"])
+            stack += n.get("children") or []
+        first = tree[0]["uuid"] if tree and tree[0].get("title", "").startswith("Start Test at ") else None
+        rest = []
+        for a in t.get("attachments") or []:
+            u = a.get("activity") if a.get("activity") in uuids else \
+                first if a.get("from") == "x86sim" and (a.get("type") or "").startswith("public.mpeg-4") else None
+            if u:
+                placed.setdefault(u, []).append(a)
+            else:
+                rest.append(a)
+        for i, a in enumerate(rest):
             r = self.attachment(a, start, start + dur, lifetime)
             if not r:
                 continue
@@ -724,6 +783,9 @@ class Writer:
                 issue_atts.append(att)   # the failure's own (its screenshot), shown with the failure
                 continue
             acts.append((when, self.activity(a, att, when, start, (target["name"], key, i))))
+        if tree:
+            for n, o in zip(tree, self.activity_tree(tree, placed, start, start + dur, lifetime)):
+                acts.append((n.get("start") or start, o))
         acts = [x for _, x in sorted(acts, key=lambda p: p[0])]
         def failure(f, u, atts, top):
             msg = f.get("message") or ""

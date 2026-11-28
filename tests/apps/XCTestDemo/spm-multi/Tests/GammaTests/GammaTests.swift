@@ -23,3 +23,14 @@ import Core
         @Test(.disabled("inner off")) func off() {}
     }
 }
+
+// failing #expect on structured values (fail on purpose): Xcode keeps a value's label and children (an array's
+// elements, a dictionary's pairs, an optional's wrapped value, a struct's stored properties)
+struct Point: Equatable { var x: Int; var y: Int }
+
+@Suite struct Values {
+    @Test func array() { #expect([1, 2, 3] == [Core.twice(1), 2, 4]) }
+    @Test func dictionary() { #expect(["b": Core.twice(1)] == ["b": 3]) }   // one key: a dictionary's order varies by process
+    @Test func optional() { let v: Int? = Core.twice(1); #expect(v == nil) }
+    @Test func structure() { #expect(Point(x: 1, y: Core.twice(1)) == Point(x: 1, y: 3)) }
+}

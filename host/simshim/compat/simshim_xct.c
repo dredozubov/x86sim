@@ -4,7 +4,11 @@
 // X86SIM_XCTEST_ATTACHMENTS=<dir> (set by cli/libexec/xctest.py for the test process), each attachment's payload is
 // written to <dir>/<n>.<ext> as it is added, and one JSON line to <dir>/index.jsonl: the test it was added in, its
 // name, type and lifetime (0 keepAlways, 1 deleteOnSuccess), where it came from. xctest.py sorts them per test, drops
-// the deleteOnSuccess ones of passed tests and lists the rest in results.json.
+// the deleteOnSuccess ones of passed tests and lists the rest in results.json. An activity's attachment also names
+// its activity ("activity": the XCActivityRecord's uuid), and every activity XCTest finishes is one line of
+// <dir>/activities.jsonl: {"test", "uuid", "parent" (its parent activity's uuid, null at the top), "title", "type",
+// "start", "finish" (Unix times)}: XCTest's activity tree (Xcode's ActionTestActivitySummary), which on a Mac goes to
+// the IDE session.
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
@@ -21,10 +25,12 @@
 static const char* xct_dir;
 static pthread_mutex_t xct_mu = PTHREAD_MUTEX_INITIALIZER;
 static char xct_test[512];   // -[Class test] of the test being invoked (main thread), "" between tests
+static char xct_case[512];   // the same while it is performed (XCTest's "Start Test at" activity comes before invokeTest)
 static unsigned xct_seq;
-static const void* xct_seen[256];   // attachments written already (one can pass two of the hooked methods)
-static unsigned xct_seen_n;
-static IMP xct_invoke_orig, xct_act_orig, xct_issue_orig, xct_case_orig;
+// attachments written already (one can pass two of the hooked methods): marked on the attachment itself, as a freed
+// one's address is soon another's (a list of addresses dropped the failure triage's "App UI hierarchy" text)
+static char xct_seen_key;
+static IMP xct_invoke_orig, xct_act_orig, xct_issue_orig, xct_case_orig, xct_perform_orig, xct_finish_orig;
 
 static const char* xct_cstr(id s)
 {
@@ -58,18 +64,23 @@ static void xct_json_str(FILE* f, const char* s)
 	fputc('"', f);
 }
 
-static void xct_write(id att, const char* from)
+static const char* xct_uuid(id o, const char* sel)
+{
+	id u = o ? ((id (*)(id, SEL)) objc_msgSend)(o, sel_registerName(sel)) : NULL;
+	return u ? xct_cstr(((id (*)(id, SEL)) objc_msgSend)(u, sel_registerName("UUIDString"))) : NULL;
+}
+
+static void xct_write(id att, const char* from, id activity)
 {
 	if (getenv("X86SIM_XCTEST_ATT_DEBUG")) { char b[160]; int k = snprintf(b, sizeof b, "simshim: attachment %p from %s\n", (void*) att, from); write(2, b, k); }
 	if (!att || !xct_dir)
 		return;
 	pthread_mutex_lock(&xct_mu);
-	for (unsigned i = 0; i < xct_seen_n && i < 256; i++)
-		if (xct_seen[i] == (const void*) att) { pthread_mutex_unlock(&xct_mu); return; }
-	xct_seen[xct_seen_n++ % 256] = (const void*) att;
+	if (objc_getAssociatedObject(att, &xct_seen_key)) { pthread_mutex_unlock(&xct_mu); return; }
+	objc_setAssociatedObject(att, &xct_seen_key, (id) objc_getClass("NSObject"), OBJC_ASSOCIATION_ASSIGN);
 	unsigned n = ++xct_seq;
 	char test[512];
-	snprintf(test, sizeof test, "%s", xct_test);
+	snprintf(test, sizeof test, "%s", xct_test[0] ? xct_test : xct_case);
 	pthread_mutex_unlock(&xct_mu);
 
 	id payload = ((id (*)(id, SEL)) objc_msgSend)(att, sel_registerName("payload"));
@@ -102,6 +113,8 @@ static void xct_write(id att, const char* from)
 		fputs("{\"test\":", f); xct_json_str(f, test);
 		fputs(",\"name\":", f); xct_json_str(f, name);
 		fputs(",\"uti\":", f); xct_json_str(f, uti);
+		const char* au = xct_uuid(activity, "uuid");
+		if (au) { fputs(",\"activity\":", f); xct_json_str(f, au); }
 		fprintf(f, ",\"lifetime\":%ld,\"from\":\"%s\",\"seq\":%u,\"file\":", lifetime, from, n);
 		if (ok) xct_json_str(f, file); else fputs("null", f);
 		fputs("}\n", f);
@@ -121,9 +134,53 @@ static void xct_invoke(id self, SEL sel)
 	xct_test[0] = 0;
 	pthread_mutex_unlock(&xct_mu);
 }
-static void xct_act_add(id self, SEL sel, id att) { xct_write(att, "activity"); ((void (*)(id, SEL, id)) xct_act_orig)(self, sel, att); }
-static void xct_issue_add(id self, SEL sel, id att) { xct_write(att, "issue"); ((void (*)(id, SEL, id)) xct_issue_orig)(self, sel, att); }
-static void xct_case_add(id self, SEL sel, id att) { xct_write(att, "test"); ((void (*)(id, SEL, id)) xct_case_orig)(self, sel, att); }
+static void xct_perform(id self, SEL sel, id run)
+{
+	const char* nm = xct_cstr(((id (*)(id, SEL)) objc_msgSend)(self, sel_registerName("name")));
+	pthread_mutex_lock(&xct_mu);
+	snprintf(xct_case, sizeof xct_case, "%s", nm ? nm : "");
+	pthread_mutex_unlock(&xct_mu);
+	((void (*)(id, SEL, id)) xct_perform_orig)(self, sel, run);
+	pthread_mutex_lock(&xct_mu);
+	xct_case[0] = 0;
+	pthread_mutex_unlock(&xct_mu);
+}
+
+static double xct_time(id date)
+{
+	return date ? ((double (*)(id, SEL)) objc_msgSend)(date, sel_registerName("timeIntervalSince1970")) : 0;
+}
+
+// -[XCActivityRecord setFinish:]: the activity ended (XCTActivityRecordStack's _didFinishActivity:...)
+static void xct_finish(id self, SEL sel, id date)
+{
+	((void (*)(id, SEL, id)) xct_finish_orig)(self, sel, date);
+	if (!date || !xct_dir)
+		return;
+	const char* title = xct_cstr(((id (*)(id, SEL)) objc_msgSend)(self, sel_registerName("title")));
+	const char* type = xct_cstr(((id (*)(id, SEL)) objc_msgSend)(self, sel_registerName("activityType")));
+	const char* uuid = xct_uuid(self, "uuid");
+	const char* parent = xct_uuid(self, "parentID");
+	double start = xct_time(((id (*)(id, SEL)) objc_msgSend)(self, sel_registerName("start"))), finish = xct_time(date);
+	char p[1200];
+	snprintf(p, sizeof p, "%s/activities.jsonl", xct_dir);
+	pthread_mutex_lock(&xct_mu);
+	FILE* f = fopen(p, "a");
+	if (f) {
+		fputs("{\"test\":", f); xct_json_str(f, xct_test[0] ? xct_test : xct_case);
+		fputs(",\"uuid\":", f); if (uuid) xct_json_str(f, uuid); else fputs("null", f);
+		fputs(",\"parent\":", f); if (parent) xct_json_str(f, parent); else fputs("null", f);
+		fputs(",\"title\":", f); xct_json_str(f, title);
+		fputs(",\"type\":", f); xct_json_str(f, type);
+		fprintf(f, ",\"start\":%.6f,\"finish\":%.6f}\n", start, finish);
+		fclose(f);
+	}
+	pthread_mutex_unlock(&xct_mu);
+}
+
+static void xct_act_add(id self, SEL sel, id att) { xct_write(att, "activity", self); ((void (*)(id, SEL, id)) xct_act_orig)(self, sel, att); }
+static void xct_issue_add(id self, SEL sel, id att) { xct_write(att, "issue", NULL); ((void (*)(id, SEL, id)) xct_issue_orig)(self, sel, att); }
+static void xct_case_add(id self, SEL sel, id att) { xct_write(att, "test", NULL); ((void (*)(id, SEL, id)) xct_case_orig)(self, sel, att); }
 
 static IMP xct_hook(const char* cls, const char* sel, IMP imp)
 {
@@ -138,6 +195,8 @@ static void xct_added(const struct mach_header* mh, intptr_t slide)
 	if (!xct_act_orig) xct_act_orig = xct_hook("XCActivityRecord", "addAttachment:", (IMP) xct_act_add);
 	if (!xct_issue_orig) xct_issue_orig = xct_hook("XCTMutableIssue", "addAttachment:", (IMP) xct_issue_add);
 	if (!xct_case_orig) xct_case_orig = xct_hook("XCTestCase", "addAttachment:", (IMP) xct_case_add);
+	if (!xct_perform_orig) xct_perform_orig = xct_hook("XCTestCase", "performTest:", (IMP) xct_perform);
+	if (!xct_finish_orig) xct_finish_orig = xct_hook("XCActivityRecord", "setFinish:", (IMP) xct_finish);
 	static bool said;
 	if (!said && xct_invoke_orig) {
 		said = true;

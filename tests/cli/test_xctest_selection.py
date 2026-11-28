@@ -39,6 +39,19 @@ Rows (expected values are Xcode's, copied from the captured configurations):
      return address); located XCTest failures get their stack by message + location; an XCTExpectFailure matched by
      a thrown error (no location in the console line: "Expected failure in -[C t]: ...") -> expected_failure at the
      throw; a failed #expect's expression (source, value, subexpressions) -> results.json -> TestExpression
+ 16  a UI test's runner frames as Xcode 27.2 names them (XCTestDemo's testDeliberateUIFailure on Apple's simulator,
+     2026-11-28): the test host's executable (the app whose PlugIns/ has the test bundle) is symbolicated too
+     (XCTestConfiguration.symbolicationImageNames), a frame there without debug info by its symbol alone
+     (_XCTRunnerRunTests, main: image + symbol, no file); other images (XCTestCore, the host's debug dylib) not;
+     symbol-only frames do not make a stack "symbolicated"
+ 17  a UI test's activities and attachments as Xcode 27.2 keeps them (the same test): XCTest's activity tree
+     (libsimshim's activities.jsonl: parent uuid, start order) on the test, each attachment in its own activity
+     (index + activity uuid in its filename, "App UI hierarchy for com.x_0_<uuid>.y", "Snapshot_1_<uuid>"), the screen
+     recording in "Start Test at"; the runner told not to take diagnostic screenshots while x86sim records
+ 18  a failed #expect's structured values as Xcode 27.2 keeps them (spm-multi's GammaTests Values on Apple's
+     simulator, 2026-11-28): TestValue label + children (an array's elements, a dictionary's key/value pairs, an
+     optional's "some", a struct's properties), and for an expression without subexpressions of its own one per
+     labelled child of its value ("x", "y" under Point(...), "some" under v; none under an array or dictionary)
 Mutants (each must fail its row; checked by hand when the test was written):
   M1  both XCTest method forms in a run list (the old double run)          -> rows 2, 3, 5
   M2  a=[] on the class form (made Swift Testing run every test)            -> row 1
@@ -52,6 +65,9 @@ Mutants (each must fail its row; checked by hand when the test was written):
   M10 a known issue's test left "passed" (the old result) / its comment dropped -> row 14
   M11 the innermost inlined entry kept (macro buffer lines) / the return address itself / R_XFAIL needing a
       "<file>:<line>: " -> row 15
+  M12 the host's frames left unnamed (the old stack) / every image named by symbol -> row 16
+  M13 an attachment outside its activity (the old one activity per attachment) / no tree -> row 17
+  M14 a value's children dropped / subexpressions synthesized for unlabelled children too -> row 18
 """
 import importlib.util
 import json
@@ -501,6 +517,151 @@ class CallStacks(unittest.TestCase):
         self.assertEqual((xe.t, xe.f["sourceCode"].v, [c.f["sourceCode"].v for c in xe.f["subexpressions"]],
                           xe.f["subexpressions"][0].f["value"].f["description"].v), ("TestExpression", "Core.twice(1) == 3",
                                                                                      ["Core.twice(1)", "3"], "2"))
+
+
+class RunnerFrames(unittest.TestCase):
+    def test_row16_runner_frames(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = os.path.join(d, "UITests-Runner.app")
+            b = os.path.join(app, "PlugIns/UITests.xctest/UITests")
+            os.makedirs(os.path.dirname(b))
+            for f in (b, os.path.join(app, "UITests-Runner"), os.path.join(app, "Other.debug.dylib"), os.path.join(d, "XCTestCore")):
+                open(f, "w").close()
+            import plistlib
+            with open(os.path.join(app, "Info.plist"), "wb") as f:
+                plistlib.dump({"CFBundleExecutable": "UITests-Runner"}, f)
+            asked = []
+            old = X.symbolize, X.demangle, X.symbol_names
+            X.symbolize = lambda binary, offs: [("/p/U.swift", 49, "$sU") if os.path.basename(binary) == "UITests" else None for o in offs]
+            X.demangle = lambda names: {n: "dm(%s)" % n for n in names if n}
+
+            def names(binary, offs):
+                asked.append((os.path.basename(binary), list(offs)))
+                return [{0x1df1: "_XCTRunnerRunTests", 0x2115: "main"}.get(o) for o in offs]
+            X.symbol_names = names
+            self.addCleanup(lambda: (setattr(X, "symbolize", old[0]), setattr(X, "demangle", old[1]), setattr(X, "symbol_names", old[2])))
+            frames = [[X.dv(os.path.join(d, "XCTestCore")), 5, 105], [X.dv(b), 0x10, 0x110], [X.dv(os.path.join(app, "Other.debug.dylib")), 7, 207],
+                      [X.dv(os.path.join(app, "UITests-Runner")), 0x1df2, 0x101df2], [X.dv(os.path.join(app, "UITests-Runner")), 0x2116, 0x102116]]
+            st = X.call_stacks([frames])[0]
+        self.assertEqual([(f.get("image"), f.get("symbol"), f.get("line")) for f in st],
+                         [(None, None, None), ("UITests", "dm($sU)", 49), (None, None, None),
+                          ("UITests-Runner", "dm(_XCTRunnerRunTests)", None), ("UITests-Runner", "dm(main)", None)])
+        self.assertNotIn("file", st[3])
+        self.assertEqual(asked, [("UITests-Runner", [0x1df1, 0x2115])])
+        self.assertFalse(X.symbolicated(st[3:]))
+        self.assertTrue(X.symbolicated(st))
+        import xcresult
+        fr = xcresult.call_frame(st[3])
+        self.assertEqual((fr.f["symbolInfo"].f["imageName"].v, fr.f["symbolInfo"].f["symbolName"].v, fr.f["symbolInfo"].f["location"]),
+                         ("UITests-Runner", "dm(_XCTRunnerRunTests)", None))
+
+
+class UIActivities(unittest.TestCase):
+    def test_row17_activity_tree(self):
+        U = ["%08X-0000-0000-0000-000000000000" % i for i in range(6)]
+        with tempfile.TemporaryDirectory() as d:
+            raw = os.path.join(d, "attachments", ".raw-UI")
+            os.makedirs(raw)
+            t = {"class": "UITests.UITests", "name": "testFail", "identifier": "UITests/testFail", "result": "failed",
+                 "duration": 1.0, "failures": [{"file": "/p/U.swift", "line": 49, "message": "XCTAssertTrue failed"}]}
+            acts = [("Checking existence", U[2], U[1], 10.2), ("Waiting 2.0s", U[1], None, 10.1), ("Start Test at 2026-11-28 01:00:00.000", U[0], None, 10.0),
+                    ("Requesting snapshot", U[4], U[3], 10.5), ("Collecting debug information to assist test failure triage", U[3], None, 10.4)]
+            with open(os.path.join(raw, "activities.jsonl"), "w") as f:
+                for title, u, p, st in acts:
+                    f.write(json.dumps({"test": "-[UITests.UITests testFail]", "uuid": u, "parent": p, "title": title,
+                                        "type": "com.apple.dt.xctest.activity-type.internal", "start": st, "finish": st + 0.05}) + "\n")
+            atts = [("Debug description", "public.plain-text", U[1], "txt"), ("App UI hierarchy for com.x.y", "public.plain-text", U[3], "txt"),
+                    ("kXCTAttachmentLegacySnapshot", "com.apple.dt.xctest.element-snapshot", U[3], "bin")]
+            with open(os.path.join(raw, "index.jsonl"), "w") as f:
+                for i, (n, uti, au, ext) in enumerate(atts):
+                    open(os.path.join(raw, "%d.%s" % (i, ext)), "w").write(n)
+                    f.write(json.dumps({"test": "-[UITests.UITests testFail]", "name": n, "uti": uti, "lifetime": 1,
+                                        "from": "activity", "activity": au, "seq": i, "file": "%d.%s" % (i, ext)}) + "\n")
+            X.Runner.attachments(X.Runner.__new__(X.Runner), raw, [t])
+            tree = t["activities"]
+            self.assertEqual([(n["title"][:12], [c["title"] for c in n["children"]]) for n in tree],
+                             [("Start Test a", []), ("Waiting 2.0s", ["Checking existence"]),
+                              ("Collecting d", ["Requesting snapshot"])])
+            self.assertEqual([a.get("activity") for a in t["attachments"]], [U[1], U[3], U[3]])
+        self.assertIn('args += ["-DisableDiagnosticScreenshots", "YES"]', open(X.__file__).read())
+
+    def test_row17_writer(self):
+        import xcresult
+        with tempfile.TemporaryDirectory() as d:
+            files = {}
+            for n in ("dd", "ui", "snap", "rec"):
+                files[n] = os.path.join(d, n)
+                open(files[n], "w").write(n)
+            U = ["A%07d-0000-0000-0000-000000000000" % i for i in range(4)]
+            t = {"class": "UITests.UITests", "name": "testFail", "identifier": "UITests/testFail", "result": "failed", "duration": 1.0,
+                 "failures": [{"file": "/p/U.swift", "line": 49, "message": "XCTAssertTrue failed"}],
+                 "activities": [{"uuid": U[0], "title": "Start Test at x", "type": "t", "start": 10.0, "finish": 10.1, "children": []},
+                                {"uuid": U[1], "title": "Waiting", "type": "t", "start": 10.2, "finish": 10.5, "children": [
+                                    {"uuid": U[2], "title": "Checking", "type": "t", "start": 10.3, "finish": 10.4, "children": []}]},
+                                {"uuid": U[3], "title": "Collecting", "type": "t", "start": 10.6, "finish": 10.7, "children": []}],
+                 "attachments": [{"name": "Debug description", "path": files["dd"] + ".txt", "type": "public.plain-text", "from": "activity", "activity": U[2]},
+                                 {"name": "App UI hierarchy for com.x.y", "path": files["ui"] + ".txt", "type": "public.plain-text", "from": "activity", "activity": U[3]},
+                                 {"name": "kXCTAttachmentLegacySnapshot", "path": files["snap"] + ".bin", "type": "com.apple.dt.xctest.element-snapshot", "from": "activity", "activity": U[3]},
+                                 {"name": "Screen Recording", "path": files["rec"] + ".mp4", "type": "public.mpeg-4", "from": "x86sim"}]}
+            for a in t["attachments"]:
+                os.rename(files[os.path.splitext(os.path.basename(a["path"]))[0]], a["path"])
+            w = xcresult.Writer.__new__(xcresult.Writer)
+            w.st, w.project, w.issues = xcresult.Store(os.path.join(d, "b.xcresult")), "P", []
+            objs = []
+            put = w.st.obj
+            w.st.obj = lambda o: objs.append(o) or put(o)
+            w.test_summary({"name": "UITests"}, t, 10.0, {})
+        summ = next(o for o in objs if o.t == "ActionTestSummary")
+
+        def tree(acts):
+            return [(a.f["title"].v, a.f["uuid"].v, [(x.f["name"].v, x.f["inActivityIdentifier"].v, x.f["filename"].v) for x in a.f["attachments"]],
+                     tree(a.f["subactivities"])) for a in acts]
+        self.assertEqual(tree(summ.f["activitySummaries"]), [
+            ("Start Test at x", U[0], [("kXCTAttachmentScreenRecording", "0", "kXCTAttachmentScreenRecording_0_%s.mp4" % U[0])], []),
+            ("Waiting", U[1], [], [("Checking", U[2], [("Debug description", "0", "Debug description_0_%s.txt" % U[2])], [])]),
+            ("Collecting", U[3], [("App UI hierarchy for com.x.y", "0", "App UI hierarchy for com.x_0_%s.y" % U[3]),
+                                  ("kXCTAttachmentLegacySnapshot", "1", "Snapshot_1_%s" % U[3])], [])])
+        self.assertEqual(summ.f["failureSummaries"][0].f["attachments"], [])
+
+
+class StructuredValues(unittest.TestCase):
+    def test_row18_children(self):
+        def v(desc, t, label=None, children=None, coll=False):
+            r = {"description": desc, "debugDescription": desc, "isCollection": coll, "typeInfo": {"unqualifiedName": t, "fullyQualifiedName": "Swift." + t}}
+            if label is not None:
+                r["label"] = label
+            if children is not None:
+                r["children"] = children
+            return r
+
+        def issue(src, subs):
+            return {"kind": {"expectationFailed": {"expectation": {"evaluatedExpression": {
+                "kind": {"generic": {"_0": src}}, "runtimeValue": v("false", "Bool"),
+                "_subexpressions": [{"kind": {"generic": {"_0": s}}, "runtimeValue": rv, "_subexpressions": []} for s, rv in subs]}}}}}
+        point = v("Point(x: 1, y: 2)", "Point", children=[v("1", "Int", "x"), v("2", "Int", "y")])
+        arr = v("[1, 2]", "Array<Int>", children=[v("1", "Int"), v("2", "Int")], coll=True)
+        pair = v('(key: "b", value: 2)', "(key: String, value: Int)", children=[v('"b"', "String", "key"), v("2", "Int", "value")])
+        dic = v('["b": 2]', "Dictionary<String, Int>", children=[pair], coll=True)
+        opt = v("2", "Optional<Int>", children=[v("2", "Int", "some")])
+        x = X.st_expression(issue("a == b", [("Point(x: 1, y: Core.twice(1))", point), ("[1, 2]", arr), ('["b": 2]', dic), ("v", opt)]))
+
+        def shape(e):
+            return (e["source"], [shape(c) for c in e["subexpressions"]])
+        self.assertEqual(shape(x), ("a == b", [("Point(x: 1, y: Core.twice(1))", [("x", []), ("y", [])]), ("[1, 2]", []),
+                                               ('["b": 2]', []), ("v", [("some", [])])]))
+        pv = x["subexpressions"][0]["value"]
+        self.assertEqual([(c["label"], c["description"]) for c in pv["children"]], [("x", "1"), ("y", "2")])
+        dv = x["subexpressions"][2]["value"]
+        self.assertEqual((dv["is_collection"], "label" in dv["children"][0], [c["label"] for c in dv["children"][0]["children"]]),
+                         (True, False, ["key", "value"]))
+        self.assertNotIn("children", x["value"])
+        self.assertEqual(X.st_issue_message(issue("v == nil", [("v", opt), ("nil", v("nil", "_OptionalNilComparisonType"))])),
+                         "Expectation failed: v == nil\nv → 2")
+        import xcresult
+        tv = xcresult.test_value(dv)
+        kid = tv.f["children"][0]
+        self.assertEqual((kid.f["label"], [c.f["label"].v for c in kid.f["children"]], xcresult.test_value(x["value"]).f["children"]),
+                         (None, ["key", "value"], None))
 
 
 if __name__ == "__main__":

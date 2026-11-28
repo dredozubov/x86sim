@@ -7,7 +7,8 @@
 # DeltaTests has known issues: withKnownIssue and XCTExpectFailure are Apple's "Expected Failure" (expected_failure),
 # testExpectFailureThrown's matched by a thrown error (no location: XCTest's stack at the throw gives it), a known
 # issue that did not occur fails (knownIssueNotRecorded(), testExpectFailureNone, Known/partly() also fails outside
-# its withKnownIssue).
+# its withKnownIssue). GammaTests' Values fail on purpose on an array, a dictionary, an optional and a struct (their
+# values' children in the .xcresult: tests/xcresult/check.py).
 #   tests/apps/XCTestDemo/spm-multi/check.sh <phone>
 set -uo pipefail
 X86SIM_ROOT=${X86SIM_ROOT:-$(cd "$(dirname "$0")/../../../.." && pwd)}
@@ -53,6 +54,10 @@ GammaTests Second/Inner/same() passed
 GammaTests Second/check() failed
 GammaTests Second/off() skipped
 GammaTests Second/same() passed
+GammaTests Values/array() failed
+GammaTests Values/dictionary() failed
+GammaTests Values/optional() failed
+GammaTests Values/structure() failed
 GammaTests gammaOnly() passed
 GammaTests positive(x:) failed
 GammaTests shared() passed
@@ -94,6 +99,10 @@ GammaTests Second/Inner/same() passed
 GammaTests Second/check() failed
 GammaTests Second/off() skipped
 GammaTests Second/same() passed
+GammaTests Values/array() failed
+GammaTests Values/dictionary() failed
+GammaTests Values/optional() failed
+GammaTests Values/structure() failed
 GammaTests gammaOnly() passed
 GammaTests positive(x:) failed
 GammaTests shared() passed
@@ -124,6 +133,10 @@ GammaTests Second/Inner/same() passed
 GammaTests Second/check() failed
 GammaTests Second/off() skipped
 GammaTests Second/same() passed
+GammaTests Values/array() failed
+GammaTests Values/dictionary() failed
+GammaTests Values/optional() failed
+GammaTests Values/structure() failed
 GammaTests gammaOnly() passed
 GammaTests positive(x:) failed
 GammaTests shared() passed
@@ -163,6 +176,10 @@ GammaTests Second/Inner/same() passed
 GammaTests Second/check() failed
 GammaTests Second/off() skipped
 GammaTests Second/same() passed
+GammaTests Values/array() failed
+GammaTests Values/dictionary() failed
+GammaTests Values/optional() failed
+GammaTests Values/structure() failed
 GammaTests gammaOnly() passed
 GammaTests positive(x:) failed
 ### -only-testing:AlphaTests -skip-testing:AlphaTests/AlphaSuite/inSuite()
@@ -188,6 +205,10 @@ GammaTests First/same() passed
 GammaTests Second/check() failed
 GammaTests Second/off() skipped
 GammaTests Second/same() passed
+GammaTests Values/array() failed
+GammaTests Values/dictionary() failed
+GammaTests Values/optional() failed
+GammaTests Values/structure() failed
 GammaTests gammaOnly() passed
 GammaTests positive(x:) failed
 GammaTests shared() passed
