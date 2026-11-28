@@ -2524,6 +2524,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "simaudio"
+version = "0.1.0"
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2544,6 +2548,18 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "simfb-ring"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2",
+]
+
+[[package]]
+name = "simhid"
+version = "0.1.0"
 
 [[package]]
 name = "skrifa"
@@ -3472,6 +3488,9 @@ dependencies = [
  "serde_json",
  "sha1_smol",
  "sha2",
+ "simaudio",
+ "simfb-ring",
+ "simhid",
  "zip",
  "zune-core",
  "zune-jpeg",

@@ -5,7 +5,7 @@ use memmap2::{Mmap, MmapMut};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const HDR: usize = 4096;
+use simfb_ring::{HEADER_BYTES as HDR, MAGIC, SEQUENCE, Slot};
 
 pub struct Frame {
     pub w: u32,
@@ -95,10 +95,10 @@ impl Ring {
             return 0;
         }
         let mm = self.mm.as_ref().unwrap();
-        if &mm[..4] != b"SFBR" {
+        if &mm[..4] != MAGIC {
             return 0;
         }
-        u64_at(mm, 32)
+        u64_at(mm, SEQUENCE)
     }
 
     pub fn size(&mut self) -> Option<(u32, u32)> {
@@ -106,40 +106,20 @@ impl Ring {
             return None;
         }
         let mm = self.mm.as_ref().unwrap();
-        (&mm[..4] == b"SFBR").then(|| (u32_at(mm, 16), u32_at(mm, 20)))
+        (&mm[..4] == MAGIC).then(|| (u32_at(mm, 16), u32_at(mm, 20)))
     }
 
     pub fn latest(&mut self) -> Option<Frame> {
         if !self.open() {
             return None;
         }
-        let mm = self.mm.as_ref().unwrap();
-        if &mm[..4] != b"SFBR" {
-            return None;
-        }
-        let nslots = u32_at(mm, 8) as usize;
-        let slot_bytes = u32_at(mm, 12) as usize;
+        let mm = self.mm.as_ref()?;
         for _ in 0..4 {
-            let seq = u64_at(mm, 32);
-            let latest = u32_at(mm, 40) as usize;
-            if seq == 0 || latest >= nslots {
-                return None;
-            }
-            let o = 64 + 32 * latest;
-            let sseq = u64_at(mm, o);
-            let t_ns = u64_at(mm, o + 8);
-            let (w, h, stride) = (u32_at(mm, o + 16), u32_at(mm, o + 20), u32_at(mm, o + 24));
-            if sseq == 0 || (stride as usize) * (h as usize) > slot_bytes {
-                continue;
-            }
-            let base = HDR + latest * slot_bytes;
-            let end = base + stride as usize * h as usize;
-            if end > mm.len() {
-                return None;
-            }
-            let bgra = mm[base..end].to_vec();
-            if u64_at(mm, o) == sseq {
-                return Some(Frame { w, h, stride, seq: sseq, t_ns, bgra });
+            if let Some(slot) = Slot::latest(mm) {
+                let bgra = slot.pixels.to_vec();
+                if slot.is_current() {
+                    return Some(Frame { w: slot.width, h: slot.height, stride: slot.stride, seq: slot.seq, t_ns: slot.time_ns, bgra });
+                }
             }
         }
         None
@@ -151,27 +131,10 @@ impl Ring {
         if !self.open() {
             return None;
         }
-        let mm = self.mm.as_ref().unwrap();
-        if &mm[..4] != b"SFBR" {
-            return None;
-        }
-        let nslots = u32_at(mm, 8) as usize;
-        let slot_bytes = u32_at(mm, 12) as usize;
-        let latest = u32_at(mm, 40) as usize;
-        if u64_at(mm, 32) == 0 || latest >= nslots {
-            return None;
-        }
-        let o = 64 + 32 * latest;
-        let sseq = u64_at(mm, o);
-        let (w, h, stride) = (u32_at(mm, o + 16), u32_at(mm, o + 20), u32_at(mm, o + 24));
-        let base = HDR + latest * slot_bytes;
-        let end = base + stride as usize * h as usize;
-        if sseq == 0 || (stride as usize) * (h as usize) > slot_bytes || end > mm.len() || (stride as usize) < w as usize * 4 {
-            return None;
-        }
-        let fr = Frame { w, h, stride, seq: sseq, t_ns: u64_at(mm, o + 8), bgra: Vec::new() };
-        let r = f(&fr, &mm[base..end]);
-        (u64_at(mm, o) == sseq).then_some(r)
+        let slot = Slot::latest(self.mm.as_ref()?)?;
+        let frame = Frame { w: slot.width, h: slot.height, stride: slot.stride, seq: slot.seq, t_ns: slot.time_ns, bgra: Vec::new() };
+        let result = f(&frame, slot.pixels);
+        slot.is_current().then_some(result)
     }
 
     /// Blocks until seq differs from `seq`, the ring is recreated, or `timeout` passes.
@@ -200,7 +163,7 @@ impl Ring {
             self.fx = Some(m);
         }
         let fx = self.fx.as_mut().unwrap();
-        let addr = unsafe { fx.as_mut_ptr().add(32) } as *mut u32;
+        let addr = unsafe { fx.as_mut_ptr().add(SEQUENCE) } as *mut u32;
         let ts = libc::timespec { tv_sec: d.as_secs() as libc::time_t, tv_nsec: d.subsec_nanos() as libc::c_long };
         unsafe {
             libc::syscall(libc::SYS_futex, addr, 0 as libc::c_int /* FUTEX_WAIT */, (seq & 0xffff_ffff) as u32, &ts as *const libc::timespec, std::ptr::null::<u32>(), 0u32);

@@ -42,6 +42,9 @@ name = "x86sim-devapp"
 path = "src/bin/devapp.rs"
 
 [dependencies]
+simfb-ring = { path = "../shared/simfb-ring" }
+simhid = { path = "../shared/simhid" }
+simaudio = { path = "../shared/simaudio" }
 anyhow = "1"
 memmap2 = "0.9"
 serde = { version = "1", features = ["derive"] }

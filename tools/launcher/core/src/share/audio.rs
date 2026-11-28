@@ -9,7 +9,7 @@
 use super::video::{self, Out};
 use crate::instance::Instance;
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,19 +17,8 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-pub const RATE: u32 = 48000;
-/// frames a packet (10 ms)
-pub const FRAMES: usize = 480;
-pub const KIND_OPUS: u8 = 3;
-pub const KIND_PCM: u8 = 4;
-/// a browser's microphone frame on the socket (first byte of a binary message, then s16 LE mono 48 kHz)
-pub const KIND_MIC: u8 = 5;
-
-const OP_OPEN: u8 = 1;
-const OP_DATA: u8 = 2;
-const OP_CLOSE: u8 = 3;
-const OP_MIC: u8 = 4;
-const OP_MIC_OFF: u8 = 5;
+pub use simaudio::{FRAMES, KIND_MIC, KIND_OPUS, KIND_PCM, RATE};
+use simaudio::{read_msg, tap_msg, OP_CLOSE, OP_DATA, OP_MIC, OP_MIC_OFF, OP_OPEN};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Codec {
@@ -189,27 +178,6 @@ impl Stream {
         }
         true
     }
-}
-
-fn read_msg(s: &mut UnixStream) -> std::io::Result<(u8, u32, Vec<u8>)> {
-    let mut h = [0u8; 9];
-    s.read_exact(&mut h)?;
-    let n = u32::from_le_bytes(h[5..9].try_into().unwrap()) as usize;
-    if n > 1 << 22 {
-        return Err(std::io::Error::other("tap message too large"));
-    }
-    let mut p = vec![0u8; n];
-    s.read_exact(&mut p)?;
-    Ok((h[0], u32::from_le_bytes(h[1..5].try_into().unwrap()), p))
-}
-
-fn tap_msg(op: u8, payload: &[u8]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(9 + payload.len());
-    v.push(op);
-    v.extend_from_slice(&0u32.to_le_bytes());
-    v.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    v.extend_from_slice(payload);
-    v
 }
 
 fn now_us() -> u64 {
