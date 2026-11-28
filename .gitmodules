@@ -14,5 +14,5 @@
 [submodule "external/omarchy-apple-dev"]
 	path = external/omarchy-apple-dev
 	url = git@github.com:x86sim/omarchy-apple-dev.git
-	branch = main
+	branch = x86sim
 	sync = merge
