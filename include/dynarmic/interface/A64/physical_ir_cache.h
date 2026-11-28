@@ -18,6 +18,8 @@ enum class IRCacheSource { Miss,
                            Memory,
                            Disk };
 
+enum class NativeReuse : std::uint8_t { Unknown, Repeated, Frequent };
+
 // Returned records must originate from this engine build on a trusted host.
 // The frontend additionally checks its full fetch and compilation context.
 class PhysicalIRCache {
@@ -28,6 +30,11 @@ public:
     virtual void Hit(IRCacheSource) = 0;
     virtual void InvalidatePage(std::uint64_t guest_pa) = 0;
     virtual void NativeReplays(std::uint64_t) {}
+    virtual IRCacheSource LookupWithReuse(const PhysicalIRKey& key, std::vector<std::uint8_t>& out, NativeReuse& prior) {
+        prior = NativeReuse::Unknown;
+        return Lookup(key, out);
+    }
+    virtual void ObserveNativeReuse(const PhysicalIRKey&, NativeReuse) {}
 };
 
 }  // namespace Dynarmic::A64
