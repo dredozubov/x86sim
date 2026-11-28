@@ -156,6 +156,25 @@ class RecordStore final : public PhysicalIRCache {
         transaction = false;
     }
 
+    bool persist(const Key& key, const Bytes& record) {
+        if (!transaction) {
+            if (sqlite3_exec(db.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) return false;
+            transaction = true;
+        }
+        auto* q = insert.get();
+        const auto hash = digest(key, record);
+        const bool saved = sqlite3_bind_blob(q, 1, key.data(), sizeof(key), SQLITE_STATIC) == SQLITE_OK &&
+                           sqlite3_bind_blob(q, 2, record.data(), static_cast<int>(record.size()), SQLITE_STATIC) == SQLITE_OK &&
+                           sqlite3_bind_blob(q, 3, hash.data(), sizeof(hash), SQLITE_STATIC) == SQLITE_OK &&
+                           sqlite3_step(q) == SQLITE_DONE;
+        sqlite3_reset(q);
+        sqlite3_clear_bindings(q);
+        if (saved) ++pending;
+        // Release the writer lock even if the DB filled before a batch completed.
+        if (!saved || pending == 1024) commit();
+        return saved;
+    }
+
     bool keep(const Key& key, std::span<const uint8_t> data, IRCacheSource source) {
         auto it = records.find(key);
         const size_t old = it == records.end() ? 0 : it->second.data.size();
@@ -209,6 +228,15 @@ public:
     }
 
     ~RecordStore() override {
+        // All vCPUs have released this VM by now. A disk sync on a live vCPU
+        // could stall it while the guest owns a spinlock and time out a peer.
+        try {
+            for (const auto& [key, entry] : records) {
+                if (entry.source == IRCacheSource::Memory && !persist(key, entry.data)) break;
+            }
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "a64engine cache save: %s\n", error.what());
+        }
         commit();
         std::fprintf(stderr, "a64engine memory_hits=%llu disk_hits=%llu lookups=%llu stores=%llu written=%llu\n",
             (unsigned long long)memory_hits.load(), (unsigned long long)disk_hits.load(),
@@ -248,21 +276,6 @@ public:
         std::lock_guard lock(mutex);
         if (!keep(key, record, IRCacheSource::Memory)) return;
         ++stores;
-        if (!transaction) {
-            if (sqlite3_exec(db.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) return;
-            transaction = true;
-        }
-        auto* q = insert.get();
-        const auto hash = digest(key, record);
-        const bool saved = sqlite3_bind_blob(q, 1, key.data(), sizeof(key), SQLITE_STATIC) == SQLITE_OK &&
-                           sqlite3_bind_blob(q, 2, record.data(), static_cast<int>(record.size()), SQLITE_STATIC) == SQLITE_OK &&
-                           sqlite3_bind_blob(q, 3, hash.data(), sizeof(hash), SQLITE_STATIC) == SQLITE_OK &&
-                           sqlite3_step(q) == SQLITE_DONE;
-        sqlite3_reset(q);
-        sqlite3_clear_bindings(q);
-        if (saved) ++pending;
-        // Release the writer lock even if the DB filled before a batch completed.
-        if (!saved || pending == 1024) commit();
     }
 };
 
