@@ -6,7 +6,7 @@ use x86sim_core::{aot::repo_root, instance};
 
 pub fn tools(phone: &Value) -> Vec<Value> {
     let list = json!({"type": "array", "items": {"type": "string"}});
-    vec![json!({"name": "xctest_run", "description": "Run XCTest unit / logic tests and XCUITest UI tests on a running device, as xcodebuild test-without-building: give an .xctestrun (what `xcodebuild build-for-testing` writes next to its products), or app (+ test_bundle) for unit tests hosted in the app, test_bundle alone for logic tests, ui_test_runner + app for UI tests, or spm (a Swift package dir: its tests are built on Linux for the device's simulator). Answers per test: result (passed / failed / skipped), duration, failures with file, line and message; counts; the result; and out, a dir with each target's log, results.json and junit.xml. UI tests need the device's xctest feature (feature_set id=xctest, then sim_restart). Can take minutes.",
+    vec![json!({"name": "xctest_run", "description": "Run XCTest unit / logic tests and XCUITest UI tests on a running device, as xcodebuild test-without-building: give an .xctestrun (what `xcodebuild build-for-testing` writes next to its products), or app (+ test_bundle) for unit tests hosted in the app, test_bundle alone for logic tests, ui_test_runner + app for UI tests, or spm (a Swift package dir: its tests are built on Linux for the device's simulator). Answers per test: result (passed / failed / skipped / expected_failure: XCTExpectFailure, withKnownIssue), duration, failures with file, line and message; counts; the result; and out, a dir with each target's log, results.json and junit.xml. UI tests need the device's xctest feature (feature_set id=xctest, then sim_restart). coverage: true collects code coverage as xcodebuild -enableCodeCoverage YES (products built with CLANG_COVERAGE_MAPPING=YES; spm builds them so): coverage per product and file in the answer, lcov.info and Coverage.profdata in out/coverage. Can take minutes.",
         "inputSchema": {"type": "object", "properties": {"phone": phone,
             "xctestrun": {"type": "string", "description": "path of the .xctestrun"},
             "products": {"type": "string", "description": "the products dir when it is not next to the .xctestrun"},
@@ -15,7 +15,8 @@ pub fn tools(phone: &Value) -> Vec<Value> {
             "ui_test_runner": {"type": "string", "description": "the <Name>UITests-Runner.app"},
             "spm": {"type": "string", "description": "a Swift package dir"},
             "only_testing": list.clone(), "skip_testing": list,
-            "timeout_s": {"type": "number", "description": "per test target (default 1800)"}}}})]
+            "timeout_s": {"type": "number", "description": "per test target (default 1800)"},
+            "coverage": {"type": "boolean", "description": "collect code coverage (default false)"}}}})]
 }
 
 /// Some(result) for xctest_run, None for other tools.
@@ -39,6 +40,9 @@ pub fn call(name: &str, a: &Value, phone: &dyn Fn() -> anyhow::Result<instance::
         }
         if let Some(t) = a["timeout_s"].as_f64() {
             c.arg("--timeout").arg(t.to_string());
+        }
+        if a["coverage"].as_bool() == Some(true) {
+            c.arg("--coverage");
         }
         let out = c.current_dir(repo_root()).stdin(Stdio::null()).output()?;
         let text = String::from_utf8_lossy(&out.stdout);

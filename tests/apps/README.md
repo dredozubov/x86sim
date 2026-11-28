@@ -33,8 +33,9 @@ so every app here uses scenes.
 ## XCTestDemo: XCTest and XCUITest (`x86sim test`)
 
 `XCTestDemo/` is an Xcode project (a SwiftUI app with an app-hosted unit test target, a logic test target and a UI
-test target; each has a deliberate failure, the unit tests a skip) and `XCTestDemo/spm/` a Swift package with XCTest
-and Swift Testing tests:
+test target; each has a deliberate failure, the unit tests a skip), `XCTestDemo/spm/` a Swift package with XCTest
+and Swift Testing tests and `XCTestDemo/spm-multi/` one with three test targets whose test names repeat (across
+targets, and in GammaTests across suites: `First/same()`, `Second/same()`, `Second/Inner/same()`):
 
     tests/apps/XCTestDemo/build.sh [OUT]          xcodebuild build-for-testing on the Mac (X86SIM_MAC); products and
                                                  the .xctestrun into $X86SIM_SCRATCH/apps/XCTestDemo-products
@@ -44,6 +45,10 @@ and Swift Testing tests:
                                                  their file:line, 1 skipped)
     x86sim test <phone> --spm tests/apps/XCTestDemo/spm
                                                  the package's tests built on Linux (x86sim dev toolchain) and run
+    tests/apps/XCTestDemo/spm-multi/check.sh <phone>
+                                                 x86sim test --spm with 13 -only-testing / -skip-testing selections,
+                                                 each checked against Apple's simulator (Xcode 27.2: the tests run
+                                                 per target, each once)
 
 ## sdkcov: the whole SDK, on iOS, tvOS, watchOS and visionOS
 

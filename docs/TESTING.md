@@ -15,6 +15,8 @@ x86sim test qa --app MyApp.app                          # unit tests hosted in t
 x86sim test qa --test-bundle MyLogicTests.xctest        # logic tests (no host app)
 x86sim test qa --ui-test-runner MyAppUITests-Runner.app --app MyApp.app        # XCUITest
 x86sim test qa --spm MyPackage                          # a Swift package's tests, built here (x86sim dev test --xctest)
+x86sim test qa --xctestrun F.xctestrun --coverage       # code coverage (products built with CLANG_COVERAGE_MAPPING=YES)
+x86sim test qa --xctestrun F.xctestrun --result-bundle R.xcresult   # also an Xcode result bundle
 ```
 
 - **Unit tests hosted in an app**: the app is installed and launched with `libXCTestBundleInject.dylib`, which loads
@@ -23,9 +25,50 @@ x86sim test qa --spm MyPackage                          # a Swift package's test
   runtime's `testmanagerd` (the phone's `xctest` feature, on by default, started only when a UI test runs; ~440 MB
   while it runs).
 - Each test process gets the `.xctestconfiguration` Xcode would write (selection, target app, environment from the
-  `.xctestrun`), without an IDE session. Results: XCTest's log as it runs (Swift Testing's too), a summary with each
-  failure's `file:line` and message, `junit.xml` and `results.json` (per test: passed / failed / skipped, duration,
-  failures) in `$X86SIM_SCRATCH/xctest/<phone>-<time>/`; exit status 0 when nothing failed, 1 otherwise.
+  `.xctestrun`), without an IDE session. `--only-testing` / `--skip-testing` take Xcode's forms (`Target`,
+  `Target/Class`, `Target/Class/test`, Swift Testing's `Target/Suite/test()` and `Target/function()`) and become the
+  identifiers Xcode 27.2 sends for them, each test running once. A Swift package's tests are named by test target as
+  in Xcode (`CalcKitTests/meanOfNothing()`): SwiftPM builds them into one `<Package>PackageTests` bundle, which
+  `--spm` links again once per test target from SwiftPM's objects (and with XCTest, as Xcode links every test
+  bundle), so each target runs alone as in Xcode, its selections and skips matched in its own module even when two
+  targets have a test of the same name (`tests/apps/XCTestDemo/spm-multi`).
+  Results: XCTest's log as it runs (Swift Testing's too), a summary with each failure's `file:line` and message,
+  `junit.xml` and `results.json` (per test: passed / failed / skipped / expected_failure, duration, failures) in
+  `$X86SIM_SCRATCH/xctest/<phone>-<time>/`; exit status 0 when nothing failed, 1 otherwise. Known issues are
+  reported as Xcode 27.2 does: a test whose only issues were expected (`XCTExpectFailure`, Swift Testing's
+  `withKnownIssue`) is `expected_failure` ("Expected Failure" in an `.xcresult`, not a failure; junit.xml says so in
+  its output), its issues in `expected_failures` (file, line, message, `reason`: the failure reason or the known
+  issue's comment, from `libsimswt`), counted in `counts.expected_failures`; a known issue that did not occur
+  fails (`Known issue was not recorded`, `Expected failure '...' but none recorded`). Swift Testing's tests
+  are named as Xcode names them, by suite path (`Second/Inner/same()`; the same function in two suites is two
+  tests), from Swift Testing's own events: `libsimswt` (`host/simswt`, built here on first use against the
+  platform's Testing.framework) is inserted into the test process and writes them; without it they come from the
+  console lines, which name no suite. Each issue keeps its call stack (`stack` in `results.json`: the frames in the
+  test bundle with function and `file:line`, as Xcode shows them), symbolicated here (llvm-symbolizer, a dSYM made
+  by dsymutil from a Debug build's objects); a failed `#expect` / `#require` keeps its expression with each
+  subexpression's value (`expression`). A test that fails by throwing, or an `XCTExpectFailure` a thrown error
+  matched, gets the line it threw from, as Xcode reports it: the stack XCTest captured at the throw.
+- **Attachments and screen recordings**: the tests' XCTest attachments (screenshots, UI hierarchies, their own) go to
+  `attachments/<Class>.<test>/` and are listed per test in `results.json`. UI tests are screen-recorded test by test,
+  as Xcode does (`PreferredScreenCaptureFormat` screenRecording, its default): a failed test keeps its
+  `Screen_Recording.mp4` (`SystemAttachmentLifetime` deleteOnSuccess; keepAlways keeps all), `--no-screen-recording`
+  turns it off.
+- **Code coverage** (`--coverage`, MCP `xctest_run coverage: true`, `xcodebuild -enableCodeCoverage YES` or a scheme
+  with "Gather coverage"): each test process and the app a UI test drives write LLVM profiles (`LLVM_PROFILE_FILE`, as
+  Xcode sets it), merged into `coverage/Coverage.profdata` and reported per product and file as `xccov view --report`
+  does (`coverage/report.txt`, `coverage.json`, `lcov.info`, "coverage" in `results.json`). The products need coverage
+  instrumentation (`CLANG_COVERAGE_MAPPING=YES`, what the `xcodebuild` stand-in passes; `--spm` builds them so).
+  XCTestDemo's line counts equal Xcode 27.2's, whole run and a two-test selection.
+- **Result bundles** (`--result-bundle R.xcresult`, `xcodebuild -resultBundlePath`): an `.xcresult` in Xcode 27.2's
+  format (`cli/libexec/xcresult.py`, written on Linux), so `xcresulttool get test-results summary / tests /
+  test-details`, `export attachments`, `xccov view --report` and the CI tools built on them read it as one Xcode made:
+  results, failures with `file:line`, their call stacks and `#expect` values, skips, expected failures, attachments
+  and screen recordings, code coverage down to functions and line ranges, Swift Testing's suites and each argument of
+  a parameterized test, UI tests' activity trees (UI snapshots, waits, taps) with their attachments, and the frames
+  Xcode names in the UI test runner. Left out: build logs. `tests/xcresult/check.py` compares bundles with Apple's
+  on the comparison Mac: test-details, the legacy issue summaries, frames and activities.
+  The `xcodebuild` stand-in writes the bundle at `-resultBundlePath` and `x86sim test`'s own output next to it
+  (`<bundle>.x86sim/`).
 - **Where the bundles come from**, built on Linux:
   - a Swift package: `x86sim dev test --xctest` / `x86sim test --spm`, which build its tests (`swift build
     --build-tests` for the device's simulator) with the `x86sim dev` toolchain and run them;
@@ -33,11 +76,13 @@ x86sim test qa --spm MyPackage                          # a Swift package's test
     (`external/omarchy-apple-dev/linux-bin/xcodebuild`, after `x86sim dev setup swiftbuild`). `xcodebuild
     build-for-testing` writes the products and the `.xctestrun`, and `xcodebuild test` goes on to run them on an
     x86Sim device through `x86sim test` (the destination's `name=`, or `$XCODEBUILD_PHONE`, names the device). Unit
-    test targets build (XCTest and Swift Testing). UI-test targets do not: they need Xcode's XCTRunner.app, which the
-    SDK made from Xcode.xip does not carry. A project without shared schemes gets generated schemes that leave its
-    test target out: share the scheme. A fastlane lane's `scan` runs the same way (`tests/dev/xcode_e2e.py`).
+    test targets (XCTest and Swift Testing) and UI-test targets build, for iOS, tvOS, watchOS and visionOS: Swift
+    Build makes each `<Target>-Runner.app` from Xcode's XCTRunner.app, which the SDK keeps from Xcode.xip (an SDK built
+    before that has none: rebuild it with `x86sim dev setup sdk --xip`). A project without shared schemes gets
+    generated schemes that leave its test target out: share the scheme. A fastlane lane's `scan` runs the same way
+    (`tests/dev/xcode_e2e.py`). `tests/apps/XCTestDemo/run.sh <phone> --linux` builds the fixture that way.
   - Bundles Xcode itself built also run: copy `xcodebuild build-for-testing`'s `Build/Products` directory with the
-    `.xctestrun`. That is how UI test runners get here today, and what the XCTestDemo fixture checks on purpose
+    `.xctestrun`. That is what the XCTestDemo fixture checks on purpose
     (`tests/apps/XCTestDemo/build.sh` runs `xcodebuild` on the comparison Mac, so that the test is of bundles made by
     Xcode, not of our build).
 - **XCTest's frameworks** (`XCTest.framework`, `XCTestCore`, `XCUIAutomation`, `libXCTestBundleInject.dylib`) are
@@ -49,7 +94,31 @@ x86sim test qa --spm MyPackage                          # a Swift package's test
   results on iPhone, iPad, Apple TV, Apple Watch and Vision Pro.
 
 `tests/apps/XCTestDemo/run.sh <phone>` runs the fixture (hosted unit tests, logic tests, UI tests, each with a
-deliberate failure) and checks every result against Apple's simulator.
+deliberate failure) and checks every result against Apple's simulator; `tests/apps/XCTestDemo/spm-multi/check.sh
+<phone>` does the same for a Swift package with four test targets (selections, skips, known issues, values).
+
+### Differences from Xcode
+
+What still differs from Xcode 27.2 on a Mac, measured with the fixtures above (none of it changes a test's result):
+
+- **No IDE session.** Xcode hands the test process its configuration over its IDE session; `x86sim test` writes the
+  `.xctestconfiguration` file `xcodebuild test-without-building` would read. A few fields differ from what Xcode sends
+  a UI test: `testsMustRunOnMainThread`, in-process parallelization, `userAttachmentLifetime` (Xcode 1, x86Sim 0) and
+  the session identifiers.
+- **Screen recordings** are made by x86Sim from the device's frame ring (`x86sim io recordVideo`, 30 fps), not by
+  Xcode; the runner is told so (`-DisableDiagnosticScreenshots YES`), and XCTest then records the UI snapshot Xcode's
+  run has instead of screenshots.
+- **Result bundles**: no build logs; the run destination's host record describes the Linux machine (the environment
+  reads `XCTestDemo`, not `XCTestDemo · Built with macOS …`); test start times are placed from the run's end and
+  attachment times come from their files. How often a UI test's "Waiting …" activity re-checks before it times out
+  depends on timing, so a slow host can record a different count than Apple's.
+- **Selection**: a bare `-only-testing Class` (no target) selects that class in every target; Xcode refuses it.
+- **Swift packages**: SwiftPM builds one `<Package>PackageTests` bundle; `x86sim test --spm` relinks it once per test
+  target (as Xcode's bundles are). If that relink fails it runs the one bundle and says so; Swift Testing selections
+  and skips then match no test target (XCTest ones still work).
+- **Code coverage** comes from LLVM's tools (`llvm-profdata`, `llvm-cov`), not `xccov`'s own; the counts are the same.
+- **Darwin SDKs built before XCTRunner.app was kept** (and before the `-rpath=$ORIGIN` fix) can't build UI-test targets
+  or visionOS package tests: rebuild with `x86sim dev setup sdk --xip Xcode.xip`.
 
 ## Accessibility Inspector
 
