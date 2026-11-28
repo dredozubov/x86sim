@@ -32,7 +32,7 @@ using Key = std::array<uint64_t, 4>;
 using Bytes = std::vector<uint8_t>;
 constexpr size_t record_limit = 1 << 20;
 constexpr size_t memory_limit = 128 << 20;
-constexpr size_t entry_limit = 131072;
+constexpr size_t entry_limit = 524288;
 
 Key key_bytes(const PhysicalIRKey& k) {
     return {k.guest_pa, k.location, k.pac_profile, k.page_mode};
@@ -117,7 +117,15 @@ using Statement = std::unique_ptr<sqlite3_stmt, StmtCloser>;
 
 class RecordStore final : public PhysicalIRCache {
     struct Entry { Bytes data; IRCacheSource source; };
-    std::map<Key, Entry> records;
+    using Records = std::map<Key, Entry>;
+    Records records;
+    // References into std::map survive inserts. InvalidatePage clears references
+    // before erasing nodes. All accesses are under the VM's cache mutex.
+    std::array<const Records::value_type*, 8192> recent{};
+    auto& recent_slot(const Key& key) {
+        const auto index = (key[0] >> 2) ^ (key[0] >> 15) ^ (key[1] >> 48) ^ key[2] ^ key[3];
+        return recent[index & (recent.size() - 1)];
+    }
     size_t total = 0;
     std::mutex mutex;
     std::unique_ptr<sqlite3, DbCloser> db;
@@ -183,7 +191,8 @@ public:
         sqlite3_busy_timeout(db.get(), 1000);
         exec("PRAGMA trusted_schema=OFF; PRAGMA max_page_count=65536;"
              "CREATE TABLE IF NOT EXISTS blocks(k BLOB PRIMARY KEY, ir BLOB NOT NULL, hash BLOB NOT NULL) WITHOUT ROWID");
-        auto load = prepare("SELECT k,ir,hash FROM blocks LIMIT 131072");
+        const auto query = "SELECT k,ir,hash FROM blocks LIMIT " + std::to_string(entry_limit);
+        auto load = prepare(query.c_str());
         while (sqlite3_step(load.get()) == SQLITE_ROW) {
             const int len = sqlite3_column_bytes(load.get(), 1);
             if (sqlite3_column_bytes(load.get(), 0) != sizeof(Key) ||
@@ -208,10 +217,15 @@ public:
     IRCacheSource Lookup(const PhysicalIRKey& key, Bytes& record) override {
         std::lock_guard lock(mutex);
         ++lookups;
-        auto it = records.find(key_bytes(key));
-        if (it == records.end()) return IRCacheSource::Miss;
-        record = it->second.data;
-        return it->second.source;
+        const auto k = key_bytes(key);
+        auto& slot = recent_slot(k);
+        if (!slot || slot->first != k) {
+            auto it = records.find(k);
+            if (it == records.end()) return IRCacheSource::Miss;
+            slot = &*it;
+        }
+        record = slot->second.data;
+        return slot->second.source;
     }
     void Hit(IRCacheSource source) override {
         if (source == IRCacheSource::Disk) ++disk_hits;
@@ -222,6 +236,8 @@ public:
         const uint64_t page = pa & ~uint64_t{4095};
         auto it = records.lower_bound({page, 0, 0, 0});
         while (it != records.end() && it->first[0] - page < 4096) {
+            auto& slot = recent_slot(it->first);
+            if (slot == &*it) slot = nullptr;
             total -= it->second.data.size();
             it = records.erase(it);
         }
