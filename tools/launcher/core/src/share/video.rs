@@ -3,68 +3,22 @@
 //! viewer does (the device orientation, a two-screen phone's inner panel), scales it with an area filter and encodes
 //! it once for every viewer of that stream: H.264 (OpenH264, built from source into the binary: the AppImage carries
 //! no ffmpeg) or JPEG. A viewer that falls behind skips to the next key frame instead of queueing.
-use crate::hid;
-use crate::instance::Instance;
+use super::target::GuestDisplayTarget;
+pub use super::target::{Screen, Target};
 use crate::ring::{Frame, Ring};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// What a browser sees of a phone and where its touches go (the launcher's Viewer::set_display rule)
-#[derive(Clone, Debug, PartialEq)]
-pub struct Target {
-    pub ring: PathBuf,
-    /// the screen's size upright, device pixels
-    pub size: (u32, u32),
-    /// the picture's turn (hid::unrotate / Frame::png convention)
-    pub rot: u32,
-    /// for hid: a second display (SFB id, its turn) and the main screen's turn
-    pub display: Option<(u32, u32)>,
-    pub main_rot: u32,
+/// Select a screen in the guest's current orientation.
+pub fn target_of(inst: &impl GuestDisplayTarget, which: Screen, orient: &mut u32) -> Target {
+    inst.screen(which, orient)
 }
 
-/// Which screen a stream shows: `Auto` the one in use (target), or a two-screen phone's inner or outer screen as it
-/// is, never turned by the device orientation (the web page's 3D model turns the phone instead, as duo3d.rs does)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Screen {
-    Auto,
-    Inner,
-    Outer,
-}
-
-/// The screen `which` shows (`Auto`: target's rule)
-pub fn target_of(inst: &Instance, which: Screen, orient: &mut u32) -> Target {
-    match (which, &inst.inner) {
-        (Screen::Inner, Some(d)) => Target { ring: d.ring.clone(), size: d.upright(), rot: d.rotation, display: Some((d.id, d.rotation)), main_rot: 0 },
-        (Screen::Outer, Some(_)) => Target { ring: inst.ring.clone(), size: inst.screen, rot: 0, display: None, main_rot: 0 },
-        _ => target(inst, orient),
-    }
-}
-
-/// The screen shown: a two-screen phone's inner one while the hinge is open; an iPhone / iPad turned to landscape is
-/// shown turned (`orient` keeps the last turn for faceUp / faceDown, as Apple's Simulator does)
-pub fn target(inst: &Instance, orient: &mut u32) -> Target {
-    if inst.platform == "ios" {
-        if let Some(o) = inst.orientation().and_then(|o| hid::orientation_rot(&o)) {
-            *orient = o;
-        }
-    }
-    let o = *orient;
-    let (ring, screen, panel) = match &inst.inner {
-        Some(d) if inst.inner_active() => (d.ring.clone(), d.upright(), Some((d.id, d.rotation))),
-        _ => (inst.ring.clone(), inst.screen, None),
-    };
-    let size = if o % 180 == 90 { (screen.1, screen.0) } else { screen };
-    Target {
-        ring,
-        size,
-        rot: (panel.map(|p| p.1).unwrap_or(0) + o) % 360,
-        display: panel.map(|(id, r)| (id, (r + o) % 360)),
-        main_rot: o,
-    }
+pub fn target(inst: &impl GuestDisplayTarget, orient: &mut u32) -> Target {
+    inst.screen(Screen::Auto, orient)
 }
 
 /// An RGB24 picture
@@ -253,7 +207,7 @@ pub fn streams() -> Vec<(StreamKey, StreamStats)> {
 }
 
 /// Subscribes `tx` to the stream `key` of `inst`, starting its encoder thread if needed. Returns an id for `leave`.
-pub fn join(inst: &Instance, key: StreamKey, tx: SyncSender<Out>) -> (Arc<Streamer>, u64) {
+pub fn join(inst: &(impl GuestDisplayTarget + Clone + Send + 'static), key: StreamKey, tx: SyncSender<Out>) -> (Arc<Streamer>, u64) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut h = hub().lock().unwrap();
@@ -309,7 +263,7 @@ impl Streamer {
         subs.len()
     }
 
-    fn run(self: Arc<Self>, inst: Instance) {
+    fn run(self: Arc<Self>, inst: impl GuestDisplayTarget) {
         let mut orient = 0u32;
         let which = self.key.screen;
         let kind_add = if which == Screen::Outer { OUTER } else { 0 };
@@ -455,7 +409,7 @@ fn new_encoder(w: u32, h: u32, quality: u8, fps: u32) -> Option<openh264::encode
 }
 
 /// A still JPEG of a phone's newest frame, upright, at most `max_w` wide (dashboard thumbnails)
-pub fn snapshot_jpeg(inst: &Instance, max_w: u32, quality: u8) -> Option<Vec<u8>> {
+pub fn snapshot_jpeg(inst: &impl GuestDisplayTarget, max_w: u32, quality: u8) -> Option<Vec<u8>> {
     let mut o = 0;
     let t = target(inst, &mut o);
     let mut ring = Ring::new(&t.ring);
@@ -466,7 +420,7 @@ pub fn snapshot_jpeg(inst: &Instance, max_w: u32, quality: u8) -> Option<Vec<u8>
 }
 
 /// The newest frame as a full-size PNG, upright
-pub fn snapshot_png(inst: &Instance) -> Option<Vec<u8>> {
+pub fn snapshot_png(inst: &impl GuestDisplayTarget) -> Option<Vec<u8>> {
     let mut o = 0;
     let t = target(inst, &mut o);
     Ring::new(&t.ring).latest()?.png(t.rot).ok()

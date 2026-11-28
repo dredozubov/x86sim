@@ -7,6 +7,7 @@
 //! the phone is silent (no stream open). A listener's microphone (16-bit mono 48 kHz from the page) goes back on the
 //! tap; simaudio.py gives it to the phone's input streams while it arrives.
 use super::video::{self, Out};
+use super::target::GuestDisplayTarget;
 use crate::instance::Instance;
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
@@ -35,7 +36,6 @@ struct Sub {
 }
 
 pub struct Audio {
-    phone: String,
     tap: PathBuf,
     subs: Mutex<Vec<Sub>>,
     /// the tap's write side (the microphone)
@@ -44,29 +44,37 @@ pub struct Audio {
     pub connected: AtomicBool,
 }
 
-fn hub() -> &'static Mutex<HashMap<String, Arc<Audio>>> {
-    static H: OnceLock<Mutex<HashMap<String, Arc<Audio>>>> = OnceLock::new();
+fn hub() -> &'static Mutex<HashMap<PathBuf, Arc<Audio>>> {
+    static H: OnceLock<Mutex<HashMap<PathBuf, Arc<Audio>>>> = OnceLock::new();
     H.get_or_init(Default::default)
 }
 
 /// Subscribes `tx` to the phone's sound, starting its mixer if needed. Returns an id for `leave`.
 pub fn join(inst: &Instance, tx: SyncSender<Out>, codec: Codec) -> (Arc<Audio>, u64) {
+    join_tap(inst.simulator_audio_tap(), tx, codec)
+}
+
+/// An external display can omit its audio tap.
+pub fn join_target(inst: &impl GuestDisplayTarget, tx: SyncSender<Out>, codec: Codec) -> Option<(Arc<Audio>, u64)> {
+    Some(join_tap(inst.audio_tap()?, tx, codec))
+}
+
+fn join_tap(tap: PathBuf, tx: SyncSender<Out>, codec: Codec) -> (Arc<Audio>, u64) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut h = hub().lock().unwrap();
     let a = h
-        .entry(inst.id.clone())
+        .entry(tap.clone())
         .or_insert_with(|| {
             let a = Arc::new(Audio {
-                phone: inst.id.clone(),
-                tap: inst.state_dir.join("simaudio-tap.sock"),
+                tap,
                 subs: Mutex::new(vec![]),
                 tap_w: Mutex::new(None),
                 mic_owner: Mutex::new(None),
                 connected: AtomicBool::new(false),
             });
             let a2 = a.clone();
-            std::thread::Builder::new().name(format!("audio-{}", inst.id)).spawn(move || a2.run()).ok();
+            std::thread::Builder::new().name("share-audio".into()).spawn(move || a2.run()).ok();
             a
         })
         .clone();
@@ -223,7 +231,7 @@ impl Audio {
                 let mut h = hub().lock().unwrap();
                 if self.idle() {
                     if empty_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(5) {
-                        h.remove(&self.phone);
+                        h.remove(&self.tap);
                         return;
                     }
                 } else {
@@ -236,7 +244,7 @@ impl Audio {
                     // ended for want of listeners: gone unless one joined meanwhile
                     let mut h = hub().lock().unwrap();
                     if self.idle() {
-                        h.remove(&self.phone);
+                        h.remove(&self.tap);
                         return;
                     }
                 }

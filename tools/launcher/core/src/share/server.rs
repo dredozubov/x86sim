@@ -14,6 +14,7 @@
 //! Limits before any token is checked: request head 32 KiB / 100 headers, 20 s to send it, 128 connections at a time
 //! (24 from one address other than loopback).
 use super::audio;
+use super::target::GuestDisplayTarget;
 use super::tunnel::{self, Kind, Tunnel};
 use super::video::{self, Codec, Out, Screen, StreamKey};
 use super::ws;
@@ -930,7 +931,7 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
         let _ = w.lock().unwrap().shutdown(std::net::Shutdown::Both);
     });
     let control = g.role == Role::Control;
-    let state = |inst: &Instance| json!({"t": "state", "orientation": inst.orientation(), "hinge": inst.hinge(), "inner_active": inst.inner_active(), "running": crate::ring::Ring::new(&inst.ring).seq() != 0});
+    let state = |inst: &Instance| json!({"t": "state", "orientation": inst.orientation(), "hinge": inst.hinge(), "inner_active": inst.inner_active(), "running": crate::ring::Ring::new(inst.primary().0).seq() != 0});
     let _ = tx.send(Out::Text(
         json!({"t": "hello", "role": g.role, "phone": inst.id, "name": inst.name, "model": inst.model, "platform": inst.platform, "corner": inst.corner, "two_screens": inst.inner.is_some(),
                "codec": if codec == Codec::H264 { "h264" } else { "jpeg" }, "expires": g.expires, "audio": true, "build": web_build(), "poses": hid::HINGE_POSES.iter().map(|p| json!({"key": p.key, "label": p.label, "angle": p.angle, "orientation": p.orientation})).collect::<Vec<_>>()})
@@ -986,7 +987,7 @@ fn session(srv: &Arc<Server>, s: TcpStream, inst: Instance, g: Grant, q: &HashMa
                         }
                         if v["on"].as_bool() == Some(true) {
                             let c = if v["codec"].as_str() == Some("pcm") { audio::Codec::Pcm } else { audio::Codec::Opus };
-                            sound = Some(audio::join(&inst, atx.clone(), c));
+                            sound = audio::join_target(&inst, atx.clone(), c);
                         }
                     }
                     Some("mic") if control => {
@@ -1051,7 +1052,7 @@ const BUTTONS: [&str; 14] = ["home", "lock", "side", "volup", "voldown", "siri",
 
 impl Input {
     fn new(inst: &Instance) -> Input {
-        let mut i = Input { inst: inst.clone(), hid: Hid::new(&inst.sock), orient: 0, size: inst.screen, down_buttons: vec![], down_keys: vec![] };
+        let mut i = Input { inst: inst.clone(), hid: inst.hid(), orient: 0, size: inst.screen, down_buttons: vec![], down_keys: vec![] };
         i.aim();
         i
     }
