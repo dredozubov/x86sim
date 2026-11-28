@@ -2,6 +2,7 @@
 //! status (booted, home reached, CPU, PSS) read from /proc. Processes are found by exact checks (the darlingserver
 //! of the sim's prefix and its descendants), never by pattern kills.
 use crate::aot::{repo_root, scratch};
+use crate::share::target::GuestDisplayTarget;
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -409,7 +410,7 @@ fn run_simview_unit(unit: &str, env: &[(&str, String)]) -> Result<()> {
 }
 
 pub fn simview_running_for(inst: &crate::instance::Instance) -> bool {
-    viewer_up(&simview_unit(inst), &inst.ring)
+    viewer_up(&simview_unit(inst), inst.primary().0)
 }
 
 /// The standalone viewer (simview, with its console pane) for one phone: its ring, input socket and logs, on the
@@ -430,12 +431,13 @@ pub fn show_phone(inst: &crate::instance::Instance) -> Result<()> {
     if let Ok(v) = std::env::var("XDG_RUNTIME_DIR") {
         env.push(("XDG_RUNTIME_DIR", v));
     }
+    let (ring, size) = inst.primary();
     env.extend([
         ("SIMVIEW_FOLLOW", "0".into()),
-        ("SIMFB_RING_LINUX", inst.ring.display().to_string()),
-        ("SIMHID_SOCKET", inst.sock.display().to_string()),
-        ("SIMULATOR_MAINSCREEN_WIDTH", inst.screen.0.to_string()),
-        ("SIMULATOR_MAINSCREEN_HEIGHT", inst.screen.1.to_string()),
+        ("SIMFB_RING_LINUX", ring.display().to_string()),
+        ("SIMHID_SOCKET", inst.input_socket().display().to_string()),
+        ("SIMULATOR_MAINSCREEN_WIDTH", size.0.to_string()),
+        ("SIMULATOR_MAINSCREEN_HEIGHT", size.1.to_string()),
     ]);
     if user_systemd() {
         run_simview_unit(&simview_unit(inst), &env)

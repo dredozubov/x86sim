@@ -11,6 +11,7 @@ pub mod audio;
 /// Web Inspector routes (control role): x86sim inspect, the viewer's Inspect button
 pub mod inspect;
 pub mod server;
+pub mod target;
 pub mod theme;
 pub mod tunnel;
 pub mod video;
