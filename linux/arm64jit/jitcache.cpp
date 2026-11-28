@@ -19,6 +19,7 @@
 // absolute host Imm64s (objc counters, RSB patch sites, …). Relative jumps to terminal handlers
 // stay valid when prelude_size matches. FastDispatch is cleared and refills on use.
 #include "a64.h"
+#include "../a64engine/cache_key.h"
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <algorithm>
@@ -246,8 +247,6 @@ void jitcache_prepare(const std::string &cache_path, const std::string &exe) {
     }
     fclose(f);
     g_uuid_ok = true;
-    char hex[40];
-    for (int i = 0; i < 16; i++) sprintf(hex + 2 * i, "%02x", g_uuid[i]);
     auto on = [](const char *e, bool dflt) { const char *v = getenv(e); return v ? atoi(v) == 1 : dflt; };
     g_build = kCodegenVersion | (u64)on("X86SIM_A64_FUSE_SVC", false) << 16 | (u64)on("X86SIM_A64_INLINE_OBJC", true) << 17 |
               (u64)timebase_apple() << 18 |
@@ -256,9 +255,7 @@ void jitcache_prepare(const std::string &cache_path, const std::string &exe) {
         g_build |= (u64)ph << 32;
         if (getenv("X86SIM_A64_STATS")) logf("placement: %zu files, table %08x", g_place.size(), ph);
     }
-    char bh[24];
-    snprintf(bh, sizeof bh, "%016llx", (unsigned long long)g_build);
-    g_key = std::string(hex) + "-" + bh;
+    g_key = a64engine::cache_key(g_uuid, g_build);
     const char *b = strrchr(exe.c_str(), '/');
     g_path = g_dir + "/" + g_key + "." + (b ? b + 1 : exe.c_str()) + ".bin";
     g_aot_path = g_dir + "/" + g_key + ".aot";
